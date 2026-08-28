@@ -29,6 +29,7 @@ import {
 import { applyBuildingDamage, applyUnitDamage } from "../damage";
 import type { Sim } from "../sim";
 import type { ISystem } from "./system";
+import { logger } from "../logger";
 
 export class CombatSystem implements ISystem {
   update(sim: Sim, dt: number): void {
@@ -162,6 +163,10 @@ export class CombatSystem implements ISystem {
     tgt.trainKind = null;
     tgt.foundKind = null;
     sim.toast(u.team === BLUE ? "一名敌人皈依" : "一名子民被感化");
+    // v0.15 感化直接换队、不经出生流程，是人口上涨的另一大来源——落日志可追溯。
+    logger.info("combat", `皈依：单位#${tgt.id} → 队伍${u.team}`, {
+      pop: sim.countPop(u.team as Team),
+    });
   }
 
   nearestConvertible(sim: Sim, u: Unit): Unit | null {

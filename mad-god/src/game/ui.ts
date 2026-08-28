@@ -82,7 +82,8 @@ export class HUD {
     const pct = t.manaCap ? (t.mana / t.manaCap) * 100 : 0;
     this.manaFill.style.width = `${pct}%`;
     this.manaText.textContent = `${t.mana | 0} / ${t.manaCap | 0}`;
-    this.popB.textContent = `${sim.countPop(BLUE)}/${sim.popCap(BLUE)}`;
+    // v0.15：人口上限已移除（感化加人不受限，上限只会拦死出生），只显示子民数。
+    this.popB.textContent = String(sim.countPop(BLUE));
     this.popR.textContent = String(sim.countPop(RED));
     this.housesB.textContent = String(sim.countHouses(BLUE));
     this.housesR.textContent = String(sim.countHouses(RED));

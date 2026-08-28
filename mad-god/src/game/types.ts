@@ -312,8 +312,8 @@ export function houseMaxPop(level: number): number {
   return level === 3 ? 10 : level === 2 ? 5 : 2;
 }
 
-// v0.11c：开局人口容差——让初始人口有 2 名产出余量，否则开局即撞满 popCap 整局死锁。
-export const POP_CAP_BASE = 2;
+// v0.15：全局人口上限已移除——传教感化会持续加人，出生被上限拦死会让所有茅屋假死；
+// 生产只受"屋里是否有人"约束，人口数字仅作统计（HUD 显示子民数）。
 
 // v0.11 生产速率：基础速率按等级，且每多一名住户加速（dwell=1 时即基础速率）。
 export function houseBaseRate(level: number): number {

@@ -12,7 +12,6 @@ import {
   dist2,
   FxBolt,
   houseHp,
-  houseMaxPop,
   inMap,
   isCampKind,
   isTribe,
@@ -20,7 +19,6 @@ import {
   Order,
   Owner,
   padSize,
-  POP_CAP_BASE,
   Projectile,
   RED,
   snapYaw,
@@ -438,15 +436,6 @@ export class Sim {
     return this.units.filter((u) => u.team === team).length;
   }
 
-  popCap(team: Team): number {
-    // v0.11c：加 POP_CAP_BASE 初始余量，否则开局 pop(3) >= popCap(4) 一出生就撞停。
-    let n = POP_CAP_BASE;
-    for (const b of this.buildings) {
-      if (b.team === team && b.hp > 0 && b.kind === "hut" && b.level >= 1) n += houseMaxPop(b.level);
-    }
-    return n;
-  }
-
   countKind(team: Owner, kind: UnitKind): number {
     return this.units.filter((u) => u.team === team && u.kind === kind).length;
   }
@@ -810,8 +799,8 @@ export class Sim {
         units: this.units.length,
         huts,
         dwell,
-        popB: `${this.countPop(BLUE)}/${this.popCap(BLUE)}`,
-        popR: `${this.countPop(1)}/${this.popCap(1)}`,
+        popB: this.countPop(BLUE),
+        popR: this.countPop(1),
         manaB: +this.teams[BLUE].mana.toFixed(1),
         freezeProd: this.freezeProd,
       };

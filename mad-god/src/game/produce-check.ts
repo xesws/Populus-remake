@@ -134,6 +134,9 @@ function testHutOccupancy(): void {
   console.log("testHutOccupancy ok");
 }
 
+// v0.15 住满即升：升级由"入住满员"驱动（第二人入住 L1 → 下一帧升 L2），
+// 不再等新生儿出生数达到门槛（旧 born>=2 会让升级顿好几秒）。
+
 function testProductionAndUpgrade(): void {
   const sim = new Sim(new World(42));
   const hut = sim.buildings.find((b) => b.team === BLUE && b.kind === "hut" && b.level === 1)!;
@@ -141,18 +144,33 @@ function testProductionAndUpgrade(): void {
   sim.occupy(walker, hut);
   assert(hut.dwell === 1, "hut has 1 occupant");
 
-  const popBefore = sim.countPop(BLUE);
-  // v0.11c：新生儿出屋 + popCap 初始余量，自然产出即可触发 L1→L2 升级。
-  for (let i = 0; i < 600 && hut.born < 2; i++) sim.tick(0.05);
-  for (let i = 0; i < 10 && hut.level < 2; i++) sim.tick(0.05); // wantLevel 在出生时置位，下一次 produce tick 才升级
-
-  assert(hut.born >= 1, "at least 1 baby born from hut");
-  assert(sim.countPop(BLUE) > popBefore, "population increased");
-  assert(hut.born >= 2, "at least 2 babies born total");
-  assert(hut.level === 2, "house auto-upgraded from L1 to L2 at 2 births");
+  const w2 = sim.addUnit(BLUE, "walker", hut.x - 1, hut.z + 1);
+  assert(sim.occupy(w2, hut), "second walker occupies hut");
+  assert(hut.wantLevel === 2, "住满 L1 当帧置位升级");
+  sim.tick(0.05);
+  assert(hut.level === 2, "住满 L1 下一帧升至 L2（无顿挫）");
   assert(hut.hp === houseHp(2), "hut hp upgraded to L2 house hp");
+  assert(houseMaxPop(hut.level) === 5, "L2 容量扩到 5");
 
   console.log("testProductionAndUpgrade ok");
+}
+
+// v0.15 回归：感化可把人口顶到任意高（bug 现场：子民 31/20，七座茅屋全体停摆），
+// 出生不得再受任何全局上限拦截——生产只看"屋里有没有人"。
+
+function testProductionNotBlockedByPop(): void {
+  const sim = new Sim(new World(42));
+  const hut = sim.buildings.find((b) => b.team === BLUE && b.kind === "hut" && b.level === 1)!;
+  for (let i = 0; i < 25; i++) sim.addUnit(BLUE, "walker", hut.x + 2, hut.z + 2);
+  assert(sim.countPop(BLUE) >= 25, "人口远超旧全局上限（20）");
+
+  const w = sim.addUnit(BLUE, "walker", hut.x + 1, hut.z + 1);
+  assert(sim.occupy(w, hut), "村民入住");
+  const born0 = hut.born;
+  for (let i = 0; i < 600 && hut.born < born0 + 1; i++) sim.tick(0.05);
+  assert(hut.born === born0 + 1, "高人口下生产照常（不再被上限拦死）");
+
+  console.log("testProductionNotBlockedByPop ok");
 }
 
 // v0.11c 生产与居住解耦：满员照常生产、新生儿走出屋子成为自由村民。
@@ -212,7 +230,7 @@ function testL1KeepsProducingWhileNotFull(): void {
 
 function testProductionRateScalesWithDwell(): void {
   const sim = new Sim(new World(42));
-  // 多放一座茅屋保证 popCap 有余量（同 testProductionAndUpgrade 手法）
+  // 多放一座茅屋（历史手法；v0.15 起无全局上限，仅为场景丰富）
   const s = sim.world.startPad(BLUE);
   sim.placeComplete(BLUE, s.x + 8, s.z + 8, s.yaw, "hut", 1);
 
@@ -339,7 +357,8 @@ function main(): void {
   testNewbornWalksOut();
   testFullHouseKeepsProducing();
   testL1KeepsProducingWhileNotFull();
-  console.log("produce-check ok (v0.11 + v0.11a 占地 + v0.11c 生产解耦)");
+  testProductionNotBlockedByPop();
+  console.log("produce-check ok (v0.11 + v0.11a 占地 + v0.11c 生产解耦 + v0.15 无上限/住满即升)");
 }
 
 main();

@@ -81,16 +81,6 @@ export class ProductionSystem implements ISystem {
       logger.throttled("produce:frozen", 2000, LogLevel.Warn, "produce", "freezeProd=true，生产被冻结（shot 导演占用）");
       return;
     }
-    // v0.14 每帧每队只数一次人口（原每房每帧现算），出生时手动 +1 保持语义一致。
-    const popCache = new Map<Team, number>();
-    const popOf = (team: Team): number => {
-      let p = popCache.get(team);
-      if (p === undefined) {
-        p = sim.countPop(team);
-        popCache.set(team, p);
-      }
-      return p;
-    };
     for (const b of sim.buildings) {
       if (b.hp <= 0 || b.kind !== "hut" || b.level < 1) continue;
       if (b.wantLevel > b.level) {
@@ -98,25 +88,18 @@ export class ProductionSystem implements ISystem {
         else if (b.level === 2) this.upgradeBuilding(sim, b, 3);
         b.wantLevel = 0;
       }
-      const cap = sim.popCap(b.team);
-      // v0.14 每座茅屋每秒一条快照：等级/入住/进度/卡住原因，生产卡死一眼可见。
+      // v0.14 每座茅屋每秒一条快照：等级/入住/进度，生产卡死一眼可见。
+      // v0.15 卡住原因只剩 no-dwell（全局人口上限已移除）。
       logger.periodic(`hut:${b.id}`, 1000, LogLevel.Debug, "produce", `茅屋#${b.id} L${b.level}`, () => ({
         team: b.team,
         dwell: `${b.dwell}/${houseMaxPop(b.level)}`,
         prod: +b.prod.toFixed(3),
         born: b.born,
-        blocked: b.dwell <= 0 ? "no-dwell" : popOf(b.team) >= cap ? "pop-cap" : undefined,
+        blocked: b.dwell <= 0 ? "no-dwell" : undefined,
       }));
       if (b.dwell <= 0) continue;
-      if (popOf(b.team) >= cap) {
-        logger.throttled(`popcap:${b.team}`, 2000, LogLevel.Warn, "produce", `队伍${b.team} 人口达上限，生产暂停`, {
-          pop: popOf(b.team),
-          cap,
-        });
-        continue;
-      }
       // v0.11 速率 = 基础(等级) × (1 + 0.12 × (dwell − 1))：进驻村民越多生产越快。
-      // v0.11c：满员不锁生产——dwell 只影响速度；新生儿出屋加入人口（全局 popCap 兜底）。
+      // v0.11c 新生儿走出屋子成为自由村民；v0.15 出生不再受全局人口上限约束（无限生产）。
       const rate = houseBaseRate(b.level) * (1 + HOUSE_DWELL_BONUS * (b.dwell - 1));
       b.prod += rate * dt;
       if (b.prod >= 1) {
@@ -143,16 +126,12 @@ export class ProductionSystem implements ISystem {
         baby.homeId = 0;
         const out = sim.padLocalToWorld(b, 0, b.padD / 2 + 2.0);
         sim.sendMove(baby, out.x, out.z);
-        popCache.set(b.team, popOf(b.team) + 1);
         logger.info("produce", `茅屋#${b.id} 出生村民#${baby.id}`, {
           team: b.team,
           dwell: b.dwell,
           born: b.born,
-          pop: popOf(b.team),
-          cap,
+          pop: sim.countPop(b.team),
         });
-        if (b.born >= 2 && b.level === 1) b.wantLevel = 2;
-        else if (b.born >= 5 && b.level === 2) b.wantLevel = 3;
       }
     }
   }
@@ -201,8 +180,10 @@ export class ProductionSystem implements ISystem {
     logger.info("produce", `村民#${u.id} 入住茅屋#${hut.id}`, {
       dwell: `${hut.dwell}/${houseMaxPop(hut.level)}`,
       pop: sim.countPop(u.team),
-      cap: sim.popCap(u.team),
     });
+    // v0.15 住满即升：L1 住满 2 人 / L2 住满 5 人当帧置位升级，下一次 produce tick（下一帧）生效，
+    // 不再等第 2 个新生儿出生（旧 born>=2 门槛会让升级"顿"好几秒）。
+    if (hut.dwell >= houseMaxPop(hut.level) && hut.level < 3) hut.wantLevel = hut.level + 1;
     return true;
   }
 

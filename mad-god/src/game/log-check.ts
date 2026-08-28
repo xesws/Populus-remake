@@ -128,7 +128,7 @@ function testProductionLogging(): void {
     assert(es.some((e) => e.cat === "produce" && e.msg.startsWith(`茅屋#${hut.id}`)), "茅屋周期快照落日志");
     assert(es.some((e) => e.cat === "sim" && e.msg === "心跳"), "全局心跳落日志");
     const born = es.find((e) => e.msg.includes("出生"))!;
-    assert(typeof born.data!.pop === "number" && typeof born.data!.cap === "number", "出生日志带 pop/cap 数值");
+    assert(typeof born.data!.pop === "number", "出生日志带 pop 数值（v0.15 起无 cap）");
   } finally {
     logger.setSink(new HttpSink()); // 还原，避免污染其他 check（node 下 HttpSink 失败会静默）
   }
