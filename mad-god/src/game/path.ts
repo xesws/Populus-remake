@@ -31,16 +31,94 @@ export function nearestLand(world: World, x: number, z: number): Cell | null {
   return null;
 }
 
+class MinHeap {
+  private data: { id: number; f: number; g: number }[] = [];
+
+  get length(): number {
+    return this.data.length;
+  }
+
+  push(id: number, f: number, g: number): void {
+    let i = this.data.length;
+    this.data.push({ id, f, g });
+    while (i > 0) {
+      const p = (i - 1) >> 1;
+      if (this.data[i]!.f < this.data[p]!.f) {
+        const tmp = this.data[i]!;
+        this.data[i] = this.data[p]!;
+        this.data[p] = tmp;
+        i = p;
+      } else {
+        break;
+      }
+    }
+  }
+
+  pop(): { id: number; f: number; g: number } | undefined {
+    const len = this.data.length;
+    if (len === 0) return undefined;
+    const top = this.data[0]!;
+    const last = this.data.pop()!;
+    if (this.data.length > 0) {
+      this.data[0] = last;
+      let i = 0;
+      const count = this.data.length;
+      while (true) {
+        const left = (i << 1) + 1;
+        const right = left + 1;
+        let smallest = i;
+        if (left < count && this.data[left]!.f < this.data[smallest]!.f) {
+          smallest = left;
+        }
+        if (right < count && this.data[right]!.f < this.data[smallest]!.f) {
+          smallest = right;
+        }
+        if (smallest !== i) {
+          const tmp = this.data[i]!;
+          this.data[i] = this.data[smallest]!;
+          this.data[smallest] = tmp;
+          i = smallest;
+        } else {
+          break;
+        }
+      }
+    }
+    return top;
+  }
+}
+
+export function pullString(world: World, fromX: number, fromZ: number, path: Cell[], fromI: number): number {
+  if (fromI >= path.length - 1) return fromI;
+  let best = fromI + 1;
+  const maxJ = Math.min(path.length - 1, fromI + 12);
+  for (let j = fromI + 1; j <= maxJ; j++) {
+    const pj = path[j]!;
+    let walkable = true;
+    for (let s = 0; s <= 4; s++) {
+      const t = s / 5;
+      const x = fromX + (pj.x - fromX) * t;
+      const z = fromZ + (pj.z - fromZ) * t;
+      if (!world.walkableAt(x, z)) {
+        walkable = false;
+        break;
+      }
+    }
+    if (!walkable) break;
+    best = j;
+  }
+  return best;
+}
+
 export function astar(
   world: World,
   sx: number,
   sz: number,
   tx: number,
   tz: number,
-  maxVisit = 2400,
+  maxVisit = 8000,
 ): Cell[] {
   if (!inMap(sx, sz)) return [];
-  if (!world.land(sx, sz)) {
+  if (!world.walkableAt(sx, sz)) {
     const from = nearestLand(world, sx, sz);
     if (!from) return [];
     sx = from.x;
@@ -62,11 +140,10 @@ export function astar(
   gScore.fill(1e9);
   const came = new Int32Array(GW * GW);
   came.fill(-1);
-  const open: number[] = [];
+  const heap = new MinHeap();
   const start = sgz * GW + sgx;
   const goal = tgz * GW + tgx;
   gScore[start] = 0;
-  open.push(start);
 
   const heur = (i: number) => {
     const x = i % GW;
@@ -76,25 +153,17 @@ export function astar(
     return Math.max(dx, dz) + Math.min(dx, dz) * 0.001;
   };
 
+  heap.push(start, heur(start), 0);
+
   let visits = 0;
   let best = start;
   let bestH = heur(start);
 
-  while (open.length && visits < maxVisit) {
+  while (heap.length > 0 && visits < maxVisit) {
+    const top = heap.pop()!;
+    if (top.g > gScore[top.id]! + 1e-4) continue;
     visits++;
-    let bi = 0;
-    let bv = 1e18;
-    for (let i = 0; i < open.length; i++) {
-      const n = open[i]!;
-      const f = gScore[n]! + heur(n);
-      if (f < bv) {
-        bv = f;
-        bi = i;
-      }
-    }
-    const cur = open[bi]!;
-    open[bi] = open[open.length - 1]!;
-    open.pop();
+    const cur = top.id;
     if (cur === goal) return rebuild(came, cur, tx, tz);
     const h = heur(cur);
     if (h < bestH) {
@@ -124,7 +193,7 @@ export function astar(
       if (ng < gScore[ni]!) {
         gScore[ni] = ng;
         came[ni] = cur;
-        open.push(ni);
+        heap.push(ni, ng + heur(ni), ng);
       }
     }
   }

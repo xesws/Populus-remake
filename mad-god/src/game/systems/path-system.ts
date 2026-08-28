@@ -1,10 +1,12 @@
-import { astar, nearestLand } from "../path";
+import { astar, nearestLand, pullString } from "../path";
 import { Cell, clamp, dist2, padSize, UNIT_RADIUS, Unit, WORLD } from "../types";
 import { inDoorSlit, inPad, pushCircleFromPad, TREE_BLOCK_R } from "../world";
 import type { Sim } from "../sim";
 import type { ISystem } from "./system";
 
 export class PathSystem implements ISystem {
+  private stuckTries = new Map<number, number>();
+
   update(sim: Sim, dt: number): void {
     this.moveUnits(sim, dt);
     this.watchStuck(sim);
@@ -14,6 +16,7 @@ export class PathSystem implements ISystem {
     for (const u of sim.units) {
       if (u.homeId > 0) continue;
       if (u.fireT > 0) u.fireT = Math.max(0, u.fireT - dt);
+      if (u.ghostT > 0) u.ghostT = Math.max(0, u.ghostT - dt);
       const g0 = sim.world.heightAt(u.x, u.z);
       if (u.flyVy !== 0 || u.y > g0 + 0.08) {
         u.flyVy -= 18 * dt;
@@ -72,7 +75,12 @@ export class PathSystem implements ISystem {
         u.y = sim.world.heightAt(u.x, u.z);
         continue;
       }
-      const step = u.path[u.pathI]!;
+      let step = u.path[u.pathI]!;
+      const pulled = pullString(sim.world, u.x, u.z, u.path, u.pathI);
+      if (pulled > u.pathI) {
+        u.pathI = pulled;
+        step = u.path[u.pathI]!;
+      }
       if (!sim.world.walkableAt(step.x, step.z) && !sim.trainingSystem.trainAllows(sim, u, step.x, step.z)) {
         u.pathI++;
         continue;
@@ -80,7 +88,8 @@ export class PathSystem implements ISystem {
       const dx = step.x - u.x;
       const dz = step.z - u.z;
       const len = Math.hypot(dx, dz);
-      if (len < 0.08) {
+      const arriveRadius = u.pathI < u.path.length - 1 ? 0.2 : 0.08;
+      if (len < arriveRadius) {
         u.pathI++;
         if (u.pathI >= u.path.length) {
           u.path = [];
@@ -102,8 +111,15 @@ export class PathSystem implements ISystem {
   }
 
   onArrive(sim: Sim, u: Unit): void {
-    if (u.job === "move") u.job = "idle";
-    u.think = 0;
+    if (u.job === "move") {
+      u.job = "idle";
+      u.moveX = -1;
+      u.moveZ = -1;
+      // Hold position after a player move order: idle wander must not immediately walk the unit away.
+      u.think = 30;
+    } else {
+      u.think = 0;
+    }
     const home = sim.buildingById(u.targetId);
     if (home) {
       u.yaw = Math.atan2(home.x - u.x, home.z - u.z);
@@ -114,6 +130,9 @@ export class PathSystem implements ISystem {
   }
 
   goalCell(sim: Sim, u: Unit): Cell | null {
+    if (u.job === "move" && u.moveX >= 0) {
+      return { x: u.moveX, z: u.moveZ };
+    }
     if (u.job === "train" && u.targetId) {
       const camp = sim.buildingById(u.targetId);
       if (camp && camp.level >= 1) {
@@ -245,7 +264,10 @@ export class PathSystem implements ISystem {
     const live = new Set<number>();
     for (const u of sim.units) live.add(u.id);
     for (const id of [...sim.stuckWatch.keys()]) {
-      if (!live.has(id)) sim.stuckWatch.delete(id);
+      if (!live.has(id)) {
+        sim.stuckWatch.delete(id);
+        this.stuckTries.delete(id);
+      }
     }
     for (const u of sim.units) {
       if (u.hp <= 0 || u.homeId > 0) continue;
@@ -258,20 +280,37 @@ export class PathSystem implements ISystem {
         (u.job === "train" && u.channel <= 0);
       if (!going) {
         sim.stuckWatch.set(u.id, { x: u.x, z: u.z, t: now });
+        this.stuckTries.set(u.id, 0);
         continue;
       }
       const prev = sim.stuckWatch.get(u.id);
+      const dest = this.goalCell(sim, u);
       if (!prev) {
         sim.stuckWatch.set(u.id, { x: u.x, z: u.z, t: now });
+        this.stuckTries.set(u.id, 0);
         continue;
       }
-      const moved = Math.hypot(u.x - prev.x, u.z - prev.z);
-      if (moved >= 0.08) {
+      // Progress = the distance to the order's destination shrinking. Jitter in place does not count.
+      const destDist = dest ? Math.hypot(u.x - dest.x, u.z - dest.z) : 0;
+      const prevDist = dest ? Math.hypot(prev.x - dest.x, prev.z - dest.z) : 0;
+      const gained = dest ? prevDist - destDist : Math.hypot(u.x - prev.x, u.z - prev.z);
+      // 0.15: normal walkers cover >1.4/s; face-grinding along a pad creeps at ~0.1 and must count as stuck.
+      if (gained >= 0.15) {
         sim.stuckWatch.set(u.id, { x: u.x, z: u.z, t: now });
+        this.stuckTries.set(u.id, 0);
         continue;
       }
       if (now - prev.t >= 1.0) {
-        this.unstick(sim, u);
+        const tries = (this.stuckTries.get(u.id) ?? 0) + 1;
+        this.stuckTries.set(u.id, tries);
+        if (tries >= 2 && dest) {
+          // Last resort: walk straight through (clipping allowed) so corners can never trap a unit.
+          u.ghostT = 2.5;
+          u.path = [{ x: dest.x, z: dest.z }];
+          u.pathI = 0;
+        } else {
+          this.unstick(sim, u);
+        }
         sim.stuckWatch.set(u.id, { x: u.x, z: u.z, t: now });
       }
     }
@@ -283,9 +322,9 @@ export class PathSystem implements ISystem {
       if (u.flyVy !== 0 || u.y > sim.world.heightAt(u.x, u.z) + 0.08) continue;
       const r = UNIT_RADIUS[u.kind];
       const holdTrain = u.job === "train" && u.channel > 0;
-      if (!sim.world.walkableAt(u.x, u.z) && !holdTrain) {
+      if (!sim.world.walkableAt(u.x, u.z) && !holdTrain && u.ghostT <= 0) {
         const dest = this.goalCell(sim, u);
-        const keep = !!(dest && (u.path.length || u.job === "move" || u.targetId || u.settleX >= 0));
+        const keep = !!(dest && (u.path.length || u.job === "move" || u.moveX >= 0 || u.targetId || u.settleX >= 0));
         const safe = nearestLand(sim.world, u.x, u.z);
         if (safe) {
           u.x = safe.x;
@@ -301,10 +340,14 @@ export class PathSystem implements ISystem {
         if (b.hp <= 0) continue;
         if (holdTrain) continue;
         const pad = sim.buildingPad(b);
+        if (u.ghostT > 0) continue;
         if (inDoorSlit(u.x, u.z, pad)) continue;
         const pushed = pushCircleFromPad(u.x, u.z, r, pad);
-        u.x = pushed.x;
-        u.z = pushed.z;
+        const pushDist = Math.hypot(pushed.x - u.x, pushed.z - u.z);
+        if (pushDist > 0.12) {
+          u.x += (pushed.x - u.x) * 0.45;
+          u.z += (pushed.z - u.z) * 0.45;
+        }
       }
       for (const t of sim.trees) {
         if (!t.alive) continue;
@@ -338,7 +381,10 @@ export class PathSystem implements ISystem {
         const need = ra + rb;
         if (d2 >= need * need || d2 < 1e-8) continue;
         const d = Math.sqrt(d2);
-        const push = ((need - d) / d) * 0.5;
+        const rawPush = ((need - d) / d) * 0.5;
+        const dispMag = rawPush * d;
+        const scale = dispMag > 0.04 ? 0.04 / dispMag : 1.0;
+        const push = rawPush * scale;
         a.x += dx * push;
         a.z += dz * push;
         b.x -= dx * push;

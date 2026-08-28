@@ -497,7 +497,14 @@ export class Sim {
       u.trainKind = null;
     }
     this.clearOrders(u);
-    const dest = this.world.walkableAt(x, z) ? { x, z } : nearestLand(this.world, x, z);
+    let dest = this.world.walkableAt(x, z) ? { x, z } : nearestLand(this.world, x, z);
+    if (!dest) {
+      // Deep unreachable target (open sea): walk as close as possible instead of dropping the order.
+      for (const t of [0.7, 0.45, 0.25]) {
+        dest = nearestLand(this.world, u.x + (x - u.x) * t, u.z + (z - u.z) * t);
+        if (dest) break;
+      }
+    }
     if (!dest) return;
     u.job = "move";
     u.moveX = dest.x;
@@ -1153,6 +1160,7 @@ export class Sim {
 
     if (!this.hasNeedSite(u.team) && !wantCamp) {
       if (u.team === BLUE) {
+        if (u.think > 0) return; // holding position after a player move order
         this.wander(u);
         return;
       }
