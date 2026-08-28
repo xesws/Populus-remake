@@ -131,6 +131,8 @@ function testGuardFullCycle(): void {
 function testGatherFormation(): void {
   const sim = new Sim(new World(42));
   sim.lockWin = true;
+  // 清红方与野人：只测聚集本身——武士 sight=10 会锁定游荡进范围的红方村民转去追击（正确行为，但干扰断言）。
+  sim.units = sim.units.filter((u) => u.team === BLUE);
   const at = findClear(sim, 24, 24);
   const units: Unit[] = [];
   for (let i = 0; i < 4; i++) {

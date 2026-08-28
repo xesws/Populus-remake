@@ -57,14 +57,6 @@ export const LAVA_FLOW_MIN = 0.35;
 export const LAVA_SPREAD_AT = 2.2;
 /** 单格岩浆厚度上限：超出部分转移/注入时蒸发（厚浆散热快），防洼地积出烧不完的深池 */
 export const LAVA_MAX_DEPTH = 12;
-/** v0.20 火山隆起的顶面噪声幅度（±）：顶面起伏出沟壑，岩浆才有坡可流 */
-export const PLATEAU_NOISE_H = 1.1;
-
-/** 确定性格噪声：sin 哈希到 0~1（按格固定，逐帧调用不变——隆起动画才能一致收敛）。 */
-export function hash01(x: number, z: number): number {
-  const s = Math.sin(x * 12.9898 + z * 78.233) * 43758.5453;
-  return s - Math.floor(s);
-}
 
 export interface TreeBlock {
   x: number;
@@ -639,13 +631,15 @@ export class World {
   }
 
   /**
-   * v0.18 火山高原（Agent V）：把半径 r 内地形抬到绝对高度 h（clamp 0~MAX_H）。
-   * v0.20 随机化隆起：顶面不再精确平坦——加**按格固定**的确定性噪声（格坐标哈希，
-   * 逐帧调用噪声不变，隆起动画才能一致收敛），顶高 ±PLATEAU_NOISE_H 起伏、
-   * 边缘半径 ±18% 不规则——山顶有沟壑坡度，岩浆才有路可流（用户反馈"标准高原导致岩浆不流动"）。
-   * 外圈过渡带 smoothstep + 1 轮盒式松弛照旧；水面以下样本由 setSample 内部清 lava/swamp。
+   * v0.22 平滑穹顶火山（替代 v0.18 平顶高原与 v0.20 按格噪声）：
+   * - **中间高、四周矮**：幂函数锥 (d/r)^1.2——顶部圆滑（火山口）、径向快速单调下降，
+   *   岩浆从山顶溢出顺坡向四周流。
+   * - **直接设形状**（须传 cast 时的原地面快照 orig）：迭代逼近公式的不动点全是 target，
+   *   动画收敛后必然抹成平顶（v0.18 高原的成因）；用快照直接算 target×(1-f)+orig×f 才精确。
+   * - 低频方位不规则：有效半径随方位角连续正弦扰动 ±15%（phase 由 spell 随机传入）——平滑的山形各向差异。
+   * 水面以下样本由 setSample 内部清 lava/swamp。
    */
-  raisePlateau(x: number, z: number, r: number, h: number): void {
+  raisePlateau(x: number, z: number, r: number, h: number, phase: number, orig: Float32Array): void {
     const target = clamp(h, 0, MAX_H);
     const minIx = clamp(Math.floor((x - r) / STEP), 0, SAMPLES - 1);
     const maxIx = clamp(Math.ceil((x + r) / STEP), 0, SAMPLES - 1);
@@ -655,38 +649,30 @@ export class World {
       for (let ix = minIx; ix <= maxIx; ix++) {
         const px = ix * STEP;
         const pz = iz * STEP;
-        const d = Math.hypot(px - x, pz - z);
-        // v0.20 按格固定噪声：半径 ±18%（边缘犬牙交错）、顶高 ±0.55（沟壑起伏）。
-        const rn = hash01(ix * 3.7 + 11.1, iz * 7.3 + 5.9) - 0.5;
-        const hn = hash01(ix * 12.9898, iz * 78.233) - 0.5;
-        const rEff = r * (1 + rn * 0.36);
+        const dx = px - x;
+        const dz = pz - z;
+        const d = Math.hypot(dx, dz);
+        // 低频方位扰动：连续正弦（平滑），±15%。
+        const theta = Math.atan2(dz, dx);
+        const rEff = r * (1 + 0.15 * Math.sin(3 * theta + phase));
         if (d > rEff) continue;
-        if (d <= rEff * 0.55) {
-          // 顶面：目标高度带起伏（setSample 内含 clamp / 标脏 / 水面清 lava）。
-          this.setSample(ix, iz, target + hn * PLATEAU_NOISE_H);
-          continue;
-        }
-        // 外圈缓坡：0.55rEff~rEff 带从起伏后的顶面平滑过渡回原高（smoothstep 保证导数连续）。
-        const t = clamp((d - rEff * 0.55) / (rEff * 0.45), 0, 1);
-        const f = t * t * (3 - 2 * t);
+        const factor = Math.pow(clamp(d / rEff, 0, 1), 1.2);
         const i = this.idx(ix, iz);
-        const top = target + hn * PLATEAU_NOISE_H;
-        const nv = clamp(this.h[i]! + (top - this.h[i]!) * (1 - f), 0, MAX_H);
+        // 直接设：格目标 = 原高 × factor + target × (1-factor)（中心=target，边缘保持原地面）。
+        const nv = clamp(orig[i]! + (target - orig[i]!) * (1 - factor), 0, MAX_H);
         if (nv !== this.h[i]) {
           this.h[i] = nv;
           this.markSample(ix, iz);
         }
       }
     }
-    // v0.18 环形带 1 轮盒式松弛：圆滑缓坡两端拐角（只写过渡带，顶面保持起伏不被抹平）。
-    for (let iz = minIz; iz <= maxIz; iz++) {
-      for (let ix = minIx; ix <= maxIx; ix++) {
+    // 1 轮盒式松弛：抹平数字误差毛刺，保持整体平滑（穹顶本身平滑不怕抹）。
+    for (let iz = minIz + 1; iz < maxIz; iz++) {
+      for (let ix = minIx + 1; ix < maxIx; ix++) {
         const px = ix * STEP;
         const pz = iz * STEP;
         const d = Math.hypot(px - x, pz - z);
-        const rn = hash01(ix * 3.7 + 11.1, iz * 7.3 + 5.9) - 0.5;
-        const rEff = r * (1 + rn * 0.36);
-        if (d <= rEff * 0.55 || d > rEff) continue;
+        if (d > r) continue;
         const i = this.idx(ix, iz);
         if (this.h[i]! <= WATER) continue;
         let sum = 0;

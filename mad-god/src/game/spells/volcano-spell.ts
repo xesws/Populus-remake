@@ -3,6 +3,16 @@ import type { Sim } from "../sim";
 import { Spell, SpellResult } from "./spell";
 
 /**
+ * v0.22 喷射方向分布采样：全向（width=2π）均匀取角；扇区模式下围绕主方向 φ
+ * 做钟形取样（三均匀和近似高斯，越靠近主方向概率越高）——"南边多一点、北边少一点"。
+ */
+function sampleBiasAngle(phi: number, width: number): number {
+  if (width >= Math.PI * 2 - 1e-3) return Math.random() * Math.PI * 2;
+  const g = (Math.random() + Math.random() + Math.random() - 1.5) / 1.5; // [-1,1] 钟形
+  return phi + g * width * 0.5;
+}
+
+/**
  * v0.18b 火山法术（物理溢流版，替代 v0.18 的"旋转支流扫描"——用户反馈像麦田怪圈）：
  * - 地形：raisePlateau 在 dur 内逐帧渐进隆起 6.5 格宽平顶缓坡高原（目标高 = cast 时原高 + 2.6）。
  * - 岩浆：**源头注入 + 流体模拟**——喷发窗口内每帧从火山口 pourLava 涌出（节奏先猛后衰，
@@ -17,6 +27,8 @@ export class VolcanoSpell extends Spell {
 
   /** v0.18 抬升基准高度（beginVolcano 时采样）。volcano 全局唯一，spell 又是单例，实例字段即可，无需改 Sim 类型。 */
   private liftBase = 0;
+  /** v0.22 原地面快照：raisePlateau 直接设形状需要抬升前的地面（迭代逼近会收敛成平顶）。 */
+  private origH: Float32Array | null = null;
 
   cast(sim: Sim, team: Team, x: number, z: number, _dt?: number): SpellResult {
     const empty: SpellResult = { ok: false, bolts: [], shake: 0, msg: "" };
@@ -31,9 +43,22 @@ export class VolcanoSpell extends Spell {
 
   beginVolcano(sim: Sim, x: number, z: number): boolean {
     if (sim.volcano && sim.volcano.t < sim.volcano.dur + 1.2) return false;
-    // v0.18 记下 cast 时的地形高度：高原目标 = 原高 + 2.6（dur 内逐帧渐进逼近）。
+    // v0.18 记下 cast 时的地形高度：穹顶目标 = 原高 + 2.6（dur 内逐帧渐进逼近）。
     this.liftBase = Math.max(sim.world.heightAt(x, z), 0.8);
-    sim.volcano = { x, z, t: 0, dur: 2.6 };
+    // v0.22 喷射方向分布（每座火山随机一次）：
+    // 35% 全向 360°；65% 扇区偏置——主方向全随机、扇宽 0.6π~1.7π（"南边多一点、北边少一点"）。
+    const omni = Math.random() < 0.35;
+    sim.volcano = {
+      x,
+      z,
+      t: 0,
+      dur: 2.6,
+      biasPhi: Math.random() * Math.PI * 2,
+      biasWidth: omni ? Math.PI * 2 : Math.PI * (0.6 + Math.random() * 1.1),
+      shapePhase: Math.random() * Math.PI * 2,
+    };
+    // v0.22 快照抬升前的地面：隆起动画每帧按快照直接计算目标形状（精确穹顶，不漂移）。
+    this.origH = new Float32Array(sim.world.h);
     // v0.21 爆发震撼：初爆震屏拉满（0.55），由渲染端衰减。
     sim.fxShake = Math.max(sim.fxShake, 0.55);
     return true;
@@ -56,9 +81,9 @@ export class VolcanoSpell extends Spell {
     if (v) {
       v.t += dt;
       if (v.t <= v.dur) {
-        // v0.20 渐进抬升 + 随机隆起：raisePlateau 顶面带按格固定噪声（起伏沟壑）+ 边缘半径不规则。
+        // v0.22 渐进抬升为平滑穹顶（中间高四周矮，按原地面快照直接设形状）+ 低频方位不规则。
         const prog = Math.min(1, v.t / v.dur);
-        sim.world.raisePlateau(v.x, v.z, 6.5, this.liftBase + 2.6 * prog);
+        sim.world.raisePlateau(v.x, v.z, 6.5, this.liftBase + 2.6 * prog, v.shapePhase, this.origH!);
       }
       if (v.t > 0.8 && v.t <= v.dur + 2.4) {
         this.erupt(sim, v, dt);
@@ -78,17 +103,22 @@ export class VolcanoSpell extends Spell {
   }
 
   /**
-   * v0.18b 源头注入 + v0.20 涌浆点随机化：喷发窗口（t 0.8 ~ dur+2.4 ≈ 5s）内
-   **每帧从火山口周围随机裂隙涌出**（注入点 ±1.6 格随机游走 + 注入半径随机），
-   * 节奏"起喷渐起 → 主喷最猛 → 尾期衰减"——范围随机、不再只灌中心一点。
+   * v0.22 源头注入 + 喷射方向分布：喷发窗口（t 0.8 ~ dur+2.4 ≈ 5s）内每帧从火山口
+   * 沿**方向分布**采样的口缘裂隙涌出（biasPhi/biasWidth：全向 360° 或偏某扇区——
+   * "南边多一点、北边少一点"），岩浆从山顶顺穹顶坡向四周（偏置侧更多）流下。
+   * 节奏"起喷渐起 → 主喷最猛 → 尾期衰减"。
    */
-  private erupt(sim: Sim, v: { x: number; z: number; t: number; dur: number }, dt: number): void {
+  private erupt(
+    sim: Sim,
+    v: { x: number; z: number; t: number; dur: number; biasPhi: number; biasWidth: number },
+    dt: number,
+  ): void {
     const win = v.dur + 2.4 - 0.8;
     const et = Math.min(1, (v.t - 0.8) / win); // 0..1
     const rampUp = Math.min(1, et / 0.12); // 起喷渐起（前 12% 窗口）
     const rate = 32 * rampUp * (1 - et * 0.55); // v0.21 主喷 32/s：汹涌翻腾、直接溢出来的量级
-    const ang = Math.random() * Math.PI * 2;
-    const rr = Math.random() * 1.6;
+    const ang = sampleBiasAngle(v.biasPhi, v.biasWidth);
+    const rr = 0.6 + Math.random() * 1.1; // 口缘（山顶平台外沿），岩浆从山口溢出而非中心点泉眼
     sim.world.pourLava(
       v.x + Math.cos(ang) * rr,
       v.z + Math.sin(ang) * rr,

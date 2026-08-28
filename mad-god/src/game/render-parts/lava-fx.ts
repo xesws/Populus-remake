@@ -77,15 +77,11 @@ export class LavaFX {
     const v = sim.volcano;
     if (v && v.t < v.dur + 1) {
       // v0.21 炸裂喷发：初喷 1.2s 是爆发窗口——3 倍密度、冲天速度、大块岩浆团四散；
-      // 主喷期持续猛喷。喷口位置与 spell 的随机涌浆点同款游走（口缘裂缝喷出）。
+      // 主喷期持续猛喷。喷口位置与 spell 的方向分布同款采样（扇区侧喷得更多）。
       const h = w.heightAt(v.x, v.z);
       const burst = v.t < 1.2;
       let n = Math.ceil((burst ? 66 : 30) * dt);
-      const ang0 = Math.random() * Math.PI * 2;
-      const rr = Math.random() * 1.6;
-      const cx = v.x + Math.cos(ang0) * rr;
-      const cz = v.z + Math.sin(ang0) * rr;
-      while (n-- > 0) this.spawnErupt(cx, cz, h, burst);
+      while (n-- > 0) this.spawnErupt(v.x, v.z, h, burst, v.biasPhi, v.biasWidth);
     }
     this.scanLava(w, dt);
   }
@@ -163,24 +159,36 @@ export class LavaFX {
     }
   }
 
-  private spawnErupt(x: number, baseY: number, z: number, burst: boolean): void {
+  private spawnErupt(
+    x: number,
+    baseY: number,
+    z: number,
+    burst: boolean,
+    biasPhi: number,
+    biasWidth: number,
+  ): void {
     const p = this.getFree();
     if (!p) return;
     p.kind = 0;
     p.x = x + (Math.random() - 0.5) * 0.9;
     p.z = z + (Math.random() - 0.5) * 0.9;
     p.y = baseY + 0.25 + Math.random() * 0.5;
+    // v0.22 方向分布：粒子水平初速朝喷射偏置方向（扇区侧飞得更多）。
+    const spread = biasWidth >= Math.PI * 2 - 1e-3 ? Math.PI : biasWidth * 0.5;
+    const g = (Math.random() + Math.random() + Math.random() - 1.5) / 1.5;
+    const ang = biasPhi + g * spread;
+    const hSpeed = burst ? 3.5 + Math.random() * 4.5 : 2 + Math.random() * 2;
     if (burst) {
-      // v0.21 初喷爆发：冲天 6~11、水平 ±4 四散、寿命更长——像炸开一样轰出去。
-      p.vx = (Math.random() - 0.5) * 8;
+      // v0.21 初喷爆发：冲天 6~11、四散、寿命更长——像炸开一样轰出去。
+      p.vx = Math.cos(ang) * hSpeed;
       p.vy = 6 + Math.random() * 5;
-      p.vz = (Math.random() - 0.5) * 8;
+      p.vz = Math.sin(ang) * hSpeed;
       p.life = 1.5 + Math.random() * 1.1;
     } else {
       // 主喷期：持续猛喷。
-      p.vx = (Math.random() - 0.5) * 4;
+      p.vx = Math.cos(ang) * hSpeed;
       p.vy = 4 + Math.random() * 4;
-      p.vz = (Math.random() - 0.5) * 4;
+      p.vz = Math.sin(ang) * hSpeed;
       p.life = 1.1 + Math.random() * 0.9;
     }
     p.maxLife = p.life;

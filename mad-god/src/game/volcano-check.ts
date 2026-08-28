@@ -1,7 +1,7 @@
 /**
- * v0.18 火山法术检查（Agent V 交付，独立运行：tsx src/game/volcano-check.ts）：
- *   a) 高原形态：cast 后抬升完成，中心 2.5 格内 5+ 点高度极差 <0.35（顶平），8 格外远处地形不变；
- *   b) 岩浆生命周期：cast 后 lava 有正值，tick 累计 15 秒后 lava 全部干涸而 scorch>0（灰褐焦土残留）；
+ * v0.22 火山法术检查（平滑穹顶 + 喷射方向分布）：
+ *   a) 穹顶形态：中间高四周矮、径向单调下降、中心抬升约 2.6、8 格外不变；喷射方向分布字段就绪；
+ *   b) 岩浆生命周期：cast 后 lava 有正值，越喷越多，tick 后干涸而 scorch>0（灰褐焦土残留）；
  *   c) 岩浆伤害：站在岩浆格上的蓝方村民 3 秒内烧死；
  *   d) 树木烧毁：岩浆上的树 alive=false，且 regen 被拉长（不会在下一 tick 原地复活）。
  */
@@ -77,13 +77,25 @@ function testPlateauShape(): void {
     if (h < lo) lo = h;
     if (h > hi) hi = h;
   }
-  // v0.20 随机隆起：顶面必须**有起伏**（沟壑坡度，岩浆才有路可流），不再是标准平顶高原。
-  assert(hi - lo >= 0.3, `顶面随机起伏（中心极差 ${(hi - lo).toFixed(2)} ≥ 0.3，非平整高原）`);
+  // v0.22 平滑穹顶语义：中间高、四周矮——中心显著高于 1.5 格圈（坡降明显），
+  // 顶面不再要求平坦也不再要求起伏；穹顶整体平滑（无高频噪声）。
+  const hCenter = w.heightAt(VX, VZ);
+  const hRing1 = w.heightAt(VX + 1.5, VZ);
+  const hRing3 = w.heightAt(VX + 3.2, VZ);
+  assert(hCenter - hRing1 >= 0.35, `中间高四周矮：中心比 1.5 格圈高 ${(hCenter - hRing1).toFixed(2)} ≥ 0.35`);
+  assert(hRing1 > hRing3, `穹顶单调下降：1.5 格圈(${hRing1.toFixed(2)}) > 3.2 格圈(${hRing3.toFixed(2)})`);
+  assert(hCenter - lo >= 0.35, `中心为最高点（中心与采样极差 ${(hCenter - lo).toFixed(2)} ≥ 0.35）`);
   assert(
-    Math.abs(w.heightAt(VX, VZ) - Math.min(h0 + 2.6, 8)) < 0.9,
-    `中心抬升约 2.6（期望 ${(h0 + 2.6).toFixed(2)}，实际 ${w.heightAt(VX, VZ).toFixed(2)}，含 ±0.55 顶面噪声）`,
+    Math.abs(hCenter - Math.min(h0 + 2.6, 8)) < 0.9,
+    `中心抬升约 2.6（期望 ${(h0 + 2.6).toFixed(2)}，实际 ${hCenter.toFixed(2)}）`,
   );
   assert(Math.abs(w.heightAt(far.x, far.z) - hFar0) < 0.15, "8 格外远处地形不变");
+  // v0.22 喷射方向分布：每座火山随机一次（全向 2π 或偏置扇区）。
+  const vv = sim.volcano!;
+  assert(
+    vv.biasWidth >= Math.PI * 0.5 && vv.biasWidth <= Math.PI * 2,
+    `喷射方向分布宽度 ${(vv.biasWidth / Math.PI).toFixed(2)}π ∈ [0.5π, 2π]`,
+  );
 
   console.log("testPlateauShape ok");
 }
@@ -151,7 +163,7 @@ function main(): void {
   testLavaLifecycle();
   testUnitBurns();
   testTreesBurn();
-  console.log("volcano-check ok (v0.18 火山高原 / 岩浆生命周期 / 灼烧 / 焚林)");
+  console.log("volcano-check ok (v0.22 穹顶火山：中间高四周矮 / 喷射方向分布 / 岩浆生命周期 / 灼烧 / 焚林)");
 }
 
 main();

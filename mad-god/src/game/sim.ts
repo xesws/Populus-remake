@@ -85,7 +85,17 @@ export class Sim {
   fxShake = 0;
   fxQuake: { x: number; z: number } | null = null;
   fxVolcano: { x: number; z: number } | null = null;
-  volcano: { x: number; z: number; t: number; dur: number } | null = null;
+  volcano: {
+    x: number;
+    z: number;
+    t: number;
+    dur: number;
+    /** v0.22 喷射方向分布：主方向角（弧度）与扇区宽度（2π=全向 360°，小值=偏某侧"南多北少"） */
+    biasPhi: number;
+    biasWidth: number;
+    /** v0.22 穹顶山形的方位扰动相位（低频不规则，cast 时随机一次） */
+    shapePhase: number;
+  } | null = null;
   fxSplash: { x: number; z: number }[] = [];
   lavaHurt = false;
   trainJoinN = 1;
