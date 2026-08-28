@@ -85,9 +85,9 @@ export class ProductionSystem implements ISystem {
         b.wantLevel = 0;
       }
       if (b.dwell <= 0) continue;
-      if (b.dwell >= houseMaxPop(b.level)) continue;
       if (sim.countPop(b.team) >= sim.popCap(b.team)) continue;
       // v0.11 速率 = 基础(等级) × (1 + 0.12 × (dwell − 1))：进驻村民越多生产越快。
+      // v0.11c：满员不锁生产——dwell 只影响速度；新生儿出屋加入人口（全局 popCap 兜底）。
       const rate = houseBaseRate(b.level) * (1 + HOUSE_DWELL_BONUS * (b.dwell - 1));
       b.prod += rate * dt;
       if (b.prod >= 1) {
@@ -100,11 +100,11 @@ export class ProductionSystem implements ISystem {
         }
         b.prod = 0;
         b.born += 1;
-        // v0.11b 出生即占位：补 homeId + 进门动画，避免 dwell 卡死在上限以下让整屋锁死。
+        // v0.11c 新生儿走出屋子成为自由村民（v0.11b 的"出生即占位"会锁死经济，已回退）。
         const baby = sim.addUnit(b.team, "walker", spot.x, spot.z);
-        baby.homeId = b.id;
-        baby.enterT = 0.42;
-        b.dwell += 1;
+        baby.homeId = 0;
+        const out = sim.padLocalToWorld(b, 0, b.padD / 2 + 2.0);
+        sim.sendMove(baby, out.x, out.z);
         if (b.born >= 2 && b.level === 1) b.wantLevel = 2;
         else if (b.born >= 5 && b.level === 2) b.wantLevel = 3;
       }

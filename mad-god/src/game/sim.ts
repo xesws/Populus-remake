@@ -20,6 +20,7 @@ import {
   Order,
   Owner,
   padSize,
+  POP_CAP_BASE,
   Projectile,
   RED,
   snapYaw,
@@ -437,7 +438,8 @@ export class Sim {
   }
 
   popCap(team: Team): number {
-    let n = 0;
+    // v0.11c：加 POP_CAP_BASE 初始余量，否则开局 pop(3) >= popCap(4) 一出生就撞停。
+    let n = POP_CAP_BASE;
     for (const b of this.buildings) {
       if (b.team === team && b.hp > 0 && b.kind === "hut" && b.level >= 1) n += houseMaxPop(b.level);
     }
