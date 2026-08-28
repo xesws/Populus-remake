@@ -25,7 +25,7 @@ import { SAMPLES, STEP } from "../types";
  *   view.resetFx()/restart 时：lavaFX.reset();
  */
 
-const MAX_PARTICLES = 120;
+const MAX_PARTICLES = 220;
 
 // 粒子配色档：亮橙 → 橙 → 暗橙 → 红 → 暗红（随 life 冷却换档）。
 const STREAM_COLS = [0xffb347, 0xff8c2a, 0xff6a1a, 0xd84315, 0x8a2e10] as const;
@@ -46,6 +46,8 @@ interface LavaParticle {
   speed: number;
   spinX: number;
   spinZ: number;
+  /** v0.21 喷发粒子剩余弹跳次数：落地反弹一次再熄灭——"四溅"的关键。 */
+  bounce: number;
 }
 
 export class LavaFX {
@@ -74,10 +76,16 @@ export class LavaFX {
     this.tickParticles(w, dt);
     const v = sim.volcano;
     if (v && v.t < v.dur + 1) {
-      // 喷发期：从火山口上方喷出，速度/角度随机。
+      // v0.21 炸裂喷发：初喷 1.2s 是爆发窗口——3 倍密度、冲天速度、大块岩浆团四散；
+      // 主喷期持续猛喷。喷口位置与 spell 的随机涌浆点同款游走（口缘裂缝喷出）。
       const h = w.heightAt(v.x, v.z);
-      let n = Math.ceil(20 * dt);
-      while (n-- > 0) this.spawnErupt(v.x, h, v.z);
+      const burst = v.t < 1.2;
+      let n = Math.ceil((burst ? 66 : 30) * dt);
+      const ang0 = Math.random() * Math.PI * 2;
+      const rr = Math.random() * 1.6;
+      const cx = v.x + Math.cos(ang0) * rr;
+      const cz = v.z + Math.sin(ang0) * rr;
+      while (n-- > 0) this.spawnErupt(cx, cz, h, burst);
     }
     this.scanLava(w, dt);
   }
@@ -96,19 +104,28 @@ export class LavaFX {
         continue;
       }
       if (p.kind === 0) {
-        // 喷发粒子：重力下落，落地消失。
-        p.vy -= 9.5 * dt;
+        // 喷发粒子：重力下落，落地弹跳一次（反弹衰减），第二次落地才熄灭——四溅感。
+        p.vy -= 9.8 * dt;
         p.x += p.vx * dt;
         p.y += p.vy * dt;
         p.z += p.vz * dt;
-        if (p.y <= w.heightAt(p.x, p.z) + 0.02) {
-          this.kill(p);
-          continue;
+        const ground = w.heightAt(p.x, p.z) + 0.02;
+        if (p.y <= ground && p.vy < 0) {
+          if (p.bounce > 0) {
+            p.bounce -= 1;
+            p.y = ground;
+            p.vy = -p.vy * 0.38;
+            p.vx *= 0.62;
+            p.vz *= 0.62;
+          } else {
+            this.kill(p);
+            continue;
+          }
         }
         p.mesh.rotation.x += p.spinX * dt;
         p.mesh.rotation.z += p.spinZ * dt;
       } else {
-        // 岩浆流粒子：沿地形梯度下坡方向缓慢流动（高度场四方向差分），贴地，随 life 冷却变色。
+        // 岩浆流粒子：沿地形梯度下坡方向流动（高度场四方向差分），贴地，随 life 冷却变色。
         const hL = w.heightAt(p.x - 0.3, p.z);
         const hR = w.heightAt(p.x + 0.3, p.z);
         const hD = w.heightAt(p.x, p.z - 0.3);
@@ -120,7 +137,9 @@ export class LavaFX {
         }
         p.x += p.vx * dt;
         p.z += p.vz * dt;
-        p.y = w.heightAt(p.x, p.z) + 0.05;
+        // v0.21 翻腾：厚浆区粒子上下沸腾跳动（相位按个体错开），不再平贴滑行。
+        const boil = Math.sin(p.life * 9 + p.x * 3.1 + p.z * 2.7) * 0.09;
+        p.y = w.heightAt(p.x, p.z) + 0.05 + Math.max(0, boil);
         const t = 1 - p.life / p.maxLife;
         const idx = Math.min(4, Math.floor(t * 5));
         if (p.mesh.material !== this.streamMats[idx]) p.mesh.material = this.streamMats[idx]!;
@@ -136,31 +155,44 @@ export class LavaFX {
       for (let ix = 1; ix < SAMPLES - 1; ix++) {
         const lv = lava[iz * SAMPLES + ix]!;
         if (lv <= 0) continue;
-        // 发射率随 lava 余量：越厚越活跃；粒子寿命 1.6~2.6s，稳态数量受池上限约束。
-        if (Math.random() < 0.11 * dt * Math.min(1.6, lv / 5)) {
+        // 发射率随 lava 余量：越厚越活跃（v0.21 提到 0.16，翻腾更密）；厚浆区粒子更大更快。
+        if (Math.random() < 0.16 * dt * Math.min(1.8, lv / 5)) {
           this.spawnStream(w, ix * STEP, iz * STEP, lv);
         }
       }
     }
   }
 
-  private spawnErupt(x: number, baseY: number, z: number): void {
+  private spawnErupt(x: number, baseY: number, z: number, burst: boolean): void {
     const p = this.getFree();
     if (!p) return;
     p.kind = 0;
     p.x = x + (Math.random() - 0.5) * 0.9;
     p.z = z + (Math.random() - 0.5) * 0.9;
     p.y = baseY + 0.25 + Math.random() * 0.5;
-    p.vx = (Math.random() - 0.5) * 2.4;
-    p.vy = 3.2 + Math.random() * 3.6;
-    p.vz = (Math.random() - 0.5) * 2.4;
-    p.life = 1.1 + Math.random() * 0.9;
+    if (burst) {
+      // v0.21 初喷爆发：冲天 6~11、水平 ±4 四散、寿命更长——像炸开一样轰出去。
+      p.vx = (Math.random() - 0.5) * 8;
+      p.vy = 6 + Math.random() * 5;
+      p.vz = (Math.random() - 0.5) * 8;
+      p.life = 1.5 + Math.random() * 1.1;
+    } else {
+      // 主喷期：持续猛喷。
+      p.vx = (Math.random() - 0.5) * 4;
+      p.vy = 4 + Math.random() * 4;
+      p.vz = (Math.random() - 0.5) * 4;
+      p.life = 1.1 + Math.random() * 0.9;
+    }
     p.maxLife = p.life;
     p.speed = 0;
-    p.spinX = (Math.random() - 0.5) * 10;
-    p.spinZ = (Math.random() - 0.5) * 10;
+    p.spinX = (Math.random() - 0.5) * 12;
+    p.spinZ = (Math.random() - 0.5) * 12;
+    p.bounce = 1;
     p.mesh.material = this.eruptMats[Math.floor(Math.random() * this.eruptMats.length)]!;
-    p.mesh.scale.set(0.16, 0.16, 0.16);
+    // v0.21 大小混合：大块岩浆团与小火星混杂，大块更醒目。
+    const big = Math.random() < 0.3;
+    const s = big ? 0.26 + Math.random() * 0.22 : 0.1 + Math.random() * 0.1;
+    p.mesh.scale.set(s, s, s);
     p.mesh.rotation.set(0, 0, 0);
     p.active = true;
     p.mesh.visible = true;
@@ -214,6 +246,7 @@ export class LavaFX {
       speed: 1,
       spinX: 0,
       spinZ: 0,
+      bounce: 0,
     };
     this.pool.push(p);
     return p;

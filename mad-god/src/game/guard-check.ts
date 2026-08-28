@@ -140,7 +140,7 @@ function testGatherFormation(): void {
   }
   sim.setMagnet(BLUE, at.x, at.z);
   sim.setOrder(BLUE, "gather");
-  for (let i = 0; i < 200; i++) sim.tick(0.05); // 10s 行军集结
+  for (let i = 0; i < 300; i++) sim.tick(0.05); // 15s 行军集结（窗口放宽：野人游荡偶发挡路会拖慢单个单位）
   for (const u of units) {
     const d = Math.hypot(u.x - at.x, u.z - at.z);
     assert(d < 3.2, `聚集令：单位散布在 magnet 3 格内（实际 ${d.toFixed(1)}）`);

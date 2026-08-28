@@ -1370,7 +1370,7 @@ export class View {
   }
 
   triggerVolcano(x: number, z: number): void {
-    this.volcanoT = 0.5;
+    this.volcanoT = 1.4; // v0.21 0.5→1.4：喷发柱持续整个初喷窗口
     this.volcanoX = x;
     this.volcanoZ = z;
   }
@@ -1494,12 +1494,21 @@ export class View {
       if (ch instanceof THREE.Mesh) ch.geometry.dispose();
     }
     if (this.volcanoT <= 0) return;
-    const fade = this.volcanoT / 0.5;
+    // v0.21 喷发柱炸裂化：0.5s → 1.4s 持续、柱体加高加粗（3.1→5.2、0.32→0.5），
+    // 并叠加一圈冲天的次级碎柱——初喷"轰出来"的视觉主声道。
+    const fade = this.volcanoT / 1.4;
     const h = this.world.heightAt(this.volcanoX, this.volcanoZ);
-    this.sprayMat.opacity = 0.35 + fade * 0.4;
-    const col = new THREE.Mesh(new THREE.BoxGeometry(0.32, 3.1, 0.32), this.sprayMat);
-    col.position.set(this.volcanoX, h + 1.55, this.volcanoZ);
+    this.sprayMat.opacity = 0.35 + fade * 0.45;
+    const col = new THREE.Mesh(new THREE.BoxGeometry(0.5, 5.2, 0.5), this.sprayMat);
+    col.position.set(this.volcanoX, h + 2.6, this.volcanoZ);
     this.sprayGroup.add(col);
+    for (let i = 0; i < 4; i++) {
+      const a = (i / 4) * Math.PI * 2 + fade * 2.4;
+      const rr = 0.75 + Math.sin(fade * 6 + i * 1.7) * 0.25;
+      const sub = new THREE.Mesh(new THREE.BoxGeometry(0.26, 2.6 * fade + 0.6, 0.26), this.sprayMat);
+      sub.position.set(this.volcanoX + Math.cos(a) * rr, h + 1.3 * fade + 0.5, this.volcanoZ + Math.sin(a) * rr);
+      this.sprayGroup.add(sub);
+    }
   }
 
   syncBolts(bolts: FxBolt[]): void {

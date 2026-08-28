@@ -51,10 +51,10 @@ export const DOOR_SLIT_DEPTH = 0.45;
 export const NEIGH8: ReadonlyArray<readonly [number, number]> = [
   [1, 0], [-1, 0], [0, 1], [0, -1], [1, 1], [1, -1], [-1, 1], [-1, -1],
 ];
-/** 低于该厚度的浆停止流动（凝固边缘） */
-export const LAVA_FLOW_MIN = 0.5;
-/** 平顶上超过该厚度才会向外漫溢（"攒厚了溢出"的阈值） */
-export const LAVA_SPREAD_AT = 3.0;
+/** 低于该厚度的浆停止流动（凝固边缘）；v0.21 0.5→0.35：薄浆也淌，前沿铺得更开更汹涌 */
+export const LAVA_FLOW_MIN = 0.35;
+/** 平顶上超过该厚度才会向外漫溢（"攒厚了溢出"的阈值）；v0.21 3.0→2.2：更早漫溢出火山口 */
+export const LAVA_SPREAD_AT = 2.2;
 /** 单格岩浆厚度上限：超出部分转移/注入时蒸发（厚浆散热快），防洼地积出烧不完的深池 */
 export const LAVA_MAX_DEPTH = 12;
 /** v0.20 火山隆起的顶面噪声幅度（±）：顶面起伏出沟壑，岩浆才有坡可流 */
@@ -752,7 +752,8 @@ export class World {
           if (this.h[j]! <= h + 0.05 && this.h[j]! > WATER) target = j;
         }
         if (target >= 0) {
-          const move = Math.min(amt * 0.5, dt * (0.9 + amt * 0.12));
+          // v0.21 湍急化：流速近翻倍（0.9+amt*0.12 → 1.7+amt*0.2）——前沿汹涌推进而非缓缓渗淌。
+          const move = Math.min(amt * 0.5, dt * (1.7 + amt * 0.2));
           add[i] -= move;
           // 厚度上限 LAVA_MAX_DEPTH：超出部分在转移时蒸发（厚浆表面积大散热快）——
           // 防止洼地积出几十秒烧不完的深池。

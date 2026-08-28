@@ -26,7 +26,7 @@ export class VolcanoSpell extends Spell {
       sim.teams[team].mana += this.cost;
       return { ...empty, msg: "火山还在喷" };
     }
-    return { ok: true, bolts: [], shake: 0.25, msg: "火山抬起" };
+    return { ok: true, bolts: [], shake: 0.5, msg: "火山喷发" };
   }
 
   beginVolcano(sim: Sim, x: number, z: number): boolean {
@@ -34,7 +34,8 @@ export class VolcanoSpell extends Spell {
     // v0.18 记下 cast 时的地形高度：高原目标 = 原高 + 2.6（dur 内逐帧渐进逼近）。
     this.liftBase = Math.max(sim.world.heightAt(x, z), 0.8);
     sim.volcano = { x, z, t: 0, dur: 2.6 };
-    sim.fxShake = Math.max(sim.fxShake, 0.28);
+    // v0.21 爆发震撼：初爆震屏拉满（0.55），由渲染端衰减。
+    sim.fxShake = Math.max(sim.fxShake, 0.55);
     return true;
   }
 
@@ -59,7 +60,11 @@ export class VolcanoSpell extends Spell {
         const prog = Math.min(1, v.t / v.dur);
         sim.world.raisePlateau(v.x, v.z, 6.5, this.liftBase + 2.6 * prog);
       }
-      if (v.t > 0.8 && v.t <= v.dur + 2.4) this.erupt(sim, v, dt);
+      if (v.t > 0.8 && v.t <= v.dur + 2.4) {
+        this.erupt(sim, v, dt);
+        // v0.21 初喷 1.5s 持续轰鸣震动（渲染端逐帧衰减，这里持续补压）。
+        if (v.t < 1.5) sim.fxShake = Math.max(sim.fxShake, 0.3);
+      }
       // v0.18b 流体模拟：活动期全程驱动岩浆按坡度流动/漫溢（喷停后残余继续淌）。
       if (v.t > 0.8 && v.t <= v.dur + 8) sim.world.flowLava(dt);
       if (v.t <= v.dur + 6) this.deepenScorch(sim);
@@ -81,7 +86,7 @@ export class VolcanoSpell extends Spell {
     const win = v.dur + 2.4 - 0.8;
     const et = Math.min(1, (v.t - 0.8) / win); // 0..1
     const rampUp = Math.min(1, et / 0.12); // 起喷渐起（前 12% 窗口）
-    const rate = 24 * rampUp * (1 - et * 0.55); // 主喷 ~24/s，尾期衰减（总量控制在洼地积池可承受范围）
+    const rate = 32 * rampUp * (1 - et * 0.55); // v0.21 主喷 32/s：汹涌翻腾、直接溢出来的量级
     const ang = Math.random() * Math.PI * 2;
     const rr = Math.random() * 1.6;
     sim.world.pourLava(
