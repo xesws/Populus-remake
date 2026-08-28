@@ -982,10 +982,16 @@ export class Sim {
     const team = this.teams[u.team as Team];
     if (this.armageddon) {
       u.order = "fight";
-      u.path = astar(this.world, u.x, u.z, WORLD * 0.5, WORLD * 0.5);
-      u.pathI = 0;
+      this.combatSystem.acquireTarget(this, u);
+      if (!u.atkId) {
+        u.path = astar(this.world, u.x, u.z, WORLD * 0.5, WORLD * 0.5);
+        u.pathI = 0;
+      }
       return;
     }
+
+    // v0.8 自动索敌：在 order/job 分派之前尝试拿一个最近敌人；失败再走原逻辑。
+    this.combatSystem.acquireTarget(this, u);
 
     if (u.job === "train" && u.targetId) {
       const camp = this.buildingById(u.targetId);

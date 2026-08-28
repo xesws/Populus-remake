@@ -123,13 +123,16 @@ export const UNIT_SIGHT: Record<UnitKind, number> = {
   preacher: 3.0,
   firewarrior: 5.5,
   spy: 0,
-  wildman: 3.0,
+  wildman: 0,
 };
 
 // 克制系数（攻击方 → 受击方，缺省 1）。
 export const COUNTER_MULT: Partial<Record<UnitKind, Partial<Record<UnitKind, number>>>> = {
   firewarrior: { walker: 1.2 },
 };
+
+// 自动索敌/还手的追击拴绳（格）：自动获得的目标离锚点超过该距离就放弃；玩家手动指令不受拴绳限制。
+export const AGRO_LEASH = 8;
 
 export const HOUSE_WALL = [0, 2.2, 3.8, 5.6] as const;
 export const HOUSE_ROOF = [0, 2.2, 3.8, 5.6] as const;

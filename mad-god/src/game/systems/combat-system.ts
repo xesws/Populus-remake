@@ -1,4 +1,5 @@
 import {
+  AGRO_LEASH,
   attackInterval,
   BLUE,
   Building,
@@ -13,6 +14,7 @@ import {
   unitDamageToBuilding,
   unitHp,
   unitRange,
+  UNIT_SIGHT,
   WORLD,
 } from "../types";
 import { applyBuildingDamage, applyUnitDamage } from "../damage";
@@ -34,6 +36,14 @@ export class CombatSystem implements ISystem {
       if (!isTribe(u.team) || u.hp <= 0 || u.homeId > 0) continue;
       if (u.atkCd > 0) u.atkCd = Math.max(0, u.atkCd - dt);
       if (!u.atkId) continue;
+      // v0.8 自动索敌拴绳：agroX = -1 表示玩家手动指令，不受拴绳限制。
+      if (u.agroX >= 0 && dist2(u.x, u.z, u.agroX, u.agroZ) > AGRO_LEASH * AGRO_LEASH) {
+        u.atkId = 0;
+        u.agroX = -1;
+        u.agroZ = -1;
+        u.job = "idle";
+        continue;
+      }
 
       const tu = sim.unitById(u.atkId);
       if (tu) {
@@ -41,7 +51,11 @@ export class CombatSystem implements ISystem {
         if (u.atkCd <= 0 && dist2(u.x, u.z, tu.x, tu.z) <= range * range) {
           applyUnitDamage(tu, u.kind);
           u.atkCd = attackInterval(u.kind);
-          if (tu.hp <= 0) u.atkId = 0;
+          if (tu.hp > 0) {
+            this.retaliate(sim, tu, u);
+          } else {
+            u.atkId = 0;
+          }
         }
         continue;
       }
@@ -155,6 +169,7 @@ export class CombatSystem implements ISystem {
     let bestD = range * range;
     for (const o of sim.units) {
       if (o.team !== enemy) continue;
+      if (o.hp <= 0 || o.homeId > 0) continue;
       const d = dist2(u.x, u.z, o.x, o.z);
       if (d < bestD) {
         bestD = d;
@@ -162,6 +177,44 @@ export class CombatSystem implements ISystem {
       }
     }
     return best;
+  }
+
+  /**
+   * v0.8 自动索敌：仅当单位无 atkId、自身存活且在屋内、未处于训练态、
+   * 属于部落单位、是士兵（武士/传教士/火战士）、且索敌半径 > 0 时触发；
+   找到最近敌人后写入 atkId 与 agroX/Z 锚点，再走既有 chaseAttack 追击。
+   */
+  acquireTarget(sim: Sim, u: Unit): void {
+    if (u.atkId) return;
+    if (u.hp <= 0 || u.homeId > 0) return;
+    if (!isTribe(u.team)) return;
+    if (u.job === "train") return;
+    if (!u.isSoldier()) return;
+    const sight = UNIT_SIGHT[u.kind];
+    if (sight <= 0) return;
+    const enemy: Team = u.team === BLUE ? RED : BLUE;
+    const foe = this.closestEnemyUnit(sim, u, enemy, sight);
+    if (!foe) return;
+    u.atkId = foe.id;
+    u.agroX = u.x;
+    u.agroZ = u.z;
+    sim.chaseAttack(u);
+  }
+
+  /**
+   * v0.8 受击还手：被玩家/AI 攻击且当前无目标时，把攻击者设为目标并写锚点，
+   玩家/系统移动令（job === "move"）或训练态不打断。
+   */
+  retaliate(sim: Sim, target: Unit, src: Unit): void {
+    if (target.atkId) return;
+    if (target.hp <= 0 || target.homeId > 0) return;
+    if (!isTribe(target.team)) return;
+    if (src.team === target.team) return;
+    if (target.job === "move" || target.job === "train") return;
+    target.atkId = src.id;
+    target.agroX = target.x;
+    target.agroZ = target.z;
+    sim.chaseAttack(target);
   }
 
   projectiles(sim: Sim, dt: number): void {
