@@ -113,6 +113,10 @@ function testPreachViaFullTick(): void {
   let converted = false;
   for (let i = 0; i < 200 && !converted; i++) {
     sim.tick(0.05);
+    // 野人钉在传教士身旁：本用例验证"sim.tick → combat → autoPreach"全链路，
+    // 野人自主游荡出 1.25 格引导圈是无关随机量（曾致 ~1/6 flake），钉位消除。
+    wild.x = at.x + 0.4;
+    wild.z = at.z;
     converted = wild.team === BLUE;
   }
   assert(converted, "全链路（sim.tick → combat → autoPreach）完成感化");

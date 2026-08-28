@@ -2,6 +2,9 @@ import * as THREE from "three";
 import { Sim } from "./sim";
 import { BLUE, clamp, FIRE_DOWN_TIME, FxBolt, houseMaxPop, isCampKind, SAMPLES, STEP, Team, TRAIN_TIME, WATER, WORLD } from "./types";
 import { World } from "./world";
+import { TornadoFX } from "./render-parts/tornado-fx";
+import { LavaFX } from "./render-parts/lava-fx";
+import { SculptIndicatorFX } from "./render-parts/sculpt-indicator-fx";
 
 const RT_W = 800;
 const RT_H = 600;
@@ -12,6 +15,9 @@ const COL_HILL = new THREE.Color("#8a8a4a");
 const COL_ROCK = new THREE.Color("#9a8a6a");
 const COL_SNOW = new THREE.Color("#e8e6de");
 const COL_SCORCH = new THREE.Color("#3a2a1c");
+// v0.18 焦土三档灰褐（Agent V 建议）：按 scorch 强度从浅灰褐 → 深灰褐 → 炭黑渐进。
+const COL_SCORCH_MID = new THREE.Color("#57463a");
+const COL_SCORCH_LIGHT = new THREE.Color("#6a5745");
 const COL_LAVA = new THREE.Color("#e85d04");
 
 function heightColor(h: number, lava: number, scorch: number, out: THREE.Color): void {
@@ -20,7 +26,10 @@ function heightColor(h: number, lava: number, scorch: number, out: THREE.Color):
     return;
   }
   if (scorch > 0.4) {
-    out.copy(COL_SCORCH);
+    // v0.18 焦土渐变：强焦（>1.6）炭黑 → 中焦灰褐 → 弱焦浅灰褐，干涸后地面呈灰褐色带。
+    if (scorch > 1.6) out.copy(COL_SCORCH);
+    else if (scorch > 0.9) out.copy(COL_SCORCH_MID);
+    else out.copy(COL_SCORCH_LIGHT);
     return;
   }
   if (h <= WATER) out.copy(COL_SEA);
@@ -85,9 +94,10 @@ export class View {
   volcanoZ = 0;
   debrisGroup = new THREE.Group();
   sprayGroup = new THREE.Group();
-  tornadoGroup = new THREE.Group();
-  tornadoBuilt = false;
-  tornadoSpin = 0;
+  // v0.18 龙卷风/岩浆/雕刻指示器改用独立 fx 模块（旧 tornadoGroup 实体方块已废弃）。
+  tornadoFX = new TornadoFX();
+  lavaFX = new LavaFX();
+  sculptIndicator = new SculptIndicatorFX();
   blastGroup = new THREE.Group();
   blastRingMat = new THREE.MeshBasicMaterial({ color: 0xf4f0dc, transparent: true, opacity: 0.85, side: THREE.DoubleSide });
   blastDustMat = new THREE.MeshLambertMaterial({ color: 0xddd6c4 });
@@ -184,7 +194,9 @@ export class View {
       this.shotGroup,
       this.debrisGroup,
       this.sprayGroup,
-      this.tornadoGroup,
+      this.tornadoFX.group,
+      this.lavaFX.group,
+      this.sculptIndicator.group,
       this.blastGroup,
     );
 
@@ -533,6 +545,7 @@ export class View {
     this.syncSwamp(sim);
     this.syncLavaStreams(sim);
     this.syncTornado(sim, dt);
+    this.lavaFX.sync(sim, dt); // v0.18 岩浆物理粒子（火山喷发 + 顺坡流动）
     this.syncBlast(sim);
     this.syncAnkhs(sim);
     this.syncShots(sim);
@@ -1319,6 +1332,8 @@ export class View {
     this.clearPreview();
     while (this.sprayGroup.children.length) this.sprayGroup.remove(this.sprayGroup.children[0]!);
     this.clearSwamp();
+    this.lavaFX.reset(); // v0.18 岩浆粒子池随对局重置清空
+    this.sculptIndicator.setMode("off");
   }
 
   clearSwamp(): void {
@@ -1457,37 +1472,14 @@ export class View {
   }
 
   syncTornado(sim: Sim, dt: number): void {
-    const tw = sim.tornado;
-    if (!tw) {
-      this.tornadoGroup.visible = false;
-      return;
-    }
-    if (!this.tornadoBuilt) {
-      const body = new THREE.MeshLambertMaterial({ color: 0xc4bbae });
-      const dust = new THREE.MeshLambertMaterial({ color: 0x9a8f80 });
-      const pale = new THREE.MeshLambertMaterial({ color: 0xddd6c8 });
-      for (let i = 0; i < 7; i++) {
-        const u = i / 6;
-        const w = 1.62 * (1 - u) + 0.2;
-        const h = 0.46;
-        const y = 0.22 + i * 0.5;
-        const m = new THREE.Mesh(new THREE.BoxGeometry(w, h, w * 0.86), i % 2 ? dust : body);
-        m.position.set((i % 2 ? 0.08 : -0.06), y, (i % 3 ? 0.05 : -0.04));
-        this.tornadoGroup.add(m);
-      }
-      for (let k = 0; k < 4; k++) {
-        const arm = new THREE.Mesh(new THREE.BoxGeometry(0.22, 0.18, 0.55), pale);
-        arm.position.set(0.55 * Math.cos(k * 1.4), 0.55, 0.55 * Math.sin(k * 1.4));
-        arm.rotation.y = k * 0.8;
-        this.tornadoGroup.add(arm);
-      }
-      this.tornadoBuilt = true;
-    }
-    this.tornadoGroup.visible = true;
-    this.tornadoSpin += dt * 7.2;
-    const h = this.world.heightAt(tw.x, tw.z);
-    this.tornadoGroup.position.set(tw.x, h, tw.z);
-    this.tornadoGroup.rotation.y = this.tornadoSpin;
+    // v0.18 龙卷风渲染委托给雾气条 fx 模块（细长漏斗 + 高速自旋 + 渐隐 + 水龙卷变色）。
+    this.tornadoFX.sync(sim, dt);
+  }
+
+  /** v0.18 雕刻指示器：raise/lower 工具选中时由 game 每帧驱动，半透明脉动选框实时显示生效范围。 */
+  updateSculptIndicator(mode: "raise" | "lower" | "off", x: number, z: number, dt: number): void {
+    this.sculptIndicator.setMode(mode);
+    if (mode !== "off") this.sculptIndicator.sync(x, z, this.world.heightAt(x, z), dt);
   }
 
   syncVolcanoSpray(): void {

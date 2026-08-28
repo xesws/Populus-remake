@@ -181,8 +181,9 @@ export type Tool =
 
 export const TOOL_COST: Record<Tool, number> = {
   select: 0,
-  raise: 7,
-  lower: 5,
+  // v0.18 雕刻费率上调（7→12 / 5→9 每秒）：避免"感觉免费"的无限抬地；按住 1 秒约 12 法力。
+  raise: 12,
+  lower: 9,
   lightning: 20,
   quake: 50,
   swamp: 36,

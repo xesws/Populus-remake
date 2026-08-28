@@ -611,6 +611,62 @@ export class World {
         if (d > r) continue;
         const i = this.idx(ix, iz);
         this.lava[i] = Math.max(this.lava[i]!, life);
+        // v0.18 播浆必留焦土（与 growRivers 一致）：seedLava 是地震等法术铺浆的唯一入口，
+        // 若不在此写 scorch，干涸后地面不会留下灰褐焦土。
+        this.scorch[i] = Math.max(this.scorch[i]!, 1.1);
+        this.markSample(ix, iz);
+      }
+    }
+  }
+
+  /**
+   * v0.18 火山高原（Agent V）：把半径 r 内地形抬到绝对高度 h（clamp 0~MAX_H）。
+   * 内 55% 区域精确抬到 h（顶部平坦），外圈 0.55r~r 环形带 smoothstep 过渡回原高
+   * （C1 连续、无断崖），环形带再做 1 轮盒式松弛圆角——内外圈手法与 flattenPad 同款。
+   * 逐帧以递增的 h 调用即可得到"隆起动画"；水面以下样本由 setSample 内部清 lava/swamp。
+   */
+  raisePlateau(x: number, z: number, r: number, h: number): void {
+    const target = clamp(h, 0, MAX_H);
+    const minIx = clamp(Math.floor((x - r) / STEP), 0, SAMPLES - 1);
+    const maxIx = clamp(Math.ceil((x + r) / STEP), 0, SAMPLES - 1);
+    const minIz = clamp(Math.floor((z - r) / STEP), 0, SAMPLES - 1);
+    const maxIz = clamp(Math.ceil((z + r) / STEP), 0, SAMPLES - 1);
+    for (let iz = minIz; iz <= maxIz; iz++) {
+      for (let ix = minIx; ix <= maxIx; ix++) {
+        const px = ix * STEP;
+        const pz = iz * STEP;
+        const d = Math.hypot(px - x, pz - z);
+        if (d > r) continue;
+        if (d <= r * 0.55) {
+          // 顶部精确区：直接设到 target（setSample 内含 clamp / 标脏 / 水面清 lava）。
+          this.setSample(ix, iz, target);
+          continue;
+        }
+        // 外圈缓坡：0.55r~r 带从 target 平滑过渡回原高（smoothstep 保证导数连续）。
+        const t = clamp((d - r * 0.55) / (r * 0.45), 0, 1);
+        const f = t * t * (3 - 2 * t);
+        const i = this.idx(ix, iz);
+        const nv = clamp(this.h[i]! + (target - this.h[i]!) * (1 - f), 0, MAX_H);
+        if (nv !== this.h[i]) {
+          this.h[i] = nv;
+          this.markSample(ix, iz);
+        }
+      }
+    }
+    // v0.18 环形带 1 轮盒式松弛：圆滑缓坡两端拐角（只写 0.55r~r 带，顶部保持精确平坦）。
+    for (let iz = minIz; iz <= maxIz; iz++) {
+      for (let ix = minIx; ix <= maxIx; ix++) {
+        const px = ix * STEP;
+        const pz = iz * STEP;
+        const d = Math.hypot(px - x, pz - z);
+        if (d <= r * 0.55 || d > r) continue;
+        const i = this.idx(ix, iz);
+        if (this.h[i]! <= WATER) continue;
+        let sum = 0;
+        for (let dz = -1; dz <= 1; dz++) {
+          for (let dx = -1; dx <= 1; dx++) sum += this.h[this.idx(ix + dx, iz + dz)]!;
+        }
+        this.h[i] = sum / 9;
         this.markSample(ix, iz);
       }
     }
@@ -668,7 +724,9 @@ export class World {
         if (this.lava[i] === 0) this.dirty = true;
       }
       if (this.scorch[i]! > 0) {
-        this.scorch[i] = Math.max(0, this.scorch[i]! - dt * 0.15);
+        // v0.18 焦土衰减 0.15→0.04/s：焦土是"岩浆干涸后的地面痕迹"，必须比岩浆本身活得久
+        // （旧速率 1.1 强度 7 秒就褪光，岩浆未干焦土先消失，观感不对）。
+        this.scorch[i] = Math.max(0, this.scorch[i]! - dt * 0.04);
         if (this.scorch[i] === 0) this.dirty = true;
       }
       if (this.swamp[i]! > 0) {

@@ -482,6 +482,13 @@ export class Game {
       } else this.view.hover(0, 0, false);
     }
 
+    // v0.18 雕刻指示器：选中 raise/lower 且鼠标在图内时，半透明脉动选框实时显示 3.0 格生效范围。
+    if ((this.tool === "raise" || this.tool === "lower") && cell && inMap(cell.x, cell.z)) {
+      this.view.updateSculptIndicator(this.tool, cell.x, cell.z, dt);
+    } else {
+      this.view.updateSculptIndicator("off", 0, 0, dt);
+    }
+
     maybeStartSculpt(this.input);
     if (this.running && !this.paused && !this.ended) {
       if (

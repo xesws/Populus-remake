@@ -110,6 +110,8 @@ export class Sim {
     t: number;
     life: number;
     houseT: number;
+    /** v0.18 入海转水龙卷标记（衰减漂移直至消散，不再反弹回陆） */
+    waterspout?: boolean;
   } | null = null;
   tornadoLift = false;
   tornadoLiftX = 0;
