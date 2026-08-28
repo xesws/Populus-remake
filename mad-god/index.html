@@ -1,0 +1,123 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>神也疯狂 · Mad God</title>
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'><rect fill='%231a2a18' width='64' height='64'/><path fill='%23c9a227' d='M32 6l6 14h16l-13 10 5 16-14-10-14 10 5-16-13-10h16z'/></svg>" />
+  </head>
+  <body>
+    <div id="app">
+      <canvas id="view"></canvas>
+      <div id="sel-box" hidden></div>
+      <div id="hud" hidden>
+        <header id="topbar">
+          <div class="brand">
+            <span class="brand-zh">神也疯狂</span>
+            <span class="brand-en">MAD GOD</span>
+          </div>
+          <div id="status">
+            <div class="stat">
+              <label>法力 MANA</label>
+              <div class="bar"><i id="mana-fill"></i></div>
+              <b id="mana-text">0 / 0</b>
+            </div>
+            <div class="stat nums">
+              <span>子民 <b id="pop-blue">0</b></span>
+              <span>屋宇 <b id="houses-blue">0</b></span>
+              <span>士兵 <b id="war-blue">0</b></span>
+              <span>木 <b id="wood-blue">0</b></span>
+              <span>武 <b id="split-war">0</b> 传 <b id="split-preach">0</b> 火 <b id="split-fire">0</b> 谍 <b id="split-spy">0</b></span>
+            </div>
+          </div>
+          <button id="btn-pause" type="button" title="暂停">暂停</button>
+          <div id="enemy-chip">
+            <span>敌神</span>
+            <b id="pop-red">0</b> 民
+            <b id="houses-red">0</b> 屋
+          </div>
+        </header>
+
+        <aside id="palette">
+          <section>
+            <h3>建筑</h3>
+            <div class="icons">
+              <button type="button" data-build="hut" title="茅屋" aria-label="茅屋"><i class="ico hut"></i></button>
+              <button type="button" data-build="warriorHut" title="武士营" aria-label="武士营"><i class="ico camp"></i></button>
+              <button type="button" data-build="temple" title="神庙" aria-label="神庙"><i class="ico temple"></i></button>
+              <button type="button" data-build="fireHut" title="火战士营" aria-label="火战士营"><i class="ico fire"></i></button>
+              <button type="button" data-build="spyHut" title="间谍营" aria-label="间谍营"><i class="ico spy"></i></button>
+            </div>
+          </section>
+          <section>
+            <h3>神迹</h3>
+            <div class="icons">
+              <button type="button" data-tool="raise" title="提升" aria-label="提升"><i class="ico raise"></i></button>
+              <button type="button" data-tool="lower" title="降低" aria-label="降低"><i class="ico lower"></i></button>
+              <button type="button" data-tool="lightning" title="闪电" aria-label="闪电"><i class="ico bolt"></i></button>
+              <button type="button" data-tool="quake" title="地震" aria-label="地震" disabled><i class="ico quake"></i></button>
+              <button type="button" data-tool="swamp" title="沼泽" aria-label="沼泽" disabled><i class="ico swamp"></i></button>
+              <button type="button" data-tool="volcano" title="火山" aria-label="火山" disabled><i class="ico volcano"></i></button>
+              <button type="button" data-tool="tornado" title="龙卷风" aria-label="龙卷风" disabled><i class="ico tornado"></i></button>
+              <button type="button" data-tool="blast" title="击飞" aria-label="击飞" disabled><i class="ico blast"></i></button>
+              <button type="button" data-tool="armageddon" title="末日" aria-label="末日" disabled><i class="ico doom"></i></button>
+            </div>
+          </section>
+          <section id="sel-commands">
+            <h3>训练</h3>
+            <div class="icons">
+              <button type="button" id="btn-warrior" title="训练武士" aria-label="训练武士"><i class="ico train-war"></i></button>
+              <button type="button" id="btn-preacher" title="训练传教士" aria-label="训练传教士"><i class="ico train-preach"></i></button>
+              <button type="button" id="btn-firewarrior" title="训练火战士" aria-label="训练火战士"><i class="ico train-fire"></i></button>
+              <button type="button" id="btn-spy" title="训练间谍" aria-label="训练间谍"><i class="ico train-spy"></i></button>
+            </div>
+            <h3>谕令</h3>
+            <div class="icons">
+              <button type="button" data-order="settle" class="on" title="定居" aria-label="定居"><i class="ico order-settle"></i></button>
+              <button type="button" data-order="gather" title="聚集" aria-label="聚集"><i class="ico order-gather"></i></button>
+              <button type="button" data-order="fight" title="战斗" aria-label="战斗"><i class="ico order-fight"></i></button>
+              <button type="button" data-order="shaman" title="到祭司" aria-label="到祭司"><i class="ico order-shaman"></i></button>
+            </div>
+          </section>
+        </aside>
+
+        <div id="minimap-wrap">
+          <canvas id="minimap" width="168" height="168"></canvas>
+          <span>全图 MINIMAP</span>
+        </div>
+
+        <div id="arma-banner" hidden>末日决战 · 神迹封闭</div>
+        <div id="pause-tag" hidden>暂停 PAUSED</div>
+        <div id="toast"></div>
+      </div>
+
+      <div id="overlay" class="screen">
+        <div class="tablet">
+          <p class="eyebrow">一座小岛 · 两位神明</p>
+          <h1>神也疯狂</h1>
+          <h2>MAD GOD</h2>
+          <p class="lead">
+            勇士砍树盖房、升级茅屋。点征召后走进训练营才变兵。法力随人口增长。
+            消灭敌神的全部子民与屋宇即胜。
+          </p>
+          <ul class="how">
+            <li>点右侧图标选建筑 / 神迹 / 训练 / 谕令，再左键点地图</li>
+            <li>左键点人或拖框选择 · 点空地取消 · 右键取消工具</li>
+            <li>方向键移镜头 · 滚轮缩放（建造时转朝向）· 中键旋转</li>
+          </ul>
+          <button id="btn-start" class="big">开始对峙 BEGIN</button>
+          <p class="fine">原创作品，向 1989 神游戏精神致敬。不含任何原作素材或商标。</p>
+        </div>
+      </div>
+
+      <div id="end" class="screen" hidden>
+        <div class="tablet">
+          <h1 id="end-title">胜利</h1>
+          <p id="end-msg"></p>
+          <button id="btn-again" class="big">再战一次 AGAIN</button>
+        </div>
+      </div>
+    </div>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>
