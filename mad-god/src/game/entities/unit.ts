@@ -17,6 +17,8 @@ export abstract class Unit extends BaseEntity {
   settleX = -1;
   settleZ = -1;
   settleYaw = 0;
+  moveX = -1;
+  moveZ = -1;
   channel = 0;
   channelId = 0;
   disguise: Team | null = null;

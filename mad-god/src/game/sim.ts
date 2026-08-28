@@ -475,14 +475,34 @@ export class Sim {
     return this.units.filter((u) => u.team === team && u.selected);
   }
 
+  private clearOrders(u: Unit): void {
+    u.foundKind = null;
+    u.targetId = 0;
+    u.atkId = 0;
+    u.channel = 0;
+    u.channelId = 0;
+    u.trainKind = null;
+    u.settleX = -1;
+    u.settleZ = -1;
+    u.moveX = -1;
+    u.moveZ = -1;
+  }
+
   sendMove(u: Unit, x: number, z: number): void {
-    if (u.hp <= 0 || u.job === "train") return;
+    if (u.hp <= 0) return;
+    if (u.job === "train") {
+      u.channel = 0;
+      u.channelId = 0;
+      u.targetId = 0;
+      u.trainKind = null;
+    }
+    this.clearOrders(u);
     const dest = this.world.walkableAt(x, z) ? { x, z } : nearestLand(this.world, x, z);
     if (!dest) return;
     u.job = "move";
+    u.moveX = dest.x;
+    u.moveZ = dest.z;
     u.think = 40;
-    u.settleX = -1;
-    u.settleZ = -1;
     u.path = astar(this.world, u.x, u.z, dest.x, dest.z);
     if (!u.path.length) u.path = [{ x: dest.x, z: dest.z }];
     u.pathI = 0;
@@ -496,12 +516,16 @@ export class Sim {
     if (b && b.team === team && b.hp > 0 && b.level >= 1 && b.kind === "hut") {
       let sent = 0;
       for (const u of selected) {
-        if (u.kind !== "walker" || u.homeId > 0) continue;
-        const door = this.hutDoor(b);
-        u.targetId = b.id;
-        u.atkId = 0;
-        this.sendMove(u, door.x, door.z);
-        sent++;
+        if (u.kind === "walker" && u.homeId === 0 && !this.inSwamp(u)) {
+          const door = this.hutDoor(b);
+          this.sendMove(u, door.x, door.z);
+          u.targetId = b.id;
+          u.atkId = 0;
+          sent++;
+        } else {
+          u.atkId = 0;
+          this.sendMove(u, x, z);
+        }
       }
       if (sent && team === BLUE) this.toast("前往入住");
       return;
@@ -554,6 +578,9 @@ export class Sim {
       u.job = "idle";
       return;
     }
+    const atkId = u.atkId;
+    this.clearOrders(u);
+    u.atkId = atkId;
     u.job = "move";
     u.path = astar(this.world, u.x, u.z, dest.x, dest.z);
     if (!u.path.length) u.path = [{ x: dest.x, z: dest.z }];
@@ -579,11 +606,11 @@ export class Sim {
     for (const u of selected) {
       if (u.job === "train" || u.homeId > 0 || u.hp <= 0) continue;
       u.order = "fight";
-      u.atkId = target.id;
       const dest = isB
         ? this.padEdge(target.x, target.z, target.padW, target.padD, target.yaw, u.x, u.z)
         : { x: target.x, z: target.z };
       this.sendMove(u, dest.x, dest.z);
+      u.atkId = target.id;
       u.think = 0.55;
       sent++;
     }
@@ -597,9 +624,9 @@ export class Sim {
       if (Math.hypot(u.x - edge.x, u.z - edge.z) < 0.45) {
         edge = this.padEdge(site.x, site.z, site.padW, site.padD, site.yaw, site.x - (u.x - site.x), site.z - (u.z - site.z));
       }
+      this.sendMove(u, edge.x, edge.z);
       u.targetId = site.id;
       u.atkId = 0;
-      this.sendMove(u, edge.x, edge.z);
     }
   }
 
@@ -615,8 +642,8 @@ export class Sim {
       if (u.homeId > 0) continue;
       if (u.kind !== "walker" && u.kind !== "shaman" && u.kind !== "spy") continue;
       if (u.job === "train") continue;
+      this.clearOrders(u);
       u.order = order;
-      u.atkId = 0;
       u.path = [];
       u.think = 0;
     }
@@ -683,7 +710,10 @@ export class Sim {
     u.path = [];
     u.pathI = 0;
     const site = this.findCampSite(u);
-    if (!site) return;
+    if (!site) {
+      u.foundKind = null;
+      return;
+    }
     u.settleX = site.x;
     u.settleZ = site.z;
     const made = this.foundSite(u.team as Team, site.x, site.z, u.settleYaw, campKind);
@@ -785,8 +815,11 @@ export class Sim {
           if (!u.path.length || u.think <= 0) this.chaseAttack(u);
           continue;
         }
-        if (!u.path.length) u.job = "idle";
-        else continue;
+        if (!u.path.length) {
+          u.job = "idle";
+          u.moveX = -1;
+          u.moveZ = -1;
+        } else continue;
       }
       if (u.kind === "walker" && this.advanceWalker(u, dt)) {
         u.path = [];
@@ -1085,7 +1118,7 @@ export class Sim {
       }
     }
 
-    const wantCamp = u.foundKind;
+    const wantCamp = u.foundKind && u.moveX < 0 && u.job === "idle" ? u.foundKind : null;
     if (wantCamp && this.mayFoundCamp(u, wantCamp)) {
       let site: Cell | null = null;
       if (u.settleX >= 0 && this.tryPrepFound(u.settleX, u.settleZ, u.settleYaw)) site = { x: u.settleX, z: u.settleZ };
