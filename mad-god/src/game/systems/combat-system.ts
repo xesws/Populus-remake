@@ -35,9 +35,29 @@ import type { ISystem } from "./system";
 import { logger } from "../logger";
 
 export class CombatSystem implements ISystem {
+  /** v0.23 高频索敌节流计时：每 0.25s 一轮全量扫描。 */
+  private acquireAcc = 0;
+
   update(sim: Sim, dt: number): void {
     this.combat(sim, dt);
     this.projectiles(sim, dt);
+  }
+
+  /**
+   * v0.23 索敌独立高频化（修"感觉没有自动攻击"的根源）：
+   * acquireTarget 原来只挂在 repath 里，而单位走路时（path 非空 / job=move）不进 repath——
+   * 索敌完全停摆。现在每 0.25s 对全部单位扫一轮：**任何状态、边走边锁**。
+   * 豁免：玩家/系统移动令（job=move）与训练态仍优先（v0.8 语义——否则单位永远到不了目的地）。
+   * 注意挂在 combat() 开头：sim.tick 走 sim.combat → 本方法，不走 update()。
+   */
+  private acquirePass(sim: Sim, dt: number): void {
+    this.acquireAcc += dt;
+    if (this.acquireAcc < 0.25) return;
+    this.acquireAcc = 0;
+    for (const u of sim.units) {
+      if (u.job === "move" || u.job === "train") continue;
+      this.acquireTarget(sim, u); // 内部自带 atkId/在屋/倒地/腾空/非士兵守卫
+    }
   }
 
   hurtBuilding(sim: Sim, b: Building, dmg: number): void {
@@ -45,6 +65,7 @@ export class CombatSystem implements ISystem {
   }
 
   combat(sim: Sim, dt: number): void {
+    this.acquirePass(sim, dt); // v0.23 任何状态的高频索敌
     for (const u of sim.units) {
       if (!isTribe(u.team) || u.hp <= 0 || u.homeId > 0) continue;
       if (u.atkCd > 0) u.atkCd = Math.max(0, u.atkCd - dt);

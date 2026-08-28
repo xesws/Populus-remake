@@ -33,16 +33,63 @@ function testWarriorSight10(): void {
     const sim = new Sim(new World(42));
     const at = findClear(sim, 20, 20);
     const warrior = sim.addUnit(BLUE, "warrior", at.x, at.z);
-    const foe = sim.addUnit(RED, foeKind, at.x + 8, at.z); // 旧 sight 3.5 外、新 10 步内
+    const foe = sim.addUnit(RED, foeKind, at.x + 12, at.z); // v0.23 索敌 13 步内
     for (let i = 0; i < 100 && warrior.atkId === 0; i++) sim.tick(0.05);
-    assert(warrior.atkId === foe.id, `武士 10 步内自动锁定敌方${foeKind === "shaman" ? "大祭司" : "村民"}`);
+    assert(warrior.atkId === foe.id, `武士 13 步内自动锁定敌方${foeKind === "shaman" ? "大祭司" : "村民"}`);
   }
   console.log("testWarriorSight10 ok");
 }
 
+/** v0.23 核心回归：走路中（settle 路径非空）也要索敌——旧实现只在 repath 索敌，行走时完全失明。 */
+function testMovingUnitAcquires(): void {
+  const sim = new Sim(new World(42));
+  sim.lockWin = true;
+  const at = findClear(sim, 24, 24, 15);
+  const warrior = sim.addUnit(BLUE, "warrior", at.x, at.z);
+  // 用 AI 同款 sendMove 制造"明确移动令"外的走路状态：settle 单位带长路径行军（job=idle、path 非空）。
+  warrior.order = "settle";
+  warrior.path = [{ x: at.x + 8, z: at.z }, { x: at.x + 10, z: at.z }];
+  warrior.pathI = 0;
+  warrior.think = 30; // 行军中：think>0 且 path 非空 → 旧实现会 continue 跳过 repath（索敌失明）
+  const foe = sim.addUnit(RED, "walker", at.x + 6, at.z + 1); // 6 格，任何版本 sight 内
+  for (let i = 0; i < 40 && warrior.atkId === 0; i++) sim.tick(0.05); // 2s：高频扫描应远早于此
+  assert(warrior.atkId === foe.id, "走路中的武士也会自动锁敌（任何状态皆索敌）");
+  console.log("testMovingUnitAcquires ok");
+}
+
+/** v0.23 豁免回归：玩家/系统明确移动令（job=move）途中不被索敌打断——否则永远到不了目的地。 */
+function testMoveOrderExempt(): void {
+  const sim = new Sim(new World(42));
+  sim.lockWin = true;
+  const at = findClear(sim, 24, 24, 15);
+  const warrior = sim.addUnit(BLUE, "warrior", at.x, at.z);
+  sim.sendMove(warrior, at.x + 9, at.z); // 玩家式移动令：job=move
+  const foe = sim.addUnit(RED, "walker", at.x + 5, at.z + 1); // 途中 5 格处
+  const foeHome = { x: foe.x, z: foe.z };
+  for (let i = 0; i < 40; i++) {
+    sim.tick(0.05);
+    foe.x = foeHome.x; // 钉住敌人：红方村民自主游荡会随机走出索敌圈（flake 源）
+    foe.z = foeHome.z;
+  }
+  assert(warrior.job === "move" && warrior.atkId === 0, "移动令途中不被索敌打断");
+  // 到达后（job 回 idle）应恢复索敌。
+  for (let i = 0; i < 240 && warrior.atkId === 0; i++) {
+    sim.tick(0.05);
+    if (foe.hp > 0) {
+      foe.x = foeHome.x;
+      foe.z = foeHome.z;
+    }
+  }
+  assert(warrior.atkId !== 0, "抵达后恢复自动索敌");
+  console.log("testMoveOrderExempt ok");
+}
+
 function testWarriorIgnoresBuildings(): void {
   const sim = new Sim(new World(42));
-  const at = findClear(sim, 24, 24, 13); // 13 格净空：确保 sight 内除测试建筑外无任何单位
+  sim.lockWin = true;
+  // 清红方单位：断言"atkId===0"要求全程无敌——红方村民 18 格游荡半径随时可能闯进 sight（净空挡不住）。
+  sim.units = sim.units.filter((u) => u.team !== RED);
+  const at = findClear(sim, 24, 24);
   const warrior = sim.addUnit(BLUE, "warrior", at.x, at.z);
   // 敌方茅屋 4 格内（placeComplete 带地基——直接挪坐标会被 refreshHouses 判无地基而摧毁）、无敌方单位：
   const hut = sim.placeComplete(RED, at.x + 4, at.z, 0, "hut", 1)!;
@@ -54,9 +101,11 @@ function testWarriorIgnoresBuildings(): void {
 
 function testFirewarriorAutoAttacksBuildings(): void {
   const sim = new Sim(new World(42));
-  const at = findClear(sim, 24, 24, 13); // 13 格净空：firewarrior sight 5.5，确保只看得见测试建筑
+  sim.lockWin = true;
+  sim.units = sim.units.filter((u) => u.team !== RED); // 清红方：确保锁到的只能是测试建筑
+  const at = findClear(sim, 24, 24);
   const fire = sim.addUnit(BLUE, "firewarrior", at.x, at.z);
-  const hut = sim.placeComplete(RED, at.x + 4.5, at.z, 0, "hut", 1)!; // sight 5.5 内、无敌方单位
+  const hut = sim.placeComplete(RED, at.x + 7, at.z, 0, "hut", 1)!; // v0.23 sight 8 内、无敌方单位
   for (let i = 0; i < 100 && fire.atkId === 0; i++) sim.tick(0.05);
   assert(fire.atkId === hut.id, "牛头人自动锁定射程内敌方建筑（自动拆家）");
   console.log("testFirewarriorAutoAttacksBuildings ok");
@@ -151,6 +200,8 @@ function testGatherFormation(): void {
 }
 
 testWarriorSight10();
+testMovingUnitAcquires();
+testMoveOrderExempt();
 testWarriorIgnoresBuildings();
 testFirewarriorAutoAttacksBuildings();
 testSpyAutoAttacks();
