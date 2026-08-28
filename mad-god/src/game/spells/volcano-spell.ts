@@ -55,7 +55,7 @@ export class VolcanoSpell extends Spell {
     if (v) {
       v.t += dt;
       if (v.t <= v.dur) {
-        // v0.18 渐进抬升：目标高度逐帧逼近「原高+2.6」，形成隆起动画；6.5 格宽平顶缓坡高原。
+        // v0.20 渐进抬升 + 随机隆起：raisePlateau 顶面带按格固定噪声（起伏沟壑）+ 边缘半径不规则。
         const prog = Math.min(1, v.t / v.dur);
         sim.world.raisePlateau(v.x, v.z, 6.5, this.liftBase + 2.6 * prog);
       }
@@ -73,15 +73,23 @@ export class VolcanoSpell extends Spell {
   }
 
   /**
-   * v0.18b 源头注入：喷发窗口（t 0.8 ~ dur+2.4 ≈ 5s）内从火山口持续涌浆，
-   * 节奏为"起喷渐起 → 主喷期最猛 → 尾期衰减"——越喷越多全靠注入累积，不是一次成型。
+   * v0.18b 源头注入 + v0.20 涌浆点随机化：喷发窗口（t 0.8 ~ dur+2.4 ≈ 5s）内
+   **每帧从火山口周围随机裂隙涌出**（注入点 ±1.6 格随机游走 + 注入半径随机），
+   * 节奏"起喷渐起 → 主喷最猛 → 尾期衰减"——范围随机、不再只灌中心一点。
    */
   private erupt(sim: Sim, v: { x: number; z: number; t: number; dur: number }, dt: number): void {
     const win = v.dur + 2.4 - 0.8;
     const et = Math.min(1, (v.t - 0.8) / win); // 0..1
     const rampUp = Math.min(1, et / 0.12); // 起喷渐起（前 12% 窗口）
-    const rate = 20 * rampUp * (1 - et * 0.55); // 主喷 ~20/s，尾期衰减到 ~9/s（总量控制在洼地积池可承受范围）
-    sim.world.pourLava(v.x, v.z, 0.9, rate * dt);
+    const rate = 24 * rampUp * (1 - et * 0.55); // 主喷 ~24/s，尾期衰减（总量控制在洼地积池可承受范围）
+    const ang = Math.random() * Math.PI * 2;
+    const rr = Math.random() * 1.6;
+    sim.world.pourLava(
+      v.x + Math.cos(ang) * rr,
+      v.z + Math.sin(ang) * rr,
+      0.8 + Math.random() * 0.5,
+      rate * dt,
+    );
   }
 
   /** v0.18 焦土加深：lava 活跃期间把 scorch 刷到 2.2，干涸后灰褐焦土还能残留 ~15s（而非几秒）。 */

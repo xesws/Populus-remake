@@ -57,6 +57,14 @@ export const LAVA_FLOW_MIN = 0.5;
 export const LAVA_SPREAD_AT = 3.0;
 /** 单格岩浆厚度上限：超出部分转移/注入时蒸发（厚浆散热快），防洼地积出烧不完的深池 */
 export const LAVA_MAX_DEPTH = 12;
+/** v0.20 火山隆起的顶面噪声幅度（±）：顶面起伏出沟壑，岩浆才有坡可流 */
+export const PLATEAU_NOISE_H = 1.1;
+
+/** 确定性格噪声：sin 哈希到 0~1（按格固定，逐帧调用不变——隆起动画才能一致收敛）。 */
+export function hash01(x: number, z: number): number {
+  const s = Math.sin(x * 12.9898 + z * 78.233) * 43758.5453;
+  return s - Math.floor(s);
+}
 
 export interface TreeBlock {
   x: number;
@@ -632,9 +640,10 @@ export class World {
 
   /**
    * v0.18 火山高原（Agent V）：把半径 r 内地形抬到绝对高度 h（clamp 0~MAX_H）。
-   * 内 55% 区域精确抬到 h（顶部平坦），外圈 0.55r~r 环形带 smoothstep 过渡回原高
-   * （C1 连续、无断崖），环形带再做 1 轮盒式松弛圆角——内外圈手法与 flattenPad 同款。
-   * 逐帧以递增的 h 调用即可得到"隆起动画"；水面以下样本由 setSample 内部清 lava/swamp。
+   * v0.20 随机化隆起：顶面不再精确平坦——加**按格固定**的确定性噪声（格坐标哈希，
+   * 逐帧调用噪声不变，隆起动画才能一致收敛），顶高 ±PLATEAU_NOISE_H 起伏、
+   * 边缘半径 ±18% 不规则——山顶有沟壑坡度，岩浆才有路可流（用户反馈"标准高原导致岩浆不流动"）。
+   * 外圈过渡带 smoothstep + 1 轮盒式松弛照旧；水面以下样本由 setSample 内部清 lava/swamp。
    */
   raisePlateau(x: number, z: number, r: number, h: number): void {
     const target = clamp(h, 0, MAX_H);
@@ -647,30 +656,37 @@ export class World {
         const px = ix * STEP;
         const pz = iz * STEP;
         const d = Math.hypot(px - x, pz - z);
-        if (d > r) continue;
-        if (d <= r * 0.55) {
-          // 顶部精确区：直接设到 target（setSample 内含 clamp / 标脏 / 水面清 lava）。
-          this.setSample(ix, iz, target);
+        // v0.20 按格固定噪声：半径 ±18%（边缘犬牙交错）、顶高 ±0.55（沟壑起伏）。
+        const rn = hash01(ix * 3.7 + 11.1, iz * 7.3 + 5.9) - 0.5;
+        const hn = hash01(ix * 12.9898, iz * 78.233) - 0.5;
+        const rEff = r * (1 + rn * 0.36);
+        if (d > rEff) continue;
+        if (d <= rEff * 0.55) {
+          // 顶面：目标高度带起伏（setSample 内含 clamp / 标脏 / 水面清 lava）。
+          this.setSample(ix, iz, target + hn * PLATEAU_NOISE_H);
           continue;
         }
-        // 外圈缓坡：0.55r~r 带从 target 平滑过渡回原高（smoothstep 保证导数连续）。
-        const t = clamp((d - r * 0.55) / (r * 0.45), 0, 1);
+        // 外圈缓坡：0.55rEff~rEff 带从起伏后的顶面平滑过渡回原高（smoothstep 保证导数连续）。
+        const t = clamp((d - rEff * 0.55) / (rEff * 0.45), 0, 1);
         const f = t * t * (3 - 2 * t);
         const i = this.idx(ix, iz);
-        const nv = clamp(this.h[i]! + (target - this.h[i]!) * (1 - f), 0, MAX_H);
+        const top = target + hn * PLATEAU_NOISE_H;
+        const nv = clamp(this.h[i]! + (top - this.h[i]!) * (1 - f), 0, MAX_H);
         if (nv !== this.h[i]) {
           this.h[i] = nv;
           this.markSample(ix, iz);
         }
       }
     }
-    // v0.18 环形带 1 轮盒式松弛：圆滑缓坡两端拐角（只写 0.55r~r 带，顶部保持精确平坦）。
+    // v0.18 环形带 1 轮盒式松弛：圆滑缓坡两端拐角（只写过渡带，顶面保持起伏不被抹平）。
     for (let iz = minIz; iz <= maxIz; iz++) {
       for (let ix = minIx; ix <= maxIx; ix++) {
         const px = ix * STEP;
         const pz = iz * STEP;
         const d = Math.hypot(px - x, pz - z);
-        if (d <= r * 0.55 || d > r) continue;
+        const rn = hash01(ix * 3.7 + 11.1, iz * 7.3 + 5.9) - 0.5;
+        const rEff = r * (1 + rn * 0.36);
+        if (d <= rEff * 0.55 || d > rEff) continue;
         const i = this.idx(ix, iz);
         if (this.h[i]! <= WATER) continue;
         let sum = 0;

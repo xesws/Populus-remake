@@ -77,10 +77,11 @@ function testPlateauShape(): void {
     if (h < lo) lo = h;
     if (h > hi) hi = h;
   }
-  assert(hi - lo < 0.35, `高原顶部平坦（中心极差 ${(hi - lo).toFixed(3)} < 0.35）`);
+  // v0.20 随机隆起：顶面必须**有起伏**（沟壑坡度，岩浆才有路可流），不再是标准平顶高原。
+  assert(hi - lo >= 0.3, `顶面随机起伏（中心极差 ${(hi - lo).toFixed(2)} ≥ 0.3，非平整高原）`);
   assert(
-    Math.abs(w.heightAt(VX, VZ) - Math.min(h0 + 2.6, 8)) < 0.4,
-    `中心抬升约 2.6（期望 ${(h0 + 2.6).toFixed(2)}，实际 ${w.heightAt(VX, VZ).toFixed(2)}）`,
+    Math.abs(w.heightAt(VX, VZ) - Math.min(h0 + 2.6, 8)) < 0.9,
+    `中心抬升约 2.6（期望 ${(h0 + 2.6).toFixed(2)}，实际 ${w.heightAt(VX, VZ).toFixed(2)}，含 ±0.55 顶面噪声）`,
   );
   assert(Math.abs(w.heightAt(far.x, far.z) - hFar0) < 0.15, "8 格外远处地形不变");
 
@@ -110,8 +111,8 @@ function testLavaLifecycle(): void {
   const cells = lavaCount(sim.world);
   assert(cells < 1400, `覆盖为舌状而非满盘（${cells} 格 < 1400）`);
 
-  for (let i = 0; i < 260; i++) sim.tick(0.05); // 累计至 21s（实测 ~15s 干：喷发 5s + 消退 10s）
-  assert(lavaCount(sim.world) === 0, "tick 21 秒后岩浆全部干涸（lava 全 0）");
+  for (let i = 0; i < 500; i++) sim.tick(0.05); // 累计至 29s（v0.20 随机涌浆后实测 ~19s 干）
+  assert(lavaCount(sim.world) === 0, "tick 29 秒后岩浆全部干涸（lava 全 0）");
   assert(scorchCount(sim.world) > 0, "干涸后仍有焦土残留（scorch>0）");
 
   console.log("testLavaLifecycle ok");
