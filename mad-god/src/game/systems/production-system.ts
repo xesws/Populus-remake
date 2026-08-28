@@ -1,4 +1,19 @@
-import { BLUE, clamp, houseHp, houseMaxPop, isCampKind, isTribe, padSize, Team, Unit, Building, WATER, woodNeedFor } from "../types";
+import {
+  BLUE,
+  clamp,
+  houseBaseRate,
+  houseHp,
+  houseMaxPop,
+  HOUSE_DWELL_BONUS,
+  isCampKind,
+  isTribe,
+  padSize,
+  Team,
+  Unit,
+  Building,
+  WATER,
+  woodNeedFor,
+} from "../types";
 import type { Sim } from "../sim";
 import type { ISystem } from "./system";
 
@@ -72,7 +87,8 @@ export class ProductionSystem implements ISystem {
       if (b.dwell <= 0) continue;
       if (b.dwell >= houseMaxPop(b.level)) continue;
       if (sim.countPop(b.team) >= sim.popCap(b.team)) continue;
-      const rate = b.level === 3 ? 0.28 : b.level === 2 ? 0.18 : b.dwell >= 2 ? 0.14 : 0.1;
+      // v0.11 速率 = 基础(等级) × (1 + 0.12 × (dwell − 1))：进驻村民越多生产越快。
+      const rate = houseBaseRate(b.level) * (1 + HOUSE_DWELL_BONUS * (b.dwell - 1));
       b.prod += rate * dt;
       if (b.prod >= 1) {
         const spot = sim.hutDoor(b);

@@ -1463,12 +1463,29 @@ export class Sim {
         this.teams[u.team].shamanRevive = 8;
         this.toast(u.team === BLUE ? "祭司陨落，将在再生点归来" : "敌方祭司陨落");
       }
+      // v0.11 修复：住户死亡时释放房屋名额，避免 dwell 只增不减卡死生产。
+      if (u.homeId > 0) {
+        const home = this.buildings.find((b) => b.id === u.homeId);
+        if (home) home.dwell = Math.max(0, home.dwell - 1);
+      }
     }
     this.units = this.units.filter((u) => u.hp > 0);
     const wrecked = this.buildings.filter((b) => b.hp <= 0);
     if (wrecked.length) {
       for (const b of wrecked) {
         if (b.team === BLUE && (b.kind === "hut" || isCampKind(b.kind))) this.toast("一座屋宇被毁");
+        // v0.11 修复：房屋被毁时住户迁出，避免 homeId 悬空导致单位永久消失。
+        for (const u of this.units) {
+          if (u.homeId !== b.id) continue;
+          u.homeId = 0;
+          u.enterT = 0;
+          u.job = "idle";
+          u.think = 0;
+          const spot = this.spawnNear(b) ?? { x: b.x + 0.6, z: b.z + 1.2 };
+          u.x = spot.x;
+          u.z = spot.z;
+          u.y = this.world.heightAt(u.x, u.z);
+        }
       }
     }
     this.buildings = this.buildings.filter((b) => b.hp > 0);

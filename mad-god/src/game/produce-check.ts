@@ -1,5 +1,5 @@
 import { Sim } from "./sim";
-import { BLUE, houseHp, houseMaxPop, Tree, woodNeedFor } from "./types";
+import { BLUE, houseBaseRate, houseHp, houseMaxPop, HOUSE_DWELL_BONUS, Tree, Unit, woodNeedFor } from "./types";
 import { World } from "./world";
 
 function assert(cond: boolean, msg: string): void {
@@ -167,12 +167,98 @@ function testProductionAndUpgrade(): void {
   console.log("testProductionAndUpgrade ok");
 }
 
+// v0.11 生产系统：速率随 dwell 连续加速、L3 上限 10、住户死亡/房屋被毁的名额释放。
+
+function testProductionRateScalesWithDwell(): void {
+  const sim = new Sim(new World(42));
+  // 多放一座茅屋保证 popCap 有余量（同 testProductionAndUpgrade 手法）
+  const s = sim.world.startPad(BLUE);
+  sim.placeComplete(BLUE, s.x + 8, s.z + 8, s.yaw, "hut", 1);
+
+  const hut = sim.buildings.find((b) => b.team === BLUE && b.kind === "hut" && b.level === 1)!;
+  hut.level = 2; // L2 上限 5，可观察 dwell 1~4 的连续加速
+
+  hut.dwell = 1;
+  hut.prod = 0;
+  sim.productionSystem.produce(sim, 1.0);
+  const base = houseBaseRate(2);
+  assert(Math.abs(hut.prod - base) < 1e-6, `dwell=1 时按基础速率生产（${hut.prod.toFixed(4)} ≈ ${base}）`);
+
+  hut.dwell = 3;
+  hut.prod = 0;
+  sim.productionSystem.produce(sim, 1.0);
+  const boosted = base * (1 + HOUSE_DWELL_BONUS * 2);
+  assert(Math.abs(hut.prod - boosted) < 1e-6, `dwell=3 加速生产（${hut.prod.toFixed(4)} ≈ ${boosted.toFixed(4)}）`);
+
+  hut.dwell = 5; // L2 满员
+  hut.prod = 0;
+  sim.productionSystem.produce(sim, 1.0);
+  assert(hut.prod === 0, "满员房屋停止生产");
+  hut.level = 1;
+
+  console.log("testProductionRateScalesWithDwell ok");
+}
+
+function testL3CapTen(): void {
+  assert(houseMaxPop(3) === 10, "L3 house max pop is 10");
+  const sim = new Sim(new World(42));
+  const hut = sim.buildings.find((b) => b.team === BLUE && b.kind === "hut" && b.level === 1)!;
+  hut.level = 3;
+  const walkers: Unit[] = [];
+  for (let i = 0; i < 11; i++) walkers.push(sim.addUnit(BLUE, "walker", hut.x + 1, hut.z + 1));
+  for (let i = 0; i < 10; i++) {
+    assert(sim.occupy(walkers[i]!, hut), `第 ${i + 1} 名村民入住 L3`);
+  }
+  assert(hut.dwell === 10, "dwell 达到 10");
+  assert(!sim.occupy(walkers[10]!, hut), "第 11 名村民被拒（L3 上限 10）");
+  hut.level = 1;
+
+  console.log("testL3CapTen ok");
+}
+
+function testDwellReleasedOnDeath(): void {
+  const sim = new Sim(new World(42));
+  const hut = sim.buildings.find((b) => b.team === BLUE && b.kind === "hut" && b.level === 1)!;
+  const w1 = sim.addUnit(BLUE, "walker", hut.x + 1, hut.z + 1);
+  const w2 = sim.addUnit(BLUE, "walker", hut.x - 1, hut.z + 1);
+  assert(sim.occupy(w1, hut) && sim.occupy(w2, hut), "两名村民入住");
+  assert(hut.dwell === 2, "dwell = 2");
+
+  w2.hp = 0;
+  sim.tick(0.05);
+  assert(hut.dwell === 1, "住户死亡释放房屋名额（修复 dwell 泄漏）");
+  assert(!sim.units.includes(w2), "死亡单位已被清理");
+
+  console.log("testDwellReleasedOnDeath ok");
+}
+
+function testHouseDestroyedReleasesDwellers(): void {
+  const sim = new Sim(new World(42));
+  const hut = sim.buildings.find((b) => b.team === BLUE && b.kind === "hut" && b.level === 1)!;
+  const w = sim.addUnit(BLUE, "walker", hut.x + 1, hut.z + 1);
+  assert(sim.occupy(w, hut), "村民入住");
+  assert(w.homeId === hut.id, "homeId 已绑定");
+
+  hut.hp = 0;
+  sim.tick(0.05);
+  assert(!sim.buildings.includes(hut), "房屋被摧毁移除");
+  assert(w.hp > 0 && w.homeId === 0, "住户迁出且存活（修复 homeId 悬空）");
+  assert(Math.hypot(w.x - hut.x, w.z - hut.z) < 8, "住户被安置在原房屋附近");
+  assert(w.enterT === 0, "进门动画复位");
+
+  console.log("testHouseDestroyedReleasesDwellers ok");
+}
+
 function main(): void {
   testWoodChoppingAndDelivery();
   testCampSiteDelivery();
   testHutOccupancy();
   testProductionAndUpgrade();
-  console.log("produce-check ok");
+  testProductionRateScalesWithDwell();
+  testL3CapTen();
+  testDwellReleasedOnDeath();
+  testHouseDestroyedReleasesDwellers();
+  console.log("produce-check ok (v0.11 生产速率/上限/名额释放)");
 }
 
 main();

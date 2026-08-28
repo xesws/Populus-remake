@@ -9,6 +9,8 @@ Vite plus TypeScript plus Three.js. Default port 5173.
 Blue deity versus red AI on one grassy island with water.
 Raise and lower land. Flat 3x3 hut, 5x5 house, 7x7 castle.
 Walkers settle empty flats and may merge. Mana from people and homes.
+Houses hold 2/5/10 residents by level; more residents breed faster,
+with a green progress bar over producing huts.
 Units have attack, armor, attack interval and counter stats; melee hits
 are cooldown-gated single strikes (see design/COMBAT.md).
 Train warriors with T, preachers with Y, firewarriors with G, spies with H.

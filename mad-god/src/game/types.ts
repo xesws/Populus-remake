@@ -301,8 +301,15 @@ export function houseHp(level: number): number {
 }
 
 export function houseMaxPop(level: number): number {
-  return level === 3 ? 8 : level === 2 ? 5 : 2;
+  return level === 3 ? 10 : level === 2 ? 5 : 2;
 }
+
+// v0.11 生产速率：基础速率按等级，且每多一名住户加速（dwell=1 时即基础速率）。
+export function houseBaseRate(level: number): number {
+  return level === 3 ? 0.28 : level === 2 ? 0.18 : 0.1;
+}
+
+export const HOUSE_DWELL_BONUS = 0.12;
 
 export function snapYaw(yaw: number): number {
   const step = Math.PI / 4;

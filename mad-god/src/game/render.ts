@@ -46,6 +46,7 @@ export class View {
   unitGroup = new THREE.Group();
   houseGroup = new THREE.Group();
   trainBarGroup = new THREE.Group();
+  prodBarGroup = new THREE.Group();
   roofIconGroup = new THREE.Group();
   dwellPipGroup = new THREE.Group();
   treeGroup = new THREE.Group();
@@ -109,6 +110,7 @@ export class View {
   unitMeshes = new Map<number, THREE.Group>();
   houseMeshes = new Map<number, THREE.Group>();
   trainBars = new Map<number, THREE.Group>();
+  prodBars = new Map<number, THREE.Group>();
   roofIcons = new Map<number, THREE.Group>();
   dwellPips = new Map<number, THREE.Group>();
   treeMeshes = new Map<number, THREE.Group>();
@@ -116,6 +118,8 @@ export class View {
   trainBarTrackMat = new THREE.MeshLambertMaterial({ color: 0x16161c });
   trainBarFillMat = new THREE.MeshLambertMaterial({ color: this.teamPrimary(BLUE) });
   trainBarMarkMat = new THREE.MeshBasicMaterial({ color: 0x5aa0ee });
+  prodBarTrackMat = new THREE.MeshLambertMaterial({ color: 0x16161c });
+  prodBarFillMat = new THREE.MeshLambertMaterial({ color: 0x3f9d4f });
 
   constructor(canvas: HTMLCanvasElement, world: World) {
     this.world = world;
@@ -169,6 +173,7 @@ export class View {
       this.unitGroup,
       this.houseGroup,
       this.trainBarGroup,
+      this.prodBarGroup,
       this.roofIconGroup,
       this.dwellPipGroup,
       this.treeGroup,
@@ -521,6 +526,7 @@ export class View {
     this.syncUnits(sim);
     this.syncHouses(sim);
     this.syncTrainBars(sim);
+    this.syncProdBars(sim);
     this.syncRoofIcons(sim);
     this.syncDwellPips(sim);
     this.syncTrees(sim);
@@ -915,6 +921,51 @@ export class View {
       if (!live.has(id)) {
         this.trainBarGroup.remove(g);
         this.trainBars.delete(id);
+      }
+    }
+  }
+
+  makeProdBar(): THREE.Group {
+    const g = new THREE.Group();
+    const track = new THREE.Mesh(new THREE.BoxGeometry(1.2, 0.12, 0.1), this.prodBarTrackMat);
+    track.name = "track";
+    g.add(track);
+    const fill = new THREE.Mesh(new THREE.BoxGeometry(1.2, 0.1, 0.12), this.prodBarFillMat);
+    fill.name = "fill";
+    fill.position.y = 0.01;
+    g.add(fill);
+    return g;
+  }
+
+  /** v0.11 房屋生产进度条：蓝方有人住且未满员的茅屋头顶显示 b.prod [0,1) 生产进度。 */
+  syncProdBars(sim: Sim): void {
+    const live = new Set<number>();
+    for (const b of sim.buildings) {
+      if (b.kind !== "hut" || b.team !== BLUE || b.hp <= 0 || b.level < 1) continue;
+      if (b.dwell <= 0 || b.dwell >= houseMaxPop(b.level)) continue;
+      live.add(b.id);
+      let g = this.prodBars.get(b.id);
+      if (!g) {
+        g = this.makeProdBar();
+        this.prodBars.set(b.id, g);
+        this.prodBarGroup.add(g);
+      }
+      const t = clamp(b.prod, 0, 1);
+      g.visible = t > 0.001;
+      if (!g.visible) continue;
+      const roofY = b.level >= 3 ? 2.55 : b.level === 2 ? 2.05 : 1.45;
+      g.position.set(b.x, b.y + roofY + 0.35, b.z);
+      const dx = this.camera.position.x - g.position.x;
+      const dz = this.camera.position.z - g.position.z;
+      g.rotation.y = Math.atan2(dx, dz);
+      const fill = g.getObjectByName("fill") as THREE.Mesh;
+      fill.scale.x = Math.max(0.001, t);
+      fill.position.x = (t - 1) * 0.6;
+    }
+    for (const [id, g] of this.prodBars) {
+      if (!live.has(id)) {
+        this.prodBarGroup.remove(g);
+        this.prodBars.delete(id);
       }
     }
   }
