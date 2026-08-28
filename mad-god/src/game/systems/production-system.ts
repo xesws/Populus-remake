@@ -124,7 +124,9 @@ export class ProductionSystem implements ISystem {
         // v0.11c 新生儿走出屋子成为自由村民（v0.11b 的"出生即占位"会锁死经济，已回退）。
         const baby = sim.addUnit(b.team, "walker", spot.x, spot.z);
         baby.homeId = 0;
-        const out = sim.padLocalToWorld(b, 0, b.padD / 2 + 2.0);
+        // v0.17 出生散开：出屋目标加随机偏移，避免新生儿在同一点扎堆被 mergeWalkers 合并吞掉（人口不升反降）。
+        let out = sim.padLocalToWorld(b, (Math.random() - 0.5) * 3.0, b.padD / 2 + 2.0 + Math.random() * 1.2);
+        if (!sim.world.walkableAt(out.x, out.z)) out = sim.padLocalToWorld(b, 0, b.padD / 2 + 2.0);
         sim.sendMove(baby, out.x, out.z);
         logger.info("produce", `茅屋#${b.id} 出生村民#${baby.id}`, {
           team: b.team,

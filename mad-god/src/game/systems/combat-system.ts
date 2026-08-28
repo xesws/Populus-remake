@@ -28,6 +28,7 @@ import {
   WARRIOR_CRIT_KNOCK_MIN,
   WORLD,
 } from "../types";
+import { astar } from "../path";
 import { applyBuildingDamage, applyUnitDamage } from "../damage";
 import type { Sim } from "../sim";
 import type { ISystem } from "./system";
@@ -273,8 +274,11 @@ export class CombatSystem implements ISystem {
   /**
    * v0.8 受击还手：被玩家/AI 攻击且当前无目标时，把攻击者设为目标并写锚点，
    玩家/系统移动令（job === "move"）或训练态不打断。
+   v0.17 还手补洞：src 放宽为 Pick<Unit, "team" | "id">——近战调用点传完整单位照旧；
+   远程（火球/法术）传幽灵源头 {team, id: -1}，id 无效则 chaseAttack 立即清空 atkId，
+   仇恨锚点（agroX/Z）由后续自动索敌/远程死角冲锋接管。
    */
-  retaliate(sim: Sim, target: Unit, src: Unit): void {
+  retaliate(sim: Sim, target: Unit, src: Pick<Unit, "team" | "id">): void {
     if (target.atkId) return;
     if (target.hp <= 0 || target.homeId > 0) return;
     if (!isTribe(target.team)) return;
@@ -342,6 +346,8 @@ export class CombatSystem implements ISystem {
    * v0.12 火球命中结算：
    * - 暴击（FIRE_CRIT_CHANCE）：照抄闪电参数真正打飞（沿弹道方向），落地直接死亡（flyKill）。
    * - 默认：随机方向击退半格并倒地，伤害延到站起瞬间（path-system 结算 downDmg）。
+   * v0.17 还手补洞：两种分支（被击飞/被击倒）都落到尾部结算——存活的部落受害者立即还手、
+   * 超视距无目标则朝发射点冲锋，并上报 onTeamHurt 供 AI 防御响应。
    */
   fireballHit(sim: Sim, u: Unit, p: Projectile): void {
     p.life = 0;
@@ -355,14 +361,33 @@ export class CombatSystem implements ISystem {
       u.flyDmg = 0;
       u.path = [];
       u.pathI = 0;
-      return;
+    } else {
+      // 默认击退：随机方向半格（pushUnit 分段探测，撞墙截断），倒地 + 伤害延付。
+      const ang = Math.random() * Math.PI * 2;
+      this.pushUnit(sim, u, u.x - Math.cos(ang), u.z - Math.sin(ang), FIRE_KNOCK_DIST);
+      u.downT = FIRE_DOWN_TIME;
+      u.downDmg += unitAttack("firewarrior");
+      u.path = [];
+      u.pathI = 0;
     }
-    // 默认击退：随机方向半格（pushUnit 分段探测，撞墙截断），倒地 + 伤害延付。
-    const ang = Math.random() * Math.PI * 2;
-    this.pushUnit(sim, u, u.x - Math.cos(ang), u.z - Math.sin(ang), FIRE_KNOCK_DIST);
-    u.downT = FIRE_DOWN_TIME;
-    u.downDmg += unitAttack("firewarrior");
-    u.path = [];
-    u.pathI = 0;
+    // v0.17 还手补洞：被击者只要还活着（含被击飞/被击倒分支）就——
+    // ① 立即还手：源头为幽灵 {team, id: -1}（射手可能已阵亡/已移动，不锁具体单位，atkId 被
+    //    chaseAttack 清空后由自动索敌接管）；② 超视距又无目标：沿 astar 朝发射点 (p.ox,p.oz)
+    //    冲锋（写 path/pathI/think，thinkUnits 见 path 即放行，不打断玩家移动/训练令）；
+    // ③ 上报 onTeamHurt 供 AI 防御响应。野人（NEUTRAL）不触发。
+    if (u.hp > 0 && isTribe(u.team)) {
+      this.retaliate(sim, u, { team: p.team as Team, id: -1 });
+      if (
+        dist2(u.x, u.z, p.ox, p.oz) > UNIT_SIGHT[u.kind] * UNIT_SIGHT[u.kind] &&
+        u.atkId === 0 &&
+        u.job !== "move" &&
+        u.job !== "train"
+      ) {
+        u.path = astar(sim.world, u.x, u.z, p.ox, p.oz);
+        u.pathI = 0;
+        u.think = 1.5;
+      }
+      sim.onTeamHurt?.(u.team as Team, u.x, u.z);
+    }
   }
 }

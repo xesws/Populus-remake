@@ -1,4 +1,4 @@
-import { GodAI } from "./ai";
+import { AIDirector, AIProfile } from "./ai";
 import { bindInput, InputState, maybeStartSculpt, ndcCell, tickCamera } from "./input";
 import { View } from "./render";
 import { Sim } from "./sim";
@@ -14,7 +14,8 @@ export class Game {
   sim: Sim;
   view: View;
   hud: HUD;
-  ai: GodAI;
+  aiDirector: AIDirector;
+  aiProfile: AIProfile;
   shotDirector: ShotDirector;
   tool: Tool = "select";
   placeKind: BuildingKind | null = null;
@@ -58,13 +59,20 @@ export class Game {
     this.sim = new Sim(this.world);
     this.view = new View(canvas, this.world);
     this.hud = new HUD();
-    this.ai = new GodAI();
+    // v0.17 敌方 AI：URL ?ai=easy|normal|hard 选难度（默认 normal）；AIDirector 支持多部落 brain。
+    const level =
+      typeof location !== "undefined" ? new URLSearchParams(location.search).get("ai") ?? "normal" : "normal";
+    this.aiProfile =
+      level === "easy" ? AIProfile.easy() : level === "hard" ? AIProfile.hard() : AIProfile.normal();
+    this.aiDirector = new AIDirector([[RED, this.aiProfile]]);
+    this.aiDirector.attach(this.sim);
     this.shotDirector = new ShotDirector(this);
     this.view.look.set(18, 0, 32);
     this.bind();
     this.view.draw(this.sim, [], 0);
     logger.info("session", "Game 构造完成", {
       seed: this.seed,
+      ai: level,
       href: typeof location !== "undefined" ? location.href : "",
       ua: typeof navigator !== "undefined" ? navigator.userAgent : "",
     });
@@ -408,7 +416,8 @@ export class Game {
     this.view.resetFx();
     this.view.rebuildTerrain();
     this.view.look.set(18, 0, 32);
-    this.ai = new GodAI();
+    this.aiDirector = new AIDirector([[RED, this.aiProfile]]);
+    this.aiDirector.attach(this.sim);
     this.shotDirector.reset();
     this.ended = false;
     this.paused = false;
@@ -491,7 +500,7 @@ export class Game {
         }
       }
       this.sim.tick(dt);
-      if (!this.shotDirector.isShotActive()) this.ai.update(this.sim, dt);
+      if (!this.shotDirector.isShotActive()) this.aiDirector.update(this.sim, dt);
       for (const b of this.bolts) b.life -= dt;
       this.bolts = this.bolts.filter((b) => b.life > 0);
       if (this.sim.winner !== null) {

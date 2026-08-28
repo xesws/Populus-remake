@@ -12,6 +12,7 @@ import {
   dist2,
   FxBolt,
   houseHp,
+  houseMaxPop,
   inMap,
   isCampKind,
   isTribe,
@@ -53,6 +54,7 @@ import {
   VolcanoSpell,
 } from "./spells";
 import { LogLevel, logger } from "./logger";
+import type { TeamHurtHook } from "./ai/types";
 
 let NEXT = 1;
 function nid(): number {
@@ -123,6 +125,8 @@ export class Sim {
   blastHitZ = 0;
   blastFlyer: { x: number; y: number; z: number } | null = null;
   stuckWatch = new Map<number, { x: number; z: number; t: number }>();
+  /** v0.17 AI 防御钩子：本队单位/建筑在 (x,z) 受袭时触发（火球命中/法术伤害处调用）；无 AI 时为 undefined。 */
+  onTeamHurt?: TeamHurtHook;
 
   readonly productionSystem = new ProductionSystem();
   readonly trainingSystem = new TrainingSystem();
@@ -1193,6 +1197,25 @@ export class Sim {
     if (!isTribe(u.team)) {
       this.wander(u);
       return;
+    }
+    // v0.17 入住等待：被指派入住（targetId 指向本队未满茅屋）且已到门口的村民原地站住等 tryOccupy，
+    // 不再被拉去砍树/找地基——红蓝通用（修复红方村民"永远差最后一米住不进"）。
+    // 注意 level>=1 才是真茅屋：L0 是工地（kind 同为 hut），建工走到工地边不能被误拦。
+    if (u.job === "idle" && u.targetId > 0 && u.think > 0) {
+      const hut = this.buildingById(u.targetId);
+      if (
+        hut &&
+        hut.kind === "hut" &&
+        hut.level >= 1 &&
+        hut.hp > 0 &&
+        hut.team === u.team &&
+        hut.dwell < houseMaxPop(hut.level)
+      ) {
+        u.path = [];
+        u.pathI = 0;
+        return;
+      }
+      if (hut && hut.kind === "hut" && hut.level >= 1) u.targetId = 0; // 茅屋没了/满了：放弃等待，回归正常分派
     }
     // v0.10 建工豁免：指派标记在工地完工（不再需要木材）或损毁时自动失效。
     if (u.buildId > 0) {
