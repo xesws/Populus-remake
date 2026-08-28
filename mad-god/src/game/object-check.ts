@@ -20,7 +20,7 @@ function settleAfterTrainCheck(): void {
   const sim = new Sim(new World(7));
   const l1 = sim.buildings.filter((b) => b.team === BLUE && b.kind === "hut" && b.level === 1);
   assert(l1.length >= 2, "need starting L1 huts");
-  assert(l1.every((b) => b.need === 3), "L1 huts still have need===3 at start");
+  assert(l1.every((b) => b.need === 0), "L1 huts have need===0 at start");
 
   const beforeKinds = sim.units.filter((u) => u.team === BLUE).map((u) => u.kind);
   const sent = sim.train(BLUE, "warrior");
@@ -35,6 +35,35 @@ function settleAfterTrainCheck(): void {
   sim.train(BLUE, "warrior");
   assert(sim.toastGen === gen1 + 1, "repeat T must increment toastGen");
   assert((sim.logs[sim.logs.length - 1] ?? "") === "先选人", "repeat toast string stays 先选人");
+
+  // Find suitable position for camp site and prep terrain so it can be founded
+  const s = sim.world.startPad(BLUE);
+  const toCx = WORLD * 0.5 - s.x;
+  const toCz = WORLD * 0.5 - s.z;
+  const len = Math.hypot(toCx, toCz) || 1;
+  const fx = toCx / len;
+  const fz = toCz / len;
+  const px = -fz;
+  const pz = fx;
+  let campX = s.x + fx * 8;
+  let campZ = s.z + fz * 8;
+  for (const [a, b] of [
+    [8.0, 0],
+    [7.2, 2.6],
+    [7.2, -2.6],
+    [9.0, 1.8],
+    [6.6, 0],
+  ] as Array<[number, number]>) {
+    const x = s.x + fx * a + px * b;
+    const z = s.z + fz * a + pz * b;
+    sim.tryPrepFound(x, z, s.yaw);
+    if (sim.canFound(x, z, 1, s.yaw)) {
+      campX = x;
+      campZ = z;
+      break;
+    }
+  }
+  sim.foundSite(BLUE, campX, campZ, s.yaw, "warriorHut");
 
   for (let i = 0; i < 400; i++) sim.tick(0.05);
 

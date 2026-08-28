@@ -1,5 +1,5 @@
 import { Sim } from "./sim";
-import { BLUE } from "./types";
+import { BLUE, WORLD } from "./types";
 import { World } from "./world";
 
 function assert(cond: boolean, msg: string): void {
@@ -10,31 +10,64 @@ function main(): void {
   const sim = new Sim(new World(7));
   const l1 = sim.buildings.filter((b) => b.team === BLUE && b.kind === "hut" && b.level === 1);
   assert(l1.length >= 2, "need starting L1 huts");
-  assert(l1.every((b) => b.need === 3), "L1 huts still have need===3 at start");
+  assert(l1.every((b) => b.need === 0), "L1 huts have need===0 at start");
 
   const beforeKinds = sim.units.filter((u) => u.team === BLUE).map((u) => u.kind);
   const sent = sim.train(BLUE, "warrior");
-  assert(!sent, "train warrior without camp must fail");
-  assert((sim.logs[sim.logs.length - 1] ?? "") === "先盖训练营", "last log must be 先盖训练营");
-  assert(sim.teams[BLUE].wanted.includes("warriorHut"), "wanted has warriorHut");
+  assert(!sent, "train warrior without selection must fail");
+  assert((sim.logs[sim.logs.length - 1] ?? "") === "先选人", "last log must be 先选人");
+  assert(!sim.teams[BLUE].wanted.includes("warriorHut"), "wanted does not have warriorHut when no one selected");
   assert(
     sim.units.filter((u) => u.team === BLUE).every((u, i) => u.kind === beforeKinds[i]),
-    "NO walker.kind changed on train-without-camp",
+    "NO walker.kind changed on train-without-selection",
   );
 
   const gen1 = sim.toastGen;
   sim.train(BLUE, "warrior");
   assert(sim.toastGen === gen1 + 1, "repeat T must increment toastGen");
-  assert((sim.logs[sim.logs.length - 1] ?? "") === "先盖训练营", "repeat toast stays 先盖训练营");
+  assert((sim.logs[sim.logs.length - 1] ?? "") === "先选人", "repeat toast stays 先选人");
 
-  const camps = sim.buildings.filter((b) => b.team === BLUE && b.kind === "warriorHut" && b.hp > 0);
-  assert(camps.length <= 1, "at most one camp site");
-  if (camps[0]) {
-    assert(camps[0].level === 0, "founder places L0 site");
-    assert(camps[0].need === 4, "camp still needs 4 wood");
+  // Selection train without camp triggers "先盖训练营"
+  const blues0 = sim.units.filter((u) => u.team === BLUE && u.kind === "walker");
+  if (blues0.length > 0) {
+    blues0[0]!.selected = true;
+    const sentWithSel = sim.train(BLUE, "warrior");
+    assert(!sentWithSel, "train warrior with selection but no camp must fail");
+    assert((sim.logs[sim.logs.length - 1] ?? "") === "先盖训练营", "toast 先盖训练营");
+    blues0[0]!.selected = false;
   }
-  const founders = sim.units.filter((u) => u.team === BLUE && u.kind === "walker" && u.foundKind === "warriorHut");
-  assert(founders.length <= 1, "one founder max");
+
+  // Found a camp site needing wood so walkers chop/carry
+  const s = sim.world.startPad(BLUE);
+  const toCx = WORLD * 0.5 - s.x;
+  const toCz = WORLD * 0.5 - s.z;
+  const len = Math.hypot(toCx, toCz) || 1;
+  const fx = toCx / len;
+  const fz = toCz / len;
+  const px = -fz;
+  const pz = fx;
+  let campX = s.x + fx * 8;
+  let campZ = s.z + fz * 8;
+  for (const [a, b] of [
+    [8.0, 0],
+    [7.2, 2.6],
+    [7.2, -2.6],
+    [9.0, 1.8],
+    [6.6, 0],
+  ] as Array<[number, number]>) {
+    const x = s.x + fx * a + px * b;
+    const z = s.z + fz * a + pz * b;
+    sim.tryPrepFound(x, z, s.yaw);
+    if (sim.canFound(x, z, 1, s.yaw)) {
+      campX = x;
+      campZ = z;
+      break;
+    }
+  }
+  const site = sim.foundSite(BLUE, campX, campZ, s.yaw, "warriorHut");
+  assert(site !== null, "camp site founded");
+  assert(site!.level === 0, "founder places L0 site");
+  assert(site!.need === 4, "camp still needs 4 wood");
 
   for (let i = 0; i < 400; i++) sim.tick(0.05);
 
@@ -52,19 +85,20 @@ function main(): void {
   const camp = carrySim.placeComplete(BLUE, loaded!.x + 3.4, loaded!.z, 0, "warriorHut", 1);
   const empty = carrySim.units.find((u) => u.team === BLUE && u.kind === "walker" && u.id !== loaded!.id);
   if (empty) empty.x = camp.x + 6;
+  loaded!.selected = true;
+  if (empty) empty.selected = true;
   const trainLoaded = carrySim.train(BLUE, "warrior");
-  assert(loaded!.job !== "train", "do not send a loaded walker into training");
-  if (empty && empty.carry === 0) {
-    assert(trainLoaded, "empty-handed walker should train");
-    assert(empty.job === "train", "the carry===0 walker is sent");
-  }
+  assert(trainLoaded, "selected walkers train even if one was carrying");
+  assert(loaded!.job === "train", "loaded walker drops wood and queues");
+  assert(loaded!.carry !== 1, "wood is dropped on the way to camp");
+  if (empty) assert(empty.job === "train", "the other selected walker also queues");
 
   console.log("settle-check ok");
-  console.log("  click-train toast:", "先盖训练营");
-  console.log("  wanted:", sim.teams[BLUE].wanted.join(","));
-  console.log("  campSite", camps.length > 0, "level", camps[0]?.level ?? "-", "need", camps[0]?.need ?? "-");
+  console.log("  no-selection train toast:", "先选人");
+  console.log("  selected-no-camp toast:", "先盖训练营");
+  console.log("  campSite level", site?.level ?? "-", "need", site?.need ?? "-");
   console.log("  after 20s: chopped=true wood", wood, "choppers", blues.filter((u) => u.job === "chop").length, "deadTrees", sim.trees.filter((t) => !t.alive).length);
-  console.log("  walkers chopped after train-without-camp: YES");
+  console.log("  carry-train handled: YES");
 }
 
 main();
