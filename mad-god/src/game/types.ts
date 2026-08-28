@@ -72,6 +72,65 @@ export const UNIT_RADIUS: Record<UnitKind, number> = {
   wildman: 0.22,
 };
 
+// v0.7 战斗数值表：伤害 = max(1, round(攻击 × 克制系数 − 受击护甲))，集中在此调参。
+export const UNIT_ATTACK: Record<UnitKind, number> = {
+  shaman: 3,
+  walker: 2,
+  warrior: 6,
+  preacher: 3,
+  firewarrior: 5,
+  spy: 3,
+  wildman: 2,
+};
+
+export const UNIT_ARMOR: Record<UnitKind, number> = {
+  shaman: 0,
+  walker: 0,
+  warrior: 2,
+  preacher: 1,
+  firewarrior: 0,
+  spy: 0,
+  wildman: 0,
+};
+
+// 攻击距离（格）。火战士在 v0.9 接入火球后改为远程。
+export const UNIT_RANGE: Record<UnitKind, number> = {
+  shaman: 0.95,
+  walker: 0.95,
+  warrior: 0.95,
+  preacher: 0.95,
+  firewarrior: 0.95,
+  spy: 0.95,
+  wildman: 0.95,
+};
+
+// 攻击间隔（秒）：atkCd 归零才能出刀。
+export const UNIT_ATK_CD: Record<UnitKind, number> = {
+  shaman: 1.5,
+  walker: 1.4,
+  warrior: 1.1,
+  preacher: 1.3,
+  firewarrior: 1.8,
+  spy: 1.0,
+  wildman: 1.2,
+};
+
+// 自动索敌半径（格）；0 = 不主动索敌、只还手。v0.8 生效。
+export const UNIT_SIGHT: Record<UnitKind, number> = {
+  shaman: 0,
+  walker: 0,
+  warrior: 3.5,
+  preacher: 3.0,
+  firewarrior: 5.5,
+  spy: 0,
+  wildman: 3.0,
+};
+
+// 克制系数（攻击方 → 受击方，缺省 1）。
+export const COUNTER_MULT: Partial<Record<UnitKind, Partial<Record<UnitKind, number>>>> = {
+  firewarrior: { walker: 1.2 },
+};
+
 export const HOUSE_WALL = [0, 2.2, 3.8, 5.6] as const;
 export const HOUSE_ROOF = [0, 2.2, 3.8, 5.6] as const;
 export const HOUSE_PAD = [0, 2.6, 4.4, 6.4] as const;
@@ -202,6 +261,30 @@ export function unitHp(kind: UnitKind, str: number): number {
   if (kind === "spy") return 4 + str;
   if (kind === "wildman") return 3 + str * 2;
   return 3 + str * 3;
+}
+
+export function unitAttack(kind: UnitKind): number {
+  return UNIT_ATTACK[kind];
+}
+
+export function unitRange(kind: UnitKind): number {
+  return UNIT_RANGE[kind];
+}
+
+export function attackInterval(kind: UnitKind): number {
+  return UNIT_ATK_CD[kind];
+}
+
+export function counterMult(atk: UnitKind, def: UnitKind): number {
+  return COUNTER_MULT[atk]?.[def] ?? 1;
+}
+
+export function damageAfterArmor(atk: UnitKind, def: UnitKind): number {
+  return Math.max(1, Math.round(unitAttack(atk) * counterMult(atk, def) - UNIT_ARMOR[def]));
+}
+
+export function unitDamageToBuilding(kind: UnitKind): number {
+  return Math.max(1, Math.round(unitAttack(kind) * 0.6));
 }
 
 export function houseHp(level: number): number {

@@ -1,4 +1,21 @@
-import { BLUE, Building, canConvert, clamp, dist2, isCampKind, isTribe, NEUTRAL, RED, Team, Unit, unitHp, WORLD } from "../types";
+import {
+  attackInterval,
+  BLUE,
+  Building,
+  canConvert,
+  clamp,
+  dist2,
+  isTribe,
+  NEUTRAL,
+  RED,
+  Team,
+  Unit,
+  unitDamageToBuilding,
+  unitHp,
+  unitRange,
+  WORLD,
+} from "../types";
+import { applyBuildingDamage, applyUnitDamage } from "../damage";
 import type { Sim } from "../sim";
 import type { ISystem } from "./system";
 
@@ -9,25 +26,21 @@ export class CombatSystem implements ISystem {
   }
 
   hurtBuilding(sim: Sim, b: Building, dmg: number): void {
-    if (!b.shell && b.level >= 1 && b.hp - dmg <= 0) {
-      b.shell = true;
-      b.hp = Math.max(1, b.maxHp * 0.4);
-      if (b.team === BLUE && (b.kind === "hut" || isCampKind(b.kind))) sim.toast("一座屋宇被拆成骨架");
-      return;
-    }
-    b.hp -= dmg;
+    applyBuildingDamage(sim, b, dmg);
   }
 
   combat(sim: Sim, dt: number): void {
     for (const u of sim.units) {
       if (!isTribe(u.team) || u.hp <= 0 || u.homeId > 0) continue;
+      if (u.atkCd > 0) u.atkCd = Math.max(0, u.atkCd - dt);
       if (!u.atkId) continue;
 
       const tu = sim.unitById(u.atkId);
       if (tu) {
-        const meleeR = 0.95;
-        if (dist2(u.x, u.z, tu.x, tu.z) <= meleeR * meleeR) {
-          tu.hp -= 2.2 * dt;
+        const range = unitRange(u.kind);
+        if (u.atkCd <= 0 && dist2(u.x, u.z, tu.x, tu.z) <= range * range) {
+          applyUnitDamage(tu, u.kind);
+          u.atkCd = attackInterval(u.kind);
           if (tu.hp <= 0) u.atkId = 0;
         }
         continue;
@@ -39,8 +52,9 @@ export class CombatSystem implements ISystem {
         continue;
       }
       const reach = Math.max(b.padW, b.padD) * 0.5 + 0.95;
-      if (dist2(u.x, u.z, b.x, b.z) > reach * reach) continue;
-      this.hurtBuilding(sim, b, 3.4 * dt);
+      if (u.atkCd > 0 || dist2(u.x, u.z, b.x, b.z) > reach * reach) continue;
+      applyBuildingDamage(sim, b, unitDamageToBuilding(u.kind));
+      u.atkCd = attackInterval(u.kind);
       if (b.hp <= 0) u.atkId = 0;
     }
   }

@@ -805,7 +805,6 @@ export class Sim {
     for (const u of this.units) {
       if (u.homeId > 0) continue;
       u.think -= dt;
-      u.atkCd -= dt;
       if (this.tryOccupy(u)) continue;
       if (this.inSwamp(u)) {
         u.path = [];
