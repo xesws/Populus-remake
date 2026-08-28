@@ -3,16 +3,14 @@ import type { Sim } from "../sim";
 import { Spell, SpellResult } from "./spell";
 
 /**
- * v0.18 火山法术（Agent V）重做：
- * - 地形：不再 sculpt 尖峰，改用 raisePlateau 在 dur 内逐帧渐进隆起 6.5 格宽的平顶缓坡高原
- *   （顶部平坦、外圈 smoothstep 缓坡，目标高 = cast 时原高 + 2.6）；
- * - 岩浆：growRivers reach 扩到 16 长河臂 + 每次 tick 连续旋转角度的支流 seed + 火山口加厚
- *   （life 8~10，窗口结束后最后一批约 10s 才干）。注意 growRivers 自带 lava.fill(0)，
- *   所以支流/火山口必须在 growRivers 之后 seed，否则被清掉；
- * - 伤害：树木直接烧没（alive=false + regen 拉长，灰烬很久才复生）；岩浆上单位 26/s 极高灼烧
- *   （叠加 hazardSystem 的 10/s 共 36/s，触发起火特效 fireT）；建筑烧毁继续走 sim.burnBuildings
- *   （完好 → 骨架 → 烧毁）；
- * - 焦土：lava 活跃区 scorch 刷到 2.2，干涸后灰褐焦土还能残留 ~15s。
+ * v0.18b 火山法术（物理溢流版，替代 v0.18 的"旋转支流扫描"——用户反馈像麦田怪圈）：
+ * - 地形：raisePlateau 在 dur 内逐帧渐进隆起 6.5 格宽平顶缓坡高原（目标高 = cast 时原高 + 2.6）。
+ * - 岩浆：**源头注入 + 流体模拟**——喷发窗口内每帧从火山口 pourLava 涌出（节奏先猛后衰，
+ *   越喷越多），同时 flowLava 按坡度随机加权向下坡流动、平顶攒厚漫溢、入海熄灭，
+ *   形成不规则舌状前沿（纯物理，无任何几何扫描）。
+ * - 伤害：树木直接烧没（alive=false + regen 拉长）；岩浆上单位 26/s 极高灼烧
+ *   （叠加 hazardSystem 的 10/s，触发起火特效 fireT）；建筑走 sim.burnBuildings。
+ * - 焦土：lava 活跃区 scorch 刷到 2.2，干涸后灰褐焦土残留 ~15s。
  */
 export class VolcanoSpell extends Spell {
   readonly id = "volcano" as const;
@@ -61,7 +59,9 @@ export class VolcanoSpell extends Spell {
         const prog = Math.min(1, v.t / v.dur);
         sim.world.raisePlateau(v.x, v.z, 6.5, this.liftBase + 2.6 * prog);
       }
-      if (v.t > 1.1 && v.t <= v.dur + 2.0) this.eruptRivers(sim, v);
+      if (v.t > 0.8 && v.t <= v.dur + 2.4) this.erupt(sim, v, dt);
+      // v0.18b 流体模拟：活动期全程驱动岩浆按坡度流动/漫溢（喷停后残余继续淌）。
+      if (v.t > 0.8 && v.t <= v.dur + 8) sim.world.flowLava(dt);
       if (v.t <= v.dur + 6) this.deepenScorch(sim);
       if (v.t > v.dur + 8) sim.volcano = null;
       this.holdPadsNearVolcano(sim);
@@ -72,20 +72,16 @@ export class VolcanoSpell extends Spell {
     }
   }
 
-  /** v0.18 喷发期（t 1.1~4.6s）：4 条主河臂（reach 16）+ 连续旋转角度支流 + 火山口加厚。 */
-  private eruptRivers(sim: Sim, v: { x: number; z: number; t: number }): void {
-    // growRivers 自带 lava.fill(0)：必须先调用清旧，再 seed 支流/火山口（否则被清）。
-    sim.world.growRivers(v.x, v.z, 16);
-    // v0.18 支流：角度随时间连续旋转 + 正弦摆动（确定性伪随机，避免每 tick 闪跳），
-    // 从火山口向外 3~13 格撒两条轨迹——随时间在 lava 区外围扫出扇形支流。
-    for (let i = 0; i < 2; i++) {
-      const ang = v.t * 0.55 + i * 2.1 + Math.sin(v.t * 0.7 + i * 2.0) * 0.55;
-      for (let s = 3; s <= 13; s += 1.6) {
-        sim.world.seedLava(v.x + Math.cos(ang) * s, v.z + Math.sin(ang) * s, 0.5, 8 + (s % 3));
-      }
-    }
-    // 火山口岩浆加厚（比河臂 3.6 更亮更久）；窗口在 t≈4.55 结束，最后一批 life 10 → 约 14.5s 才干。
-    sim.world.seedLava(v.x, v.z, 1.1, 10);
+  /**
+   * v0.18b 源头注入：喷发窗口（t 0.8 ~ dur+2.4 ≈ 5s）内从火山口持续涌浆，
+   * 节奏为"起喷渐起 → 主喷期最猛 → 尾期衰减"——越喷越多全靠注入累积，不是一次成型。
+   */
+  private erupt(sim: Sim, v: { x: number; z: number; t: number; dur: number }, dt: number): void {
+    const win = v.dur + 2.4 - 0.8;
+    const et = Math.min(1, (v.t - 0.8) / win); // 0..1
+    const rampUp = Math.min(1, et / 0.12); // 起喷渐起（前 12% 窗口）
+    const rate = 20 * rampUp * (1 - et * 0.55); // 主喷 ~20/s，尾期衰减到 ~9/s（总量控制在洼地积池可承受范围）
+    sim.world.pourLava(v.x, v.z, 0.9, rate * dt);
   }
 
   /** v0.18 焦土加深：lava 活跃期间把 scorch 刷到 2.2，干涸后灰褐焦土还能残留 ~15s（而非几秒）。 */

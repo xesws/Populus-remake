@@ -25,18 +25,19 @@ function heightColor(h: number, lava: number, scorch: number, out: THREE.Color):
     out.copy(COL_LAVA);
     return;
   }
+  // v0.18b 薄浆渐变：流动前沿（lava 0.5~8）从地面色向亮橙过渡，物理流动的舌状边界肉眼可见。
+  const lavaMix = lava > 0.5 ? Math.min(1, (lava - 0.5) / 7.5) * 0.92 : 0;
   if (scorch > 0.4) {
     // v0.18 焦土渐变：强焦（>1.6）炭黑 → 中焦灰褐 → 弱焦浅灰褐，干涸后地面呈灰褐色带。
     if (scorch > 1.6) out.copy(COL_SCORCH);
     else if (scorch > 0.9) out.copy(COL_SCORCH_MID);
     else out.copy(COL_SCORCH_LIGHT);
-    return;
-  }
-  if (h <= WATER) out.copy(COL_SEA);
+  } else if (h <= WATER) out.copy(COL_SEA);
   else if (h < 1.4) out.copy(COL_GRASS);
   else if (h < 2.6) out.copy(COL_HILL);
   else if (h < 4.2) out.copy(COL_ROCK);
   else out.copy(COL_SNOW);
+  if (lavaMix > 0) out.lerp(COL_LAVA, lavaMix);
 }
 
 export class View {

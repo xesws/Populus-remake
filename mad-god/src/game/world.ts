@@ -47,6 +47,17 @@ export const TREE_BLOCK_R = 0.32;
 export const DOOR_SLIT_HALF = 0.28;
 export const DOOR_SLIT_DEPTH = 0.45;
 
+// v0.18b 岩浆流体参数（flowLava 物理模拟用）。
+export const NEIGH8: ReadonlyArray<readonly [number, number]> = [
+  [1, 0], [-1, 0], [0, 1], [0, -1], [1, 1], [1, -1], [-1, 1], [-1, -1],
+];
+/** 低于该厚度的浆停止流动（凝固边缘） */
+export const LAVA_FLOW_MIN = 0.5;
+/** 平顶上超过该厚度才会向外漫溢（"攒厚了溢出"的阈值） */
+export const LAVA_SPREAD_AT = 3.0;
+/** 单格岩浆厚度上限：超出部分转移/注入时蒸发（厚浆散热快），防洼地积出烧不完的深池 */
+export const LAVA_MAX_DEPTH = 12;
+
 export interface TreeBlock {
   x: number;
   z: number;
@@ -672,40 +683,65 @@ export class World {
     }
   }
 
-  flowLava(dt: number): { x: number; z: number }[] {
-    const splash: { x: number; z: number }[] = [];
+  /**
+   * v0.18b 岩浆流体模拟（火山物理溢流，替代旧"最陡邻居确定性搬移"）：
+   * - 每帧向「按高差平方加权**随机**选出的下坡邻居」转移——随机选择产生不规则舌状前沿，
+   *   而非均匀圆盘/旋转扫描（用户反馈的"麦田怪圈"）；薄浆（<FLOW_MIN）停滞凝结，形成参差边缘。
+   * - 无更低邻居且浆厚超过 SPREAD_AT（平顶高原）时，向随机等高/微高邻居溢出推进——
+   *   "从口里越喷越多、攒厚了向外溢"的物理观感。
+   * - 岩浆流入海格（h<=WATER）直接熄灭（转移量丢弃），海岸形成止步线。
+   * - 转移守恒（源扣+目加），总量只被 tickFx 冷却消耗。
+   * 只在火山活动期由 VolcanoSpell 调用（地震裂缝是沟内静态浆，不参与流动）。
+   */
+  flowLava(dt: number): void {
     const add = new Float32Array(this.lava.length);
-    const neigh: [number, number][] = [
-      [1, 0], [-1, 0], [0, 1], [0, -1], [1, 1], [1, -1], [-1, 1], [-1, -1],
-    ];
     for (let iz = 1; iz < SAMPLES - 1; iz++) {
       for (let ix = 1; ix < SAMPLES - 1; ix++) {
         const i = this.idx(ix, iz);
         const amt = this.lava[i]!;
-        if (amt <= 0) continue;
+        if (amt < LAVA_FLOW_MIN) continue; // 薄浆停滞：形成参差的凝固边缘
         const h = this.h[i]!;
         this.scorch[i] = Math.max(this.scorch[i]!, 1.15);
-        let best = i;
-        let bestH = h;
-        for (const [dx, dz] of neigh) {
-          const j = this.idx(ix + dx, iz + dz);
-          const nh = this.h[j]!;
-          if (nh < bestH - 0.012) {
-            bestH = nh;
-            best = j;
+        // 候选下坡邻居：高差平方做权重 → 陡坡优先但带随机，分叉不规则。
+        let total = 0;
+        const cand: number[] = [];
+        const w: number[] = [];
+        for (let k = 0; k < 8; k++) {
+          const j = this.idx(ix + NEIGH8[k]![0], iz + NEIGH8[k]![1]);
+          const dh = h - this.h[j]!;
+          if (dh > 0.012) {
+            const weight = dh * dh;
+            cand.push(j);
+            w.push(weight);
+            total += weight;
           }
         }
-        if (best !== i) {
-          const move = Math.min(amt, 0.7 * dt + amt * 0.16);
+        let target = -1;
+        if (cand.length > 0) {
+          let r = Math.random() * total;
+          target = cand[cand.length - 1]!;
+          for (let k = 0; k < cand.length; k++) {
+            r -= w[k]!;
+            if (r <= 0) {
+              target = cand[k]!;
+              break;
+            }
+          }
+          // 入海熄灭：目标是水格则转移量丢弃（岩浆到海岸止步"嗤"灭）。
+          if (this.h[target]! <= WATER) target = -1;
+        } else if (amt > LAVA_SPREAD_AT) {
+          // 平顶溢出：浆攒厚了向随机平/微高邻居推进（火山平顶的向外漫溢）。
+          const k = (Math.random() * 8) | 0;
+          const j = this.idx(ix + NEIGH8[k]![0], iz + NEIGH8[k]![1]);
+          if (this.h[j]! <= h + 0.05 && this.h[j]! > WATER) target = j;
+        }
+        if (target >= 0) {
+          const move = Math.min(amt * 0.5, dt * (0.9 + amt * 0.12));
           add[i] -= move;
-          add[best] += move;
-          if (this.lava[best]! <= 0 && splash.length < 5) {
-            splash.push({ x: (best % SAMPLES) * STEP, z: Math.floor(best / SAMPLES) * STEP });
-          }
-        }
-        for (const [dx, dz] of neigh) {
-          const j = this.idx(ix + dx, iz + dz);
-          if (this.lava[j]! <= 0) this.scorch[j] = Math.max(this.scorch[j]!, 0.85);
+          // 厚度上限 LAVA_MAX_DEPTH：超出部分在转移时蒸发（厚浆表面积大散热快）——
+          // 防止洼地积出几十秒烧不完的深池。
+          add[target] += Math.min(move, Math.max(0, LAVA_MAX_DEPTH - this.lava[target]!));
+          if (this.lava[target]! <= 0) this.scorch[target] = Math.max(this.scorch[target]!, 0.85);
         }
       }
     }
@@ -714,13 +750,34 @@ export class World {
       this.lava[i] = Math.max(0, this.lava[i]! + add[i]!);
       this.markSample(i % SAMPLES, (i / SAMPLES) | 0);
     }
-    return splash;
+  }
+
+  /** v0.18b 火山源头注入：向 (x,z) 半径 r 内**累加**岩浆（seedLava 是 max 截断语义，注入需要累加）。 */
+  pourLava(x: number, z: number, r: number, amount: number): void {
+    const minIx = clamp(Math.floor((x - r) / STEP), 0, SAMPLES - 1);
+    const maxIx = clamp(Math.ceil((x + r) / STEP), 0, SAMPLES - 1);
+    const minIz = clamp(Math.floor((z - r) / STEP), 0, SAMPLES - 1);
+    const maxIz = clamp(Math.ceil((z + r) / STEP), 0, SAMPLES - 1);
+    for (let iz = minIz; iz <= maxIz; iz++) {
+      for (let ix = minIx; ix <= maxIx; ix++) {
+        const d = Math.hypot(ix * STEP - x, iz * STEP - z);
+        if (d > r) continue;
+        const i = this.idx(ix, iz);
+        if (this.h[i]! <= WATER) continue;
+        // 中心满量、边缘 60%：喷口聚集、口缘散落；厚度封顶 LAVA_MAX_DEPTH（超出蒸发）。
+        const f = d < r * 0.5 ? 1 : 0.6;
+        this.lava[i] = Math.min(LAVA_MAX_DEPTH, this.lava[i]! + amount * f);
+        this.markSample(ix, iz);
+      }
+    }
   }
 
   tickFx(dt: number): void {
     for (let i = 0; i < this.lava.length; i++) {
       if (this.lava[i]! > 0) {
-        this.lava[i] = Math.max(0, this.lava[i]! - dt);
+        // v0.18b 冷却 1.0→1.4/s：火山物理溢流会在洼地积成厚池，冷却太慢会让岩浆池烧一分多钟；
+        // quake 的 seed 寿命 6~10 → 干涸 4~7s，仍落在"5~10 秒"要求区间。
+        this.lava[i] = Math.max(0, this.lava[i]! - dt * 1.4);
         if (this.lava[i] === 0) this.dirty = true;
       }
       if (this.scorch[i]! > 0) {

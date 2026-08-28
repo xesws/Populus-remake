@@ -35,15 +35,18 @@ function castVolcano(sim: Sim): void {
   assert(res.ok, "cast 成功");
 }
 
-/** 沿主河臂方向找一个 lava>0 的格点（growRivers 臂：角度 0.22，步长 0.32，reach 16）。 */
+/** 找最近的 lava>0 格点：从火山口向外环形扫描（v0.18b 物理溢流——浆从口向外淌，口附近必有）。 */
 function findLavaCell(sim: Sim): { x: number; z: number } {
-  const ang = 0.22;
-  for (let s = 0; s <= 16; s++) {
-    const x = VX + Math.cos(ang) * s * 0.32;
-    const z = VZ + Math.sin(ang) * s * 0.32;
-    if (sim.world.lava[sim.world.sampleAt(x, z)]! > 0) return { x, z };
+  for (let r = 0; r <= 8; r += 0.5) {
+    const steps = Math.max(1, Math.ceil(r * 6));
+    for (let k = 0; k < steps; k++) {
+      const a = (k / steps) * Math.PI * 2;
+      const x = VX + Math.cos(a) * r;
+      const z = VZ + Math.sin(a) * r;
+      if (sim.world.lava[sim.world.sampleAt(x, z)]! > 0) return { x, z };
+    }
   }
-  throw new Error("沿主河臂找不到岩浆格");
+  throw new Error("火山口附近找不到岩浆格");
 }
 
 // a) 高原形态
@@ -84,15 +87,31 @@ function testPlateauShape(): void {
   console.log("testPlateauShape ok");
 }
 
-// b) 岩浆生命周期：出现 → 15 秒干涸 → 焦土残留
+// b) 岩浆生命周期（v0.18b 物理溢流语义）：越喷越多 → 干涸 → 焦土残留；覆盖为舌状而非满盘。
+function lavaSum(w: World): number {
+  let s = 0;
+  for (let i = 0; i < w.lava.length; i++) s += w.lava[i]!;
+  return s;
+}
+
 function testLavaLifecycle(): void {
   const sim = new Sim(new World(42));
   castVolcano(sim);
-  for (let i = 0; i < 60; i++) sim.tick(0.05); // 3s：喷发窗口（1.1~4.6s）内，lava 活跃
+  let sum2s = 0;
+  let sum4s = 0;
+  for (let i = 0; i < 80; i++) {
+    sim.tick(0.05);
+    if (i === 40) sum2s = lavaSum(sim.world);
+    if (i === 79) sum4s = lavaSum(sim.world);
+  }
   assert(lavaCount(sim.world) > 0, "cast 后岩浆存在");
+  assert(sum4s > sum2s && sum2s > 0, `喷发期越喷越多（t=2s ${sum2s.toFixed(0)} → t=4s ${sum4s.toFixed(0)}）`);
+  // 非满盘：物理舌状覆盖应远小于半径 6.5 的均匀圆盘（π×26²≈2124 格），防回归几何扫描。
+  const cells = lavaCount(sim.world);
+  assert(cells < 1400, `覆盖为舌状而非满盘（${cells} 格 < 1400）`);
 
-  for (let i = 0; i < 240; i++) sim.tick(0.05); // 累计 15s
-  assert(lavaCount(sim.world) === 0, "tick 15 秒后岩浆全部干涸（lava 全 0）");
+  for (let i = 0; i < 260; i++) sim.tick(0.05); // 累计至 21s（实测 ~15s 干：喷发 5s + 消退 10s）
+  assert(lavaCount(sim.world) === 0, "tick 21 秒后岩浆全部干涸（lava 全 0）");
   assert(scorchCount(sim.world) > 0, "干涸后仍有焦土残留（scorch>0）");
 
   console.log("testLavaLifecycle ok");
