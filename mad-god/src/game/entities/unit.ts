@@ -41,6 +41,8 @@ export abstract class Unit extends BaseEntity {
   agroZ = -1;
   // v0.9 击飞落地伤害：击飞来源（火球）在击飞时写入，落地结算后清零；法术击飞保持 0 不受影响。
   flyDmg = 0;
+  // v0.10 建工指派：assignBuilders 写入的在建工地 id；工地完工/损毁自动失效。蓝方待机豁免依赖它。
+  buildId = 0;
 
   constructor(id: number, team: Owner, x: number, z: number, y: number, hp: number, maxHp = hp, str = 1) {
     super(id, team, x, z, y, hp, maxHp);

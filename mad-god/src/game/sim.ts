@@ -478,6 +478,7 @@ export class Sim {
   private clearOrders(u: Unit): void {
     u.foundKind = null;
     u.targetId = 0;
+    u.buildId = 0;
     u.atkId = 0;
     u.channel = 0;
     u.channelId = 0;
@@ -633,6 +634,7 @@ export class Sim {
       }
       this.sendMove(u, edge.x, edge.z);
       u.targetId = site.id;
+      u.buildId = site.id;
       u.atkId = 0;
     }
   }
@@ -974,6 +976,22 @@ export class Sim {
     return best;
   }
 
+  /** v0.10：单位是否还有未完成的指令/任务（蓝方待机站立判定；攻击、搬运、训练、建工指派全部豁免）。 */
+  unitHasActiveTask(u: Unit): boolean {
+    return (
+      u.path.length > 0 ||
+      u.atkId > 0 ||
+      u.targetId > 0 ||
+      u.buildId > 0 ||
+      u.settleX >= 0 ||
+      u.moveX >= 0 ||
+      u.carry === 1 ||
+      u.enterT > 0 ||
+      u.job === "train" ||
+      u.foundKind !== null
+    );
+  }
+
   repath(u: Unit): void {
     if (u.team === NEUTRAL) {
       this.wander(u);
@@ -1025,6 +1043,10 @@ export class Sim {
       if (home && dist2(u.x, u.z, home.x, home.z) > 9) {
         u.path = astar(this.world, u.x, u.z, home.x, home.z);
         u.pathI = 0;
+      } else if (u.team === BLUE) {
+        // v0.10 蓝方萨满到家后原地站立；红方保持自主漫游。
+        u.path = [];
+        u.pathI = 0;
       } else {
         this.wander(u);
       }
@@ -1048,6 +1070,12 @@ export class Sim {
 
     if (u.kind === "walker" && u.order === "settle") {
       this.repathSettle(u);
+      return;
+    }
+    // v0.10 蓝方待机：无任何未完成指令的玩家单位原地站立，不再随机漫游（红方/野人照旧自主）。
+    if (u.team === BLUE && !this.unitHasActiveTask(u)) {
+      u.path = [];
+      u.pathI = 0;
       return;
     }
     this.wander(u);
@@ -1116,6 +1144,17 @@ export class Sim {
   repathSettle(u: Unit): void {
     if (!isTribe(u.team)) {
       this.wander(u);
+      return;
+    }
+    // v0.10 建工豁免：指派标记在工地完工（不再需要木材）或损毁时自动失效。
+    if (u.buildId > 0) {
+      const site = this.buildingById(u.buildId);
+      if (!site || !this.needsWood(site)) u.buildId = 0;
+    }
+    // v0.10 蓝方待机：未被指派建工、也无任何指令残留的村民不再自动找活（砍树/找地基/漫游），原地站立。
+    if (u.team === BLUE && u.buildId === 0 && !this.unitHasActiveTask(u)) {
+      u.path = [];
+      u.pathI = 0;
       return;
     }
     if (u.carry === 1) {
