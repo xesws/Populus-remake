@@ -16,6 +16,7 @@ import {
 } from "../types";
 import type { Sim } from "../sim";
 import type { ISystem } from "./system";
+import { LogLevel, logger } from "../logger";
 
 export class ProductionSystem implements ISystem {
   update(sim: Sim, dt: number): void {
@@ -76,7 +77,20 @@ export class ProductionSystem implements ISystem {
   }
 
   produce(sim: Sim, dt: number): void {
-    if (sim.freezeProd) return;
+    if (sim.freezeProd) {
+      logger.throttled("produce:frozen", 2000, LogLevel.Warn, "produce", "freezeProd=true，生产被冻结（shot 导演占用）");
+      return;
+    }
+    // v0.14 每帧每队只数一次人口（原每房每帧现算），出生时手动 +1 保持语义一致。
+    const popCache = new Map<Team, number>();
+    const popOf = (team: Team): number => {
+      let p = popCache.get(team);
+      if (p === undefined) {
+        p = sim.countPop(team);
+        popCache.set(team, p);
+      }
+      return p;
+    };
     for (const b of sim.buildings) {
       if (b.hp <= 0 || b.kind !== "hut" || b.level < 1) continue;
       if (b.wantLevel > b.level) {
@@ -84,8 +98,23 @@ export class ProductionSystem implements ISystem {
         else if (b.level === 2) this.upgradeBuilding(sim, b, 3);
         b.wantLevel = 0;
       }
+      const cap = sim.popCap(b.team);
+      // v0.14 每座茅屋每秒一条快照：等级/入住/进度/卡住原因，生产卡死一眼可见。
+      logger.periodic(`hut:${b.id}`, 1000, LogLevel.Debug, "produce", `茅屋#${b.id} L${b.level}`, () => ({
+        team: b.team,
+        dwell: `${b.dwell}/${houseMaxPop(b.level)}`,
+        prod: +b.prod.toFixed(3),
+        born: b.born,
+        blocked: b.dwell <= 0 ? "no-dwell" : popOf(b.team) >= cap ? "pop-cap" : undefined,
+      }));
       if (b.dwell <= 0) continue;
-      if (sim.countPop(b.team) >= sim.popCap(b.team)) continue;
+      if (popOf(b.team) >= cap) {
+        logger.throttled(`popcap:${b.team}`, 2000, LogLevel.Warn, "produce", `队伍${b.team} 人口达上限，生产暂停`, {
+          pop: popOf(b.team),
+          cap,
+        });
+        continue;
+      }
       // v0.11 速率 = 基础(等级) × (1 + 0.12 × (dwell − 1))：进驻村民越多生产越快。
       // v0.11c：满员不锁生产——dwell 只影响速度；新生儿出屋加入人口（全局 popCap 兜底）。
       const rate = houseBaseRate(b.level) * (1 + HOUSE_DWELL_BONUS * (b.dwell - 1));
@@ -93,8 +122,17 @@ export class ProductionSystem implements ISystem {
       if (b.prod >= 1) {
         const spot = sim.hutDoor(b);
         if (!sim.world.walkableAt(spot.x, spot.z)) {
+          logger.throttled(`door:${b.id}`, 2000, LogLevel.Warn, "produce", `茅屋#${b.id} 门口不可走`, {
+            x: +spot.x.toFixed(1),
+            z: +spot.z.toFixed(1),
+          });
           const fallback = sim.spawnNear(b);
-          if (!fallback) continue;
+          if (!fallback) {
+            logger.throttled(`spawn:${b.id}`, 2000, LogLevel.Warn, "produce", `茅屋#${b.id} 找不到出生点，进度卡住`, {
+              prod: +b.prod.toFixed(2),
+            });
+            continue;
+          }
           spot.x = fallback.x;
           spot.z = fallback.z;
         }
@@ -105,6 +143,14 @@ export class ProductionSystem implements ISystem {
         baby.homeId = 0;
         const out = sim.padLocalToWorld(b, 0, b.padD / 2 + 2.0);
         sim.sendMove(baby, out.x, out.z);
+        popCache.set(b.team, popOf(b.team) + 1);
+        logger.info("produce", `茅屋#${b.id} 出生村民#${baby.id}`, {
+          team: b.team,
+          dwell: b.dwell,
+          born: b.born,
+          pop: popOf(b.team),
+          cap,
+        });
         if (b.born >= 2 && b.level === 1) b.wantLevel = 2;
         else if (b.born >= 5 && b.level === 2) b.wantLevel = 3;
       }
@@ -152,6 +198,11 @@ export class ProductionSystem implements ISystem {
     u.atkId = 0;
     u.carry = 0;
     u.channel = 0;
+    logger.info("produce", `村民#${u.id} 入住茅屋#${hut.id}`, {
+      dwell: `${hut.dwell}/${houseMaxPop(hut.level)}`,
+      pop: sim.countPop(u.team),
+      cap: sim.popCap(u.team),
+    });
     return true;
   }
 
@@ -198,6 +249,10 @@ export class ProductionSystem implements ISystem {
     b.wood = 0;
     b.need = woodNeedFor(b.kind, level);
     sim.markHouseBlocks();
+    logger.info("produce", `建筑#${b.id}(${b.kind}) 升至 ${level} 级`, {
+      pad: `${pad.w}×${pad.d}`,
+      team: b.team,
+    });
     if (b.kind === "hut") {
       if (level === 1) sim.toast(b.team === BLUE ? "子民筑起一座屋宇" : "敌民筑屋");
       else sim.toast(b.team === BLUE ? `茅屋升至 ${level} 级` : "敌方茅屋升级");

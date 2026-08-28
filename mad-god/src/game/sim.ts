@@ -54,6 +54,7 @@ import {
   TornadoSpell,
   VolcanoSpell,
 } from "./spells";
+import { LogLevel, logger } from "./logger";
 
 let NEXT = 1;
 function nid(): number {
@@ -795,6 +796,26 @@ export class Sim {
     this.respawnShamans(dt);
     this.cull();
     this.checkWin();
+    // v0.14 全局心跳：每秒一条运行状况快照（人口/上限、茅屋/入住、法力、生产冻结），落 logs/game.log。
+    logger.periodic("sim:beat", 1000, LogLevel.Debug, "sim", "心跳", () => {
+      let huts = 0;
+      let dwell = 0;
+      for (const b of this.buildings) {
+        if (b.kind !== "hut" || b.hp <= 0 || b.level < 1) continue;
+        huts++;
+        dwell += b.dwell;
+      }
+      return {
+        t: +this.time.toFixed(1),
+        units: this.units.length,
+        huts,
+        dwell,
+        popB: `${this.countPop(BLUE)}/${this.popCap(BLUE)}`,
+        popR: `${this.countPop(1)}/${this.popCap(1)}`,
+        manaB: +this.teams[BLUE].mana.toFixed(1),
+        freezeProd: this.freezeProd,
+      };
+    });
   }
 
   tickEnter(dt: number): void {

@@ -7,6 +7,7 @@ import { canUnlock, cast } from "./spells";
 import { BLUE, BuildingKind, FxBolt, inMap, isCampKind, Order, RED, snapYaw, Tool, TrainKind } from "./types";
 import { HUD, showEnd } from "./ui";
 import { World } from "./world";
+import { logger } from "./logger";
 
 export class Game {
   world: World;
@@ -48,10 +49,12 @@ export class Game {
   };
   canvas: HTMLCanvasElement;
   last = 0;
+  seed = 0;
 
   constructor(canvas: HTMLCanvasElement) {
     this.canvas = canvas;
-    this.world = new World(1989 + ((Math.random() * 1000) | 0));
+    this.seed = 1989 + ((Math.random() * 1000) | 0);
+    this.world = new World(this.seed);
     this.sim = new Sim(this.world);
     this.view = new View(canvas, this.world);
     this.hud = new HUD();
@@ -60,6 +63,18 @@ export class Game {
     this.view.look.set(18, 0, 32);
     this.bind();
     this.view.draw(this.sim, [], 0);
+    logger.info("session", "Game 构造完成", {
+      seed: this.seed,
+      href: typeof location !== "undefined" ? location.href : "",
+      ua: typeof navigator !== "undefined" ? navigator.userAgent : "",
+    });
+    // 运行时异常也进日志（NaN/越界之类在浏览器里只进 console，这里统一落盘）。
+    window.addEventListener("error", (e) => {
+      logger.error("js", e.message, { src: `${e.filename}:${e.lineno}` });
+    });
+    window.addEventListener("unhandledrejection", (e) => {
+      logger.error("js", `unhandled rejection: ${String(e.reason)}`);
+    });
   }
 
   bind(): void {
@@ -380,12 +395,14 @@ export class Game {
     if (this.running) return;
     this.shotDirector.handleUrlParams();
     this.running = true;
+    logger.info("session", "对局开始", { seed: this.seed });
     this.last = performance.now();
     requestAnimationFrame((t) => this.frame(t));
   }
 
   restart(): void {
-    this.world = new World(1989 + ((Math.random() * 9999) | 0));
+    this.seed = 1989 + ((Math.random() * 9999) | 0);
+    this.world = new World(this.seed);
     this.sim = new Sim(this.world);
     this.view.world = this.world;
     this.view.resetFx();
@@ -411,6 +428,7 @@ export class Game {
     this.bolts = [];
     document.getElementById("end")!.hidden = true;
     this.shotDirector.applyReviewCheats();
+    logger.info("session", "重开对局", { seed: this.seed });
   }
 
   togglePause(): void {
@@ -425,6 +443,7 @@ export class Game {
   frame(now: number): void {
     const dt = Math.min(0.05, (now - this.last) / 1000);
     this.last = now;
+    logger.tick(dt);
     tickCamera(this.view, this.input.keys, dt);
 
     const cell = ndcCell({ clientX: this.input.mx, clientY: this.input.my }, this.canvas, this.view);
