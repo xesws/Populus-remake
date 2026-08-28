@@ -45,6 +45,13 @@ import {
   TrainingSystem,
   WinSystem,
 } from "./systems";
+import {
+  BlastSpell,
+  LightningSpell,
+  QuakeSpell,
+  TornadoSpell,
+  VolcanoSpell,
+} from "./spells";
 
 let NEXT = 1;
 function nid(): number {
@@ -123,6 +130,11 @@ export class Sim {
   readonly hazardSystem = new HazardSystem();
   readonly mergeSystem = new MergeSystem();
   readonly winSystem = new WinSystem();
+  readonly blastSpell = new BlastSpell();
+  readonly lightningSpell = new LightningSpell();
+  readonly quakeSpell = new QuakeSpell();
+  readonly tornadoSpell = new TornadoSpell();
+  readonly volcanoSpell = new VolcanoSpell();
 
   constructor(world: World) {
     this.world = world;
@@ -1264,15 +1276,7 @@ export class Sim {
   }
 
   holdPadsNearVolcano(): void {
-    const v = this.volcano;
-    if (!v) return;
-    for (const b of this.buildings) {
-      if (b.hp <= 0 || b.kind === "rebirth") continue;
-      if (Math.hypot(b.x - v.x, b.z - v.z) < 2.8) continue;
-      const h = Math.max(this.world.heightAt(b.x, b.z), 0.8);
-      this.world.flattenPad(b.x, b.z, b.padW, b.padD, b.yaw, h);
-      b.y = this.world.heightAt(b.x, b.z);
-    }
+    this.volcanoSpell.holdPadsNearVolcano(this);
   }
 
   lavaOnPad(b: Building): boolean {
@@ -1284,324 +1288,55 @@ export class Sim {
   }
 
   blastAt(x: number, z: number): void {
-    this.blast = { x, z, t: 0, life: 0.8 };
-    this.fxShake = Math.max(this.fxShake, 0.3);
-    this.blastHit = false;
-    for (const u of this.units) {
-      if (u.hp <= 0) continue;
-      const d = Math.hypot(u.x - x, u.z - z);
-      if (d > 1.7) continue;
-      let dx = u.x - x;
-      let dz = u.z - z;
-      const len = Math.hypot(dx, dz) || 1;
-      dx /= len;
-      dz /= len;
-      u.fireT = 0;
-      u.flyVx = dx * 4.6;
-      u.flyVz = dz * 4.6;
-      u.flyVy = 5.8;
-      u.y = this.world.heightAt(u.x, u.z) + 0.35;
-      u.path = [];
-      u.pathI = 0;
-      u.think = 1.2;
-      this.blastHit = true;
-      this.blastHitX = u.x;
-      this.blastHitZ = u.z;
-      this.blastFlyer = { x: u.x, y: u.y, z: u.z };
-      if (u.team === BLUE) this.toast(u.kind === "shaman" ? "祭司被气浪打飞" : "一名子民被气浪打飞");
-    }
+    this.blastSpell.blastAt(this, x, z);
   }
 
   tickBlast(dt: number): void {
-    if (!this.blast) return;
-    this.blast.t += dt;
-    if (this.blast.t > this.blast.life) this.blast = null;
+    this.blastSpell.tick(this, dt);
   }
 
   strikeLightning(x: number, z: number): void {
-    this.fxBolts.push({ x0: x, z0: z, x1: x, z1: z, life: 0.9 });
-    this.fxShake = Math.max(this.fxShake, 0.5);
-    this.lightningHit = false;
-    this.lightningHouse = false;
-    for (const u of this.units) {
-      if (u.hp <= 0) continue;
-      const d = Math.hypot(u.x - x, u.z - z);
-      if (d > 1.7) continue;
-      let dx = u.x - x;
-      let dz = u.z - z;
-      const len = Math.hypot(dx, dz) || 1;
-      dx /= len;
-      dz /= len;
-      u.fireT = 3.6;
-      u.flyVx = dx * (4.4 + Math.random() * 0.6);
-      u.flyVz = dz * (4.4 + Math.random() * 0.6);
-      u.flyVy = 5.6;
-      u.y = this.world.heightAt(u.x, u.z) + 1.55;
-      u.hp = Math.max(1, u.hp - 8);
-      u.path = [];
-      u.pathI = 0;
-      u.think = 1.2;
-      this.lightningHit = true;
-      this.lightningHitX = u.x;
-      this.lightningHitZ = u.z;
-      if (u.team === BLUE) this.toast(u.kind === "shaman" ? "祭司被雷打飞" : "一名子民被雷打飞");
-    }
-    for (const b of this.buildings) {
-      if (b.hp <= 0 || b.kind === "rebirth") continue;
-      const d = Math.hypot(b.x - x, b.z - z);
-      if (d > 2.2 && !inPad(x, z, this.buildingPad(b), 0.25)) continue;
-      if (!b.shell) {
-        b.shell = true;
-        b.hp = Math.max(1, b.maxHp * 0.4);
-        this.lightningHouse = true;
-        if (b.team === BLUE && (b.kind === "hut" || isCampKind(b.kind))) this.toast("一座屋宇被劈成骨架");
-      } else {
-        b.hp = 0;
-        this.lightningHouse = true;
-      }
-    }
+    this.lightningSpell.strikeLightning(this, x, z);
   }
 
   beginTornado(x: number, z: number): boolean {
-    if (this.tornado && this.tornado.t < this.tornado.life - 0.4) return false;
-    let vx = 1.15;
-    let vz = 0.25;
-    let best = 99;
-    for (const b of this.buildings) {
-      if (b.hp <= 0 || b.kind === "rebirth") continue;
-      const d = Math.hypot(b.x - x, b.z - z);
-      if (d < best && d > 0.4) {
-        best = d;
-        vx = (b.x - x) / d;
-        vz = (b.z - z) / d;
-      }
-    }
-    const spd = 1.35;
-    this.tornado = { x, z, vx: vx * spd, vz: vz * spd, t: 0, life: 16, houseT: 0 };
-    this.fxShake = Math.max(this.fxShake, 0.22);
-    this.tornadoLift = false;
-    this.tornadoHouse = false;
-    return true;
+    return this.tornadoSpell.beginTornado(this, x, z);
   }
 
   tickTornado(dt: number): void {
-    const tw = this.tornado;
-    if (!tw) return;
-    tw.t += dt;
-    if (tw.t > tw.life) {
-      this.tornado = null;
-      return;
-    }
-    if (tw.t > 3.8 && Math.floor(tw.t / 1.7) !== Math.floor((tw.t - dt) / 1.7)) {
-      const ang = Math.atan2(tw.vz, tw.vx) + (Math.random() - 0.5) * 1.1;
-      const spd = 1.25 + Math.random() * 0.3;
-      tw.vx = Math.cos(ang) * spd;
-      tw.vz = Math.sin(ang) * spd;
-    }
-    let nx = tw.x + tw.vx * dt;
-    let nz = tw.z + tw.vz * dt;
-    if (!this.world.land(nx, nz) || !inMap(nx, nz)) {
-      tw.vx = -tw.vx + (Math.random() - 0.5) * 0.4;
-      tw.vz = -tw.vz + (Math.random() - 0.5) * 0.4;
-      nx = tw.x + tw.vx * dt;
-      nz = tw.z + tw.vz * dt;
-      if (!this.world.land(nx, nz)) {
-        nx = tw.x;
-        nz = tw.z;
-      }
-    }
-    tw.x = nx;
-    tw.z = nz;
-    for (const u of this.units) {
-      if (u.hp <= 0) continue;
-      const d = Math.hypot(u.x - tw.x, u.z - tw.z);
-      if (d > 1.7) continue;
-      if (d > 0.08) {
-        u.x += ((tw.x - u.x) / d) * 2.6 * dt;
-        u.z += ((tw.z - u.z) / d) * 2.6 * dt;
-      }
-      const tang = 2.4 * dt;
-      u.x += (-(tw.z - u.z) / Math.max(0.12, d)) * tang;
-      u.z += ((tw.x - u.x) / Math.max(0.12, d)) * tang;
-      u.x = clamp(u.x, 0.3, WORLD - 0.3);
-      u.z = clamp(u.z, 0.3, WORLD - 0.3);
-      const ground = this.world.heightAt(u.x, u.z);
-      u.y = ground + Math.min(2.1, (1.7 - d) * 1.35 + 0.25);
-      u.path = [];
-      u.pathI = 0;
-      u.think = 0.8;
-      this.tornadoLift = true;
-      this.tornadoLiftX = u.x;
-      this.tornadoLiftZ = u.z;
-      if (d < 0.62 && u.y > ground + 1.05) {
-        u.hp = 0;
-        if (u.team === BLUE) this.toast(u.kind === "shaman" ? "祭司被龙卷风卷走" : "一名子民被龙卷风卷走");
-      }
-    }
-    let touching = false;
-    for (const b of this.buildings) {
-      if (b.hp <= 0 || b.kind === "rebirth") continue;
-      const pad = this.buildingPad(b);
-      const d = Math.hypot(b.x - tw.x, b.z - tw.z);
-      if (d > 2.05 && !inPad(tw.x, tw.z, pad, 0.35)) continue;
-      touching = true;
-      if (!b.shell) {
-        b.shell = true;
-        b.hp = Math.max(1, b.maxHp * 0.4);
-        tw.houseT = 0;
-        this.tornadoHouse = true;
-        if (b.team === BLUE && (b.kind === "hut" || isCampKind(b.kind))) this.toast("一座屋宇被卷成骨架");
-      } else {
-        tw.houseT += dt;
-        if (tw.houseT > 0.85) {
-          b.hp = 0;
-          this.tornadoHouse = true;
-        }
-      }
-    }
-    if (!touching) tw.houseT = Math.max(0, tw.houseT - dt);
+    this.tornadoSpell.tick(this, dt);
   }
 
   beginQuake(x: number, z: number): boolean {
-    if (this.quake && this.quake.t < this.quake.dur + 0.35) return false;
-    this.quake = {
-      x,
-      z,
-      t: 0,
-      dur: 2.0,
-      angs: [3.86, 5.96, 1.76],
-      lens: [4.6, 4.4, 4.8],
-      opened: [0, 0, 0],
-    };
-    this.fxQuake = { x, z };
-    this.fxShake = Math.max(this.fxShake, 0.45);
-    return true;
+    return this.quakeSpell.beginQuake(this, x, z);
   }
 
   crackPoint(q: { x: number; z: number; angs: number[] }, k: number, s: number): { x: number; z: number } {
-    const ang = q.angs[k]!;
-    const wob = Math.sin(s * 2.1 + k * 1.3) * 0.22;
-    const c = Math.cos(ang);
-    const si = Math.sin(ang);
-    return { x: q.x + c * s - si * wob, z: q.z + si * s + c * wob };
+    return this.quakeSpell.crackPoint(q, k, s);
   }
 
   nearestOpenCrack(x: number, z: number): { d: number; x: number; z: number } {
-    const q = this.quake;
-    let best = { d: 99, x, z };
-    if (!q) return best;
-    for (let k = 0; k < q.angs.length; k++) {
-      const opened = q.opened[k]!;
-      if (opened < 0.08) continue;
-      for (let s = 0; s <= opened; s += 0.18) {
-        const p = this.crackPoint(q, k, s);
-        const d = Math.hypot(p.x - x, p.z - z);
-        if (d < best.d) best = { d, x: p.x, z: p.z };
-      }
-    }
-    return best;
+    return this.quakeSpell.nearestOpenCrack(this, x, z);
   }
 
   tickQuake(dt: number): void {
-    const q = this.quake;
-    if (!q) return;
-    q.t += dt;
-    const prog = Math.min(1, q.t / q.dur);
-    for (let k = 0; k < q.angs.length; k++) {
-      const target = q.lens[k]! * prog;
-      const prev = q.opened[k]!;
-      if (target > prev) {
-        for (let s = prev; s < target; s += 0.14) {
-          const p = this.crackPoint(q, k, s);
-          this.world.sinkTrench(p.x, p.z, 0.64, 0.4);
-        }
-        const tip = this.crackPoint(q, k, target);
-        this.world.sinkTrench(tip.x, tip.z, 0.64, 0.4);
-        q.opened[k] = target;
-      }
-    }
-    this.slideIntoCracks(dt);
-    this.collapseCutHouses();
-    if (q.t > q.dur + 4) this.quake = null;
+    this.quakeSpell.tick(this, dt);
   }
 
   slideIntoCracks(dt: number): void {
-    const q = this.quake;
-    if (!q || q.t < 0.12) return;
-    for (const u of this.units) {
-      if (u.hp <= 0) continue;
-      const n = this.nearestOpenCrack(u.x, u.z);
-      if (n.d > 0.9) continue;
-      if (n.d > 0.02) {
-        const nx = (n.x - u.x) / n.d;
-        const nz = (n.z - u.z) / n.d;
-        const spd = 2.6 * (1 - n.d / 0.9);
-        u.x = clamp(u.x + nx * spd * dt, 0.3, WORLD - 0.3);
-        u.z = clamp(u.z + nz * spd * dt, 0.3, WORLD - 0.3);
-        u.y = this.world.heightAt(u.x, u.z);
-        u.path = [];
-        u.pathI = 0;
-        u.think = 1.2;
-      }
-      const rim = this.world.heightAt(u.x + 0.55, u.z);
-      const here = this.world.heightAt(u.x, u.z);
-      if (q.t > 1.38 && n.d < 0.28 && (here < WATER + 0.06 || rim - here > 0.22)) {
-        u.hp = 0;
-        this.quakeKill = true;
-        this.quakeKillX = u.x;
-        this.quakeKillZ = u.z;
-        if (u.team === BLUE) this.toast(u.kind === "shaman" ? "祭司坠入地缝" : "一名子民坠入地缝");
-      }
-    }
+    this.quakeSpell.slideIntoCracks(this, dt);
   }
 
   collapseCutHouses(): void {
-    const q = this.quake;
-    if (!q) return;
-    for (const b of this.buildings) {
-      if (b.hp <= 0 || b.kind === "rebirth") continue;
-      const pad = this.buildingPad(b);
-      let hit = false;
-      for (let k = 0; k < q.angs.length && !hit; k++) {
-        const opened = q.opened[k]!;
-        for (let s = 0; s <= opened; s += 0.22) {
-          const p = this.crackPoint(q, k, s);
-          if (inPad(p.x, p.z, pad, 0.22)) {
-            hit = true;
-            break;
-          }
-        }
-      }
-      if (!hit) continue;
-      b.hp = 0;
-      this.quakeHutDown = true;
-    }
+    this.quakeSpell.collapseCutHouses(this);
   }
 
   beginVolcano(x: number, z: number): boolean {
-    if (this.volcano && this.volcano.t < this.volcano.dur + 1.2) return false;
-    this.volcano = { x, z, t: 0, dur: 2.6 };
-    this.fxShake = Math.max(this.fxShake, 0.28);
-    return true;
+    return this.volcanoSpell.beginVolcano(this, x, z);
   }
 
   tickVolcano(dt: number): void {
-    const v = this.volcano;
-    if (v) {
-      v.t += dt;
-      if (v.t <= v.dur) {
-        this.world.sculpt(v.x, v.z, 2.5, 1.35 * dt);
-        this.world.sculpt(v.x, v.z, 1.05, 0.45 * dt);
-      }
-      if (v.t > 1.1 && v.t <= v.dur + 2.0) {
-        const reach = 5 + Math.floor((v.t - 1.1) * 6);
-        this.world.growRivers(v.x, v.z, Math.min(12, reach));
-        this.world.seedLava(v.x, v.z, 0.22, 3.8);
-      }
-      if (v.t > v.dur + 8) this.volcano = null;
-      this.holdPadsNearVolcano();
-    }
-    this.burnBuildings(dt);
+    this.volcanoSpell.tick(this, dt);
   }
 
   mergeWalkers(): void {
