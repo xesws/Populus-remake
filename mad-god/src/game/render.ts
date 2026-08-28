@@ -5,6 +5,7 @@ import { World } from "./world";
 import { TornadoFX } from "./render-parts/tornado-fx";
 import { LavaFX } from "./render-parts/lava-fx";
 import { SculptIndicatorFX } from "./render-parts/sculpt-indicator-fx";
+import { GuardFireFX } from "./render-parts/guard-fire-fx";
 
 const RT_W = 800;
 const RT_H = 600;
@@ -99,6 +100,7 @@ export class View {
   tornadoFX = new TornadoFX();
   lavaFX = new LavaFX();
   sculptIndicator = new SculptIndicatorFX();
+  guardFireFX = new GuardFireFX();
   blastGroup = new THREE.Group();
   blastRingMat = new THREE.MeshBasicMaterial({ color: 0xf4f0dc, transparent: true, opacity: 0.85, side: THREE.DoubleSide });
   blastDustMat = new THREE.MeshLambertMaterial({ color: 0xddd6c4 });
@@ -198,6 +200,7 @@ export class View {
       this.tornadoFX.group,
       this.lavaFX.group,
       this.sculptIndicator.group,
+      this.guardFireFX.group,
       this.blastGroup,
     );
 
@@ -547,6 +550,7 @@ export class View {
     this.syncLavaStreams(sim);
     this.syncTornado(sim, dt);
     this.lavaFX.sync(sim, dt); // v0.18 岩浆物理粒子（火山喷发 + 顺坡流动）
+    this.guardFireFX.sync(sim, dt); // v0.19 守卫篝火
     this.syncBlast(sim);
     this.syncAnkhs(sim);
     this.syncShots(sim);

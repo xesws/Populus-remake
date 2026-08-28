@@ -25,7 +25,7 @@ export class HUD {
 
   bind(
     onTool: (t: Tool) => void,
-    onOrder: (o: "settle" | "gather" | "fight" | "shaman") => void,
+    onOrder: (o: "settle" | "gather" | "fight" | "shaman" | "guard") => void,
     onTrain: (k: TrainKind) => void,
     onMini: (x: number, z: number) => void,
     onBuild: (k: BuildingKind) => void,
@@ -36,7 +36,7 @@ export class HUD {
     });
     document.querySelectorAll<HTMLButtonElement>("[data-order]").forEach((btn) => {
       btn.addEventListener("click", () =>
-        onOrder(btn.dataset.order as "settle" | "gather" | "fight" | "shaman"),
+        onOrder(btn.dataset.order as "settle" | "gather" | "fight" | "shaman" | "guard"),
       );
     });
     document.querySelectorAll<HTMLButtonElement>("[data-build]").forEach((btn) => {

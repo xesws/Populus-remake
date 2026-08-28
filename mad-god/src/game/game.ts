@@ -199,6 +199,7 @@ export class Game {
       gather: "谕令：向标记聚集（再点击地图放置标记）",
       fight: "谕令：出击",
       shaman: "谕令：到祭司身边集合",
+      guard: "谕令：围篝火守卫休整（跳舞回血，遇敌自动迎战）",
     };
     this.sim.toast(label[o]);
     if (o === "gather") {

@@ -11,6 +11,9 @@ import {
   clamp,
   dist2,
   FxBolt,
+  GUARD_DANCE_R,
+  GUARD_HEAL,
+  GUARD_R,
   houseHp,
   houseMaxPop,
   inMap,
@@ -127,6 +130,8 @@ export class Sim {
   blastHitZ = 0;
   blastFlyer: { x: number; y: number; z: number } | null = null;
   stuckWatch = new Map<number, { x: number; z: number; t: number }>();
+  /** v0.19 守卫篝火：每队至多一个（守卫令下达/移动），圈内跳舞回血；队内无守卫单位时移除。 */
+  guardFires: { x: number; z: number; team: Team }[] = [];
   /** v0.17 AI 防御钩子：本队单位/建筑在 (x,z) 受袭时触发（火球命中/法术伤害处调用）；无 AI 时为 undefined。 */
   onTeamHurt?: TeamHurtHook;
 
@@ -673,9 +678,35 @@ export class Sim {
       this.toast("先选人");
       return;
     }
+    // v0.19 守卫令：篝火建在选中组质心（原地成圈跳舞，无需二次点地）；重复下令移动篝火位置。
+    if (order === "guard") {
+      let cx = 0;
+      let cz = 0;
+      let n = 0;
+      for (const u of pool) {
+        if (u.homeId > 0) continue;
+        cx += u.x;
+        cz += u.z;
+        n++;
+      }
+      if (n > 0) {
+        cx /= n;
+        cz /= n;
+        this.teams[team].magnetX = cx;
+        this.teams[team].magnetZ = cz;
+        const fire = this.guardFires.find((f) => f.team === team);
+        if (fire) {
+          fire.x = cx;
+          fire.z = cz;
+        } else {
+          this.guardFires.push({ x: cx, z: cz, team });
+        }
+        if (team === BLUE) this.toast("在篝火旁守卫休整");
+      }
+    }
     for (const u of pool) {
       if (u.homeId > 0) continue;
-      if (u.kind !== "walker" && u.kind !== "shaman" && u.kind !== "spy") continue;
+      // v0.19 诏令统一：士兵（武士/传教士/火战士/间谍）同样响应聚集/战斗/守卫令（守卫回血、扑向敌区都需要他们）。
       if (u.job === "train") continue;
       this.clearOrders(u);
       u.order = order;
@@ -684,8 +715,27 @@ export class Sim {
     }
   }
 
-  setMagnet(team: Team, x: number, z: number): void {
-    this.teams[team].magnetX = x;
+  /**
+   * v0.19 守卫篝火 tick：维护篝火生命周期（队内已无守卫单位则熄灭），
+   * 并对圈内（GUARD_R）跳舞的守卫单位回血——村民同样受益（只要 order=guard 且在圈内）。
+   */
+  tickGuardFires(dt: number): void {
+    if (this.guardFires.length) {
+      this.guardFires = this.guardFires.filter(
+        (f) => this.units.some((u) => u.team === f.team && u.order === "guard" && u.hp > 0),
+      );
+    }
+    if (!this.guardFires.length) return;
+    for (const u of this.units) {
+      if (u.order !== "guard" || u.hp <= 0 || u.homeId > 0) continue;
+      const fire = this.guardFires.find((f) => f.team === u.team);
+      if (!fire) continue;
+      if (dist2(u.x, u.z, fire.x, fire.z) > GUARD_R * GUARD_R) continue;
+      u.hp = Math.min(u.maxHp, u.hp + GUARD_HEAL * dt);
+    }
+  }
+
+  setMagnet(team: Team, x: number, z: number): void {    this.teams[team].magnetX = x;
     this.teams[team].magnetZ = z;
   }
 
@@ -790,6 +840,7 @@ export class Sim {
     this.mergeWalkers();
     this.respawnShamans(dt);
     this.cull();
+    this.tickGuardFires(dt);
     this.checkWin();
     // v0.14 全局心跳：每秒一条运行状况快照（人口/上限、茅屋/入住、法力、生产冻结），落 logs/game.log。
     logger.periodic("sim:beat", 1000, LogLevel.Debug, "sim", "心跳", () => {
@@ -1116,9 +1167,81 @@ export class Sim {
       }
     }
 
+    // v0.19 守卫令：围篝火跳舞——圈外走向篝火，圈内绕圆周小步起舞（走走停停的节拍感）。
+    if (u.order === "guard") {
+      const fire = this.guardFires.find((f) => f.team === u.team);
+      if (!fire) {
+        u.order = "settle"; // 篝火已熄（全队守卫单位覆灭后再无重下令）：退回定居
+      } else {
+        const d = Math.hypot(u.x - fire.x, u.z - fire.z);
+        if (d > GUARD_R) {
+          u.path = astar(this.world, u.x, u.z, fire.x, fire.z);
+          u.pathI = 0;
+        } else {
+          const ang = this.time * 0.5 + u.id * 1.7; // 相位随时间推进 + 按单位错开：圆舞
+          const tx = fire.x + Math.cos(ang) * GUARD_DANCE_R;
+          const tz = fire.z + Math.sin(ang) * GUARD_DANCE_R;
+          if (dist2(u.x, u.z, tx, tz) > 0.16) {
+            u.path = astar(this.world, u.x, u.z, tx, tz);
+            u.pathI = 0;
+          } else {
+            u.path = [];
+          }
+        }
+        return;
+      }
+    }
+
+    // v0.19 战斗令明确化：无目标的士兵自动扑向最近的敌方单位/建筑（持续压向敌区，接战交给索敌）。
+    if (u.order === "fight" && u.isSoldier()) {
+      const enemy: Team = u.team === BLUE ? RED : BLUE;
+      let tx = -1;
+      let tz = -1;
+      let best = 1e18;
+      for (const o of this.units) {
+        if (o.team !== enemy || o.hp <= 0 || o.homeId > 0) continue;
+        const d = dist2(u.x, u.z, o.x, o.z);
+        if (d < best) {
+          best = d;
+          tx = o.x;
+          tz = o.z;
+        }
+      }
+      for (const b of this.buildings) {
+        if (b.team !== enemy || b.hp <= 0 || b.kind === "rebirth") continue;
+        const d = dist2(u.x, u.z, b.x, b.z);
+        if (d < best) {
+          best = d;
+          tx = b.x;
+          tz = b.z;
+        }
+      }
+      if (tx >= 0 && best > 9) {
+        // 已贴到 3 格内不再寻路，交给自动索敌接战（避免与 chaseAttack 争路）。
+        u.path = astar(this.world, u.x, u.z, tx, tz);
+        u.pathI = 0;
+      } else {
+        u.path = [];
+      }
+      return;
+    }
+
     if (u.order === "gather") {
-      u.path = astar(this.world, u.x, u.z, team.magnetX, team.magnetZ);
-      u.pathI = 0;
+      // v0.19 聚集令明确化：向 magnet 集结并散布——每单位一个固定伪随机落点（≤2.5 格），
+      // 到达即站住，不再全员挤同一点反复空寻路。
+      const h1 = Math.sin(u.id * 12.9898) * 43758.5453;
+      const fr = h1 - Math.floor(h1);
+      const h2 = Math.sin(u.id * 78.233) * 12345.6789;
+      const fa = (h2 - Math.floor(h2)) * Math.PI * 2;
+      const tx = team.magnetX + Math.cos(fa) * fr * 2.5;
+      const tz = team.magnetZ + Math.sin(fa) * fr * 2.5;
+      if (dist2(u.x, u.z, tx, tz) < 0.36) {
+        u.path = [];
+        u.pathI = 0;
+      } else {
+        u.path = astar(this.world, u.x, u.z, tx, tz);
+        u.pathI = 0;
+      }
       return;
     }
 

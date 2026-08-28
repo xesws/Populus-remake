@@ -115,14 +115,14 @@ export const UNIT_ATK_CD: Record<UnitKind, number> = {
   wildman: 1.2,
 };
 
-// 自动索敌半径（格）；0 = 不主动索敌、只还手。v0.8 生效。
+// 自动索敌半径（格）；0 = 不主动索敌、只还手。v0.8 生效；v0.19 武士 10 步、间谍 4 步。
 export const UNIT_SIGHT: Record<UnitKind, number> = {
   shaman: 0,
   walker: 0,
-  warrior: 3.5,
+  warrior: 10,
   preacher: 3.0,
   firewarrior: 5.5,
-  spy: 0,
+  spy: 4,
   wildman: 0,
 };
 
@@ -132,7 +132,8 @@ export const COUNTER_MULT: Partial<Record<UnitKind, Partial<Record<UnitKind, num
 };
 
 // 自动索敌/还手的追击拴绳（格）：自动获得的目标离锚点超过该距离就放弃；玩家手动指令不受拴绳限制。
-export const AGRO_LEASH = 8;
+// v0.19 8→10：与武士 10 步索敌半径匹配，否则 8~10 步看到的目标追两步就放弃。
+export const AGRO_LEASH = 10;
 
 // v0.9/v0.12 火球参数：弹速、暴击击飞（落地即死）与默认击退倒地。
 export const FIREBALL_SPEED = 4;
@@ -150,6 +151,11 @@ export const WARRIOR_CRIT_KNOCK_MAX = 3;
 export const PREACH_REACH = 1.25; // 引导射程（格），站桩不追击
 export const PREACH_TIME = 1.35; // 引导时长（秒），中途目标离开则重来
 
+// v0.19 守卫命令：围篝火跳舞回血，敌人进入索敌范围即退出（退出的单位转为 fight，不自动回圈）。
+export const GUARD_R = 5; // 篝火判定圈半径（格）：圈内跳舞回血
+export const GUARD_HEAL = 1.0; // 跳舞回血速率（hp/秒）
+export const GUARD_DANCE_R = 2.2; // 绕圈跳舞的圆周半径（格）
+
 // v0.11a 修复：房屋升级不再扩大占地（否则升级会把邻居挤掉）。各级 pad / 墙体面积恒定为 L1 尺寸，只许长高。
 export const HOUSE_WALL = [0, 2.2, 2.2, 2.2] as const;
 export const HOUSE_ROOF = [0, 2.2, 2.2, 2.2] as const;
@@ -166,7 +172,7 @@ export function padSize(level: number): { w: number; d: number } {
   return { w: s, d: s };
 }
 
-export type Order = "settle" | "gather" | "fight" | "shaman";
+export type Order = "settle" | "gather" | "fight" | "shaman" | "guard";
 export type Tool =
   | "select"
   | "raise"

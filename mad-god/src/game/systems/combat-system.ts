@@ -251,7 +251,9 @@ export class CombatSystem implements ISystem {
   /**
    * v0.8 自动索敌：仅当单位无 atkId、自身存活且在屋内、未处于训练态、
    * 属于部落单位、是士兵（武士/传教士/火战士）、且索敌半径 > 0 时触发；
-   找到最近敌人后写入 atkId 与 agroX/Z 锚点，再走既有 chaseAttack 追击。
+   * 找到最近敌人后写入 atkId 与 agroX/Z 锚点，再走既有 chaseAttack 追击。
+   * v0.19 扩展：牛头人（firewarrior）在索敌圈内无敌方单位时自动锁定最近敌方建筑（远程单位天然拆家）；
+   * 索敌命中会打断守卫舞（order: guard → fight，被打断的单位战后不自动回篝火）。
    */
   acquireTarget(sim: Sim, u: Unit): void {
     if (u.atkId) return;
@@ -264,8 +266,23 @@ export class CombatSystem implements ISystem {
     if (sight <= 0) return;
     const enemy: Team = u.team === BLUE ? RED : BLUE;
     const foe = this.closestEnemyUnit(sim, u, enemy, sight);
-    if (!foe) return;
-    u.atkId = foe.id;
+    // v0.19 牛头人自动拆家：圈内无敌方单位 → 锁定最近的敌方建筑（走既有对建筑喷火分支）。
+    let target: { id: number; x: number; z: number } | null = foe;
+    if (!target && u.kind === "firewarrior") {
+      let bestD = sight * sight;
+      for (const b of sim.buildings) {
+        if (b.team !== enemy || b.hp <= 0 || b.kind === "rebirth") continue;
+        const d = dist2(u.x, u.z, b.x, b.z);
+        if (d < bestD) {
+          bestD = d;
+          target = b;
+        }
+      }
+    }
+    if (!target) return;
+    // v0.19 守卫打断：篝火舞者被索敌拉走后转为 fight，战后不自动回圈（需玩家重新下令）。
+    if (u.order === "guard") u.order = "fight";
+    u.atkId = target.id;
     u.agroX = u.x;
     u.agroZ = u.z;
     sim.chaseAttack(u);
