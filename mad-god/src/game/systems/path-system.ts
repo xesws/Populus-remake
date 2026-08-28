@@ -65,8 +65,9 @@ export class PathSystem implements ISystem {
       else if (u.kind === "wildman") spd = 1.8;
       if (swamp) spd *= 0.04;
       const sl = sim.world.slopeAt(u.x, u.z);
-      spd *= 1 / (1 + sl * 2.8);
-      if (spd < 0.22) spd = 0.22;
+      // v0.13 坡度惩罚调缓 + 下限提高（地形已平滑）：消除陡坡爬行感。
+      spd *= 1 / (1 + Math.min(sl, 1.5) * 1.4);
+      if (spd < 0.5) spd = 0.5;
       if (u.kind === "preacher" && u.channel > 0) {
         u.y = sim.world.heightAt(u.x, u.z);
         continue;
@@ -127,7 +128,10 @@ export class PathSystem implements ISystem {
     this.resolveCollisions(sim);
     for (const u of sim.units) {
       if (u.flyVy !== 0 || u.y > sim.world.heightAt(u.x, u.z) + 0.08) continue;
-      u.y = sim.world.heightAt(u.x, u.z);
+      // v0.13 高度指数趋近 + 离地钳制：随地形起伏更顺滑，同时不会被误判为腾空。
+      const gh = sim.world.heightAt(u.x, u.z);
+      u.y += (gh - u.y) * Math.min(1, 20 * dt);
+      if (u.y > gh + 0.02) u.y = gh + 0.02;
     }
   }
 

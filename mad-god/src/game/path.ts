@@ -187,7 +187,8 @@ export function astar(
       const swamp = world.swamp[world.sampleAt(nwx, nwz)]! > 0 ? 1.6 : 0;
       const climb = Math.abs(nh - ch);
       const slope = world.slopeAt(nwx, nwz);
-      const cost = diag + climb * 1.15 + slope * 1.25 + swamp;
+      // v0.13 爬坡成本减半：地形已平滑，路径更直、展开更少、撞 maxVisit 更少。
+      const cost = diag + climb * 0.6 + slope * 0.7 + swamp;
       const ni = nz * GW + nx;
       const ng = gScore[cur]! + cost;
       if (ng < gScore[ni]!) {

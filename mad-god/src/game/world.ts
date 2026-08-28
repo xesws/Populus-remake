@@ -293,6 +293,45 @@ export class World {
     }
   }
 
+  /**
+   * v0.13 盒式松弛：对 [minIx..maxIx]×[minIz..maxIz] 做 iter 轮 3×3 邻域均值。
+   * 水面以下样本保持原值（clamp 不动），避免海岸被抹平；全部走脏区机制。
+   */
+  smoothField(iter: number, minIx: number, minIz: number, maxIx: number, maxIz: number): void {
+    const loIx = Math.max(1, minIx);
+    const loIz = Math.max(1, minIz);
+    const hiIx = Math.min(SAMPLES - 2, maxIx);
+    const hiIz = Math.min(SAMPLES - 2, maxIz);
+    const tmp = new Float32Array(this.h.length);
+    for (let pass = 0; pass < iter; pass++) {
+      for (let iz = loIz; iz <= hiIz; iz++) {
+        for (let ix = loIx; ix <= hiIx; ix++) {
+          const i = this.idx(ix, iz);
+          if (this.h[i]! <= WATER) continue;
+          tmp[i] =
+            (this.h[this.idx(ix - 1, iz - 1)]! +
+              this.h[this.idx(ix, iz - 1)]! +
+              this.h[this.idx(ix + 1, iz - 1)]! +
+              this.h[this.idx(ix - 1, iz)]! +
+              this.h[i]! +
+              this.h[this.idx(ix + 1, iz)]! +
+              this.h[this.idx(ix - 1, iz + 1)]! +
+              this.h[this.idx(ix, iz + 1)]! +
+              this.h[this.idx(ix + 1, iz + 1)]!) /
+            9;
+        }
+      }
+      for (let iz = loIz; iz <= hiIz; iz++) {
+        for (let ix = loIx; ix <= hiIx; ix++) {
+          const i = this.idx(ix, iz);
+          if (this.h[i]! <= WATER || tmp[i] === 0) continue;
+          this.h[i] = tmp[i]!;
+          this.markSample(ix, iz);
+        }
+      }
+    }
+  }
+
   sculpt(x: number, z: number, radius: number, dh: number): boolean {
     const r = Math.max(0.2, radius);
     const minIx = clamp(Math.floor((x - r) / STEP), 0, SAMPLES - 1);
@@ -306,8 +345,9 @@ export class World {
         const wz = iz * STEP;
         const d = Math.hypot(wx - x, wz - z);
         if (d > r) continue;
+        // v0.13 smoothstep falloff：笔刷边缘导数归零（C1 连续），不再留唇沿。
         const t = 1 - d / r;
-        const falloff = t * t;
+        const falloff = t * t * (3 - 2 * t);
         const i = this.idx(ix, iz);
         const nv = clamp(this.h[i]! + dh * falloff, 0, MAX_H);
         if (nv !== this.h[i]) {
@@ -330,8 +370,42 @@ export class World {
     const maxIz = clamp(Math.ceil((cz + reach) / STEP), 0, SAMPLES - 1);
     for (let iz = minIz; iz <= maxIz; iz++) {
       for (let ix = minIx; ix <= maxIx; ix++) {
-        if (!inPad(ix * STEP, iz * STEP, pad, 0.45)) continue;
-        this.setSample(ix, iz, target);
+        const px = ix * STEP;
+        const pz = iz * STEP;
+        if (inPad(px, pz, pad, 0.45)) {
+          // pad 内部（含 0.45 膨胀）精确平整：房屋地基要求不变。
+          this.setSample(ix, iz, target);
+          continue;
+        }
+        if (inPad(px, pz, pad, 2.0)) {
+          // v0.13 环形缓坡：pad 外 0.45~2.0 带 smoothstep 过渡到原地形（C1 连续，消除四周断崖）。
+          const l = localOnPad(px, pz, pad);
+          const infl = Math.max(Math.abs(l.x) - pad.w / 2, Math.abs(l.z) - pad.d / 2, 0);
+          const t = clamp(infl / 1.55, 0, 1);
+          const f = t * t * (3 - 2 * t);
+          const i = this.idx(ix, iz);
+          const nv = this.h[i]! + (target - this.h[i]!) * (1 - f);
+          if (nv !== this.h[i]) {
+            this.h[i] = nv;
+            this.markSample(ix, iz);
+          }
+        }
+      }
+    }
+    // v0.13 环形带 1 轮松弛：圆滑缓坡两端拐角（只写环形带，pad 内部保持精确平整）。
+    for (let iz = minIz; iz <= maxIz; iz++) {
+      for (let ix = minIx; ix <= maxIx; ix++) {
+        const px = ix * STEP;
+        const pz = iz * STEP;
+        if (inPad(px, pz, pad, 0.45) || !inPad(px, pz, pad, 2.3)) continue;
+        const i = this.idx(ix, iz);
+        if (this.h[i]! <= WATER) continue;
+        let sum = 0;
+        for (let dz = -1; dz <= 1; dz++) {
+          for (let dx = -1; dx <= 1; dx++) sum += this.h[this.idx(ix + dx, iz + dz)]!;
+        }
+        this.h[i] = sum / 9;
+        this.markSample(ix, iz);
       }
     }
   }
@@ -513,7 +587,9 @@ export class World {
         const wz = iz * STEP;
         const d = Math.hypot(wx - x, wz - z);
         if (d > r) continue;
-        const fall = (1 - d / r) * (1 - d / r);
+        // v0.13 smoothstep falloff：坑沿 C1 连续，不再留唇沿。
+        const t = 1 - d / r;
+        const fall = t * t * (3 - 2 * t);
         const i = this.idx(ix, iz);
         const nv = Math.max(0.02, this.h[i]! - depth * fall);
         if (nv !== this.h[i]) {
@@ -628,11 +704,17 @@ export class World {
           const inland = Math.max(0, 1 - dist / Math.max(edge, 1));
           h = 0.06 + land * (0.32 + inland * 2.05 + n * 0.5);
           const knoll = Math.sin(x * 0.52) * Math.cos(z * 0.41);
-          if (inland > 0.32) h += Math.max(0, knoll) * 1.05 * inland;
+          if (inland > 0.32) {
+            // v0.13 用 smoothstep(0,1,knoll) 替代 max(0,knoll)：保留"鼓包只增不减"的形态，去掉导数尖点。
+            const k = clamp(knoll, 0, 1);
+            h += k * k * (3 - 2 * k) * 1.05 * inland;
+          }
         }
         this.h[this.idx(ix, iz)] = clamp(h, 0, MAX_H);
       }
     }
+    // v0.13 生成期 3 轮盒式松弛：消除高频颗粒感，保留岛屿宏观形状（水面以下不动）。
+    this.smoothField(3, 0, 0, SAMPLES - 1, SAMPLES - 1);
     const ridgeX0 = 14;
     const ridgeZ0 = 36;
     const ridgeX1 = 36;
@@ -643,8 +725,29 @@ export class World {
       const z = ridgeZ0 + (ridgeZ1 - ridgeZ0) * t;
       this.sculpt(x, z, 1.8, 0.35);
     }
+    // v0.13 山脊凸包后再松弛 2 轮，让 ridge 融入地形。
+    this.smoothField(2, 0, 0, SAMPLES - 1, SAMPLES - 1);
+    // v0.13 浅水滩涂：紧邻陆地的水域抬到 0.16（仍低于 WATER，可通行性不变），海岸线从断崖变缓滩。
+    for (let iz = 1; iz < SAMPLES - 1; iz++) {
+      for (let ix = 1; ix < SAMPLES - 1; ix++) {
+        const i = this.idx(ix, iz);
+        if (this.h[i]! > WATER || this.h[i]! >= 0.16) continue;
+        let nearLand = false;
+        for (let dz = -1; dz <= 1 && !nearLand; dz++) {
+          for (let dx = -1; dx <= 1 && !nearLand; dx++) {
+            if (this.h[this.idx(ix + dx, iz + dz)]! > WATER) nearLand = true;
+          }
+        }
+        if (nearLand) {
+          this.h[i] = 0.16;
+          this.markSample(ix, iz);
+        }
+      }
+    }
     for (const s of this.starts) {
-      this.flattenPad(s.x, s.z, 3.2, 3.2, s.yaw, s.h);
+      // v0.13 出生平台高度随当地地形（+0.25）：出生点大多在海岸边，固定 2.05 会在平台边造出两米海崖。
+      const sh = Math.max(this.heightAt(s.x, s.z), 0.8) + 0.25;
+      this.flattenPad(s.x, s.z, 3.2, 3.2, s.yaw, sh);
     }
     this.markAll();
   }
