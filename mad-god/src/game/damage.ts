@@ -1,4 +1,13 @@
-import { BLUE, Building, damageAfterArmor, isCampKind, Unit, UnitKind } from "./types";
+import {
+  BLUE,
+  Building,
+  counterMult,
+  isCampKind,
+  UNIT_ARMOR,
+  unitAttack,
+  Unit,
+  UnitKind,
+} from "./types";
 import type { Sim } from "./sim";
 
 /**
@@ -7,9 +16,10 @@ import type { Sim } from "./sim";
  * applyBuildingDamage 沿用骨架（完好 → 柱梁骨架 → 拆没）三段规则。
  */
 
-export function applyUnitDamage(target: Unit, atkKind: UnitKind): number {
+export function applyUnitDamage(target: Unit, atkKind: UnitKind, rawDmg?: number): number {
   if (target.hp <= 0) return 0;
-  const dmg = damageAfterArmor(atkKind, target.kind);
+  const raw = rawDmg ?? unitAttack(atkKind);
+  const dmg = Math.max(1, Math.round(raw * counterMult(atkKind, target.kind) - UNIT_ARMOR[target.kind]));
   target.hp -= dmg;
   return dmg;
 }

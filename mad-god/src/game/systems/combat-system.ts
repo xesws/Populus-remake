@@ -6,11 +6,17 @@ import {
   canConvert,
   clamp,
   dist2,
+  FIRE_KNOCK_CHANCE,
+  FIRE_LAND_DMG,
+  FIRE_LAUNCH_CHANCE,
+  FIREBALL_SPEED,
   isTribe,
   NEUTRAL,
+  Projectile,
   RED,
   Team,
   Unit,
+  unitAttack,
   unitDamageToBuilding,
   unitHp,
   unitRange,
@@ -35,6 +41,8 @@ export class CombatSystem implements ISystem {
     for (const u of sim.units) {
       if (!isTribe(u.team) || u.hp <= 0 || u.homeId > 0) continue;
       if (u.atkCd > 0) u.atkCd = Math.max(0, u.atkCd - dt);
+      // v0.9 腾空中的单位不能出刀（冷却照常走）。
+      if (u.flyVy !== 0 || u.y > sim.world.heightAt(u.x, u.z) + 0.08) continue;
       if (!u.atkId) continue;
       // v0.8 自动索敌拴绳：agroX = -1 表示玩家手动指令，不受拴绳限制。
       if (u.agroX >= 0 && dist2(u.x, u.z, u.agroX, u.agroZ) > AGRO_LEASH * AGRO_LEASH) {
@@ -47,8 +55,19 @@ export class CombatSystem implements ISystem {
 
       const tu = sim.unitById(u.atkId);
       if (tu) {
+        // v0.9 被击飞腾空的目标近战/火球都打不到，攻击者原地等它落地。
+        if (tu.flyVy !== 0 || tu.y > sim.world.heightAt(tu.x, tu.z) + 0.08) continue;
         const range = unitRange(u.kind);
-        if (u.atkCd <= 0 && dist2(u.x, u.z, tu.x, tu.z) <= range * range) {
+        const d2 = dist2(u.x, u.z, tu.x, tu.z);
+        // v0.9 火战士远程分派：射程内且视线通畅才发射火球；被地形遮挡视为未进射程，继续贴近。
+        if (u.kind === "firewarrior") {
+          if (u.atkCd <= 0 && d2 <= range * range && !sim.world.losBlocked(u.x, u.z, tu.x, tu.z)) {
+            this.launchFireball(sim, u, tu.x, tu.z);
+            u.atkCd = attackInterval(u.kind);
+          }
+          continue;
+        }
+        if (u.atkCd <= 0 && d2 <= range * range) {
           applyUnitDamage(tu, u.kind);
           u.atkCd = attackInterval(u.kind);
           if (tu.hp > 0) {
@@ -65,7 +84,17 @@ export class CombatSystem implements ISystem {
         u.atkId = 0;
         continue;
       }
-      const reach = Math.max(b.padW, b.padD) * 0.5 + 0.95;
+      const edge = Math.max(b.padW, b.padD) * 0.5;
+      // v0.9 火战士对建筑同样远程喷火（以 pad 边缘起算射程）。
+      if (u.kind === "firewarrior") {
+        const d = Math.hypot(b.x - u.x, b.z - u.z) - edge;
+        if (u.atkCd <= 0 && d <= unitRange(u.kind) && !sim.world.losBlocked(u.x, u.z, b.x, b.z)) {
+          this.launchFireball(sim, u, b.x, b.z);
+          u.atkCd = attackInterval(u.kind);
+        }
+        continue;
+      }
+      const reach = edge + 0.95;
       if (u.atkCd > 0 || dist2(u.x, u.z, b.x, b.z) > reach * reach) continue;
       applyBuildingDamage(sim, b, unitDamageToBuilding(u.kind));
       u.atkCd = attackInterval(u.kind);
@@ -222,24 +251,70 @@ export class CombatSystem implements ISystem {
       p.x += p.vx * dt;
       p.z += p.vz * dt;
       p.life -= dt;
+      // v0.9 飞行撞地：发射端 LOS 之外的双保险——中途地形抬过弹道线即熄灭（遮挡无法通过）。
+      if (p.y < sim.world.heightAt(p.x, p.z) + 0.12) {
+        p.life = 0;
+        continue;
+      }
       const enemy: Team = p.team === BLUE ? RED : BLUE;
+      let hit = false;
       for (const u of sim.units) {
-        if (u.team !== enemy) continue;
-        if (dist2(p.x, p.z, u.x, u.z) < 0.28) {
-          u.hp -= p.dmg;
-          if (p.knock > 0) this.pushUnit(sim, u, p.ox, p.oz, p.knock);
-          p.life = 0;
+        if (u.team !== enemy || u.hp <= 0 || u.homeId > 0) continue;
+        if (u.flyVy !== 0) continue; // 腾空中的单位不被水平火球命中
+        if (dist2(p.x, p.z, u.x, u.z) < 0.28 && Math.abs(p.y - u.y) < 1.2) {
+          this.fireballHit(sim, u, p);
+          hit = true;
           break;
         }
       }
-      if (p.life > 0) {
+      if (!hit && p.life > 0) {
         const b = sim.buildingAt(p.x, p.z);
         if (b && b.team === enemy) {
-          b.hp -= p.dmg;
+          applyBuildingDamage(sim, b, unitDamageToBuilding("firewarrior"));
           p.life = 0;
         }
       }
     }
     sim.shots = sim.shots.filter((p) => p.life > 0);
+  }
+
+  /** v0.9 火球发射：平飞高度取两端地形较高者 +0.6（与 world.losBlocked 同一条基准线），弹速恒定。 */
+  launchFireball(sim: Sim, u: Unit, tx: number, tz: number): void {
+    const dx = tx - u.x;
+    const dz = tz - u.z;
+    const dist = Math.hypot(dx, dz) || 1;
+    sim.shots.push({
+      x: u.x,
+      z: u.z,
+      y: Math.max(sim.world.heightAt(u.x, u.z), sim.world.heightAt(tx, tz)) + 0.6,
+      vx: (dx / dist) * FIREBALL_SPEED,
+      vz: (dz / dist) * FIREBALL_SPEED,
+      team: u.team as Team,
+      dmg: unitAttack(u.kind),
+      life: dist / FIREBALL_SPEED + 0.4,
+      knock: 0,
+      ox: u.x,
+      oz: u.z,
+    });
+  }
+
+  /** v0.9 火球命中结算：统一伤害入口 + 概率击退 / 原地击飞（击飞附带落地伤害）。 */
+  fireballHit(sim: Sim, u: Unit, p: Projectile): void {
+    p.life = 0;
+    applyUnitDamage(u, "firewarrior");
+    if (u.hp <= 0) return;
+    const roll = Math.random();
+    if (roll < FIRE_KNOCK_CHANCE) {
+      this.pushUnit(sim, u, p.ox, p.oz, 1.2);
+    } else if (roll < FIRE_KNOCK_CHANCE + FIRE_LAUNCH_CHANCE) {
+      // 原地击飞：仅垂直速度，落地时结算 flyDmg（path-system 落地分支）。
+      u.flyVx = 0;
+      u.flyVz = 0;
+      u.flyVy = 5.2;
+      u.y = Math.max(u.y, sim.world.heightAt(u.x, u.z)) + 0.3;
+      u.flyDmg = FIRE_LAND_DMG;
+      u.path = [];
+      u.pathI = 0;
+    }
   }
 }

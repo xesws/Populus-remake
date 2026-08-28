@@ -67,8 +67,11 @@ function testCounterMultiplier(): void {
   fire.atkId = villager.id;
   fire.order = "fight";
 
+  // v0.9 起火战士远程发射火球：出刀后需推进弹道到命中。
   sim.combat(0.05);
-  assert(villager.hp <= 0, "克制系数表生效：火战士对村民 1.2 倍，一刀 6 血带走");
+  assert(sim.shots.length === 1, "火战士在射程内发射火球");
+  while (sim.shots.length) sim.projectiles(0.05);
+  assert(villager.hp <= 0, "克制系数表生效：火战士对村民 1.2 倍，一发火球 6 血带走");
 
   console.log("testCounterMultiplier ok");
 }

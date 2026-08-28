@@ -93,13 +93,13 @@ export const UNIT_ARMOR: Record<UnitKind, number> = {
   wildman: 0,
 };
 
-// 攻击距离（格）。火战士在 v0.9 接入火球后改为远程。
+// 攻击距离（格）。火战士 v0.9 起为远程火球。
 export const UNIT_RANGE: Record<UnitKind, number> = {
   shaman: 0.95,
   walker: 0.95,
   warrior: 0.95,
   preacher: 0.95,
-  firewarrior: 0.95,
+  firewarrior: 4.5,
   spy: 0.95,
   wildman: 0.95,
 };
@@ -133,6 +133,12 @@ export const COUNTER_MULT: Partial<Record<UnitKind, Partial<Record<UnitKind, num
 
 // 自动索敌/还手的追击拴绳（格）：自动获得的目标离锚点超过该距离就放弃；玩家手动指令不受拴绳限制。
 export const AGRO_LEASH = 8;
+
+// v0.9 火球参数：弹速（格/秒）、命中效果概率与击飞落地伤害。
+export const FIREBALL_SPEED = 4;
+export const FIRE_KNOCK_CHANCE = 0.4; // 命中击退（沿弹向推 1.2 格）
+export const FIRE_LAUNCH_CHANCE = 0.2; // 命中原地击飞（附带落地伤害）
+export const FIRE_LAND_DMG = 2;
 
 export const HOUSE_WALL = [0, 2.2, 3.8, 5.6] as const;
 export const HOUSE_ROOF = [0, 2.2, 3.8, 5.6] as const;

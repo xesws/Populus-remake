@@ -1,5 +1,6 @@
 import { astar, nearestLand, pullString } from "../path";
 import { Cell, clamp, dist2, padSize, UNIT_RADIUS, Unit, WORLD } from "../types";
+import { applyUnitDamage } from "../damage";
 import { inDoorSlit, inPad, pushCircleFromPad, TREE_BLOCK_R } from "../world";
 import type { Sim } from "../sim";
 import type { ISystem } from "./system";
@@ -31,6 +32,11 @@ export class PathSystem implements ISystem {
           u.flyVy = 0;
           u.flyVx = 0;
           u.flyVz = 0;
+          // v0.9 落地伤害：击飞来源（火球）写入的 flyDmg 在落地瞬间结算；法术击飞 flyDmg=0 不受影响。
+          if (u.flyDmg > 0) {
+            applyUnitDamage(u, "firewarrior", u.flyDmg);
+            u.flyDmg = 0;
+          }
         }
         continue;
       }

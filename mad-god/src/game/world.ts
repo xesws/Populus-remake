@@ -242,6 +242,22 @@ export class World {
     return Math.hypot(dhx, dhz);
   }
 
+  /**
+   * v0.9 弹道视线：沿连线按 STEP 采样，任一点地形高出「两端较高地面 + 0.6」的
+   * 平飞弹道线（留 0.12 落地余量）即视为遮挡。与 fireballHit 的飞行撞地判定同一条基准线。
+   */
+  losBlocked(x0: number, z0: number, x1: number, z1: number): boolean {
+    const lineY = Math.max(this.heightAt(x0, z0), this.heightAt(x1, z1)) + 0.6;
+    const dist = Math.hypot(x1 - x0, z1 - z0);
+    const steps = Math.max(1, Math.ceil(dist / STEP));
+    for (let i = 1; i < steps; i++) {
+      const t = i / steps;
+      const h = this.heightAt(x0 + (x1 - x0) * t, z0 + (z1 - z0) * t);
+      if (h > lineY - 0.12) return true;
+    }
+    return false;
+  }
+
   markSample(ix: number, iz: number): void {
     if (!this.dirty) {
       this.dirtyMinX = this.dirtyMaxX = ix;

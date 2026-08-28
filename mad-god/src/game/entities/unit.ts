@@ -39,6 +39,8 @@ export abstract class Unit extends BaseEntity {
   // v0.8 自动索敌/还手：获得目标时记录的锚点；-1 表示当前 atkId 来自玩家手动指令（不受拴绳限制）。
   agroX = -1;
   agroZ = -1;
+  // v0.9 击飞落地伤害：击飞来源（火球）在击飞时写入，落地结算后清零；法术击飞保持 0 不受影响。
+  flyDmg = 0;
 
   constructor(id: number, team: Owner, x: number, z: number, y: number, hp: number, maxHp = hp, str = 1) {
     super(id, team, x, z, y, hp, maxHp);

@@ -1122,7 +1122,7 @@ export class View {
         new THREE.BoxGeometry(0.12, 0.12, 0.12),
         new THREE.MeshLambertMaterial({ color: 0xffaa44, emissive: 0xaa3300 }),
       );
-      m.position.set(p.x, this.world.heightAt(p.x, p.z) + 0.45, p.z);
+      m.position.set(p.x, p.y, p.z);
       this.shotGroup.add(m);
     }
   }
