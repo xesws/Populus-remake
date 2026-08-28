@@ -131,76 +131,10 @@ export interface Waypoint {
   z: number;
 }
 
-export interface Unit {
-  id: number;
-  team: Owner;
-  kind: UnitKind;
-  x: number;
-  z: number;
-  y: number;
-  yaw: number;
-  hp: number;
-  maxHp: number;
-  str: number;
-  order: Order;
-  path: Waypoint[];
-  pathI: number;
-  think: number;
-  atkCd: number;
-  selected: boolean;
-  phase: number;
-  settleT: number;
-  settleX: number;
-  settleZ: number;
-  settleYaw: number;
-  channel: number;
-  channelId: number;
-  disguise: Team | null;
-  carry: 0 | 1;
-  job: Job;
-  targetId: number;
-  atkId: number;
-  homeId: number;
-  trainKind: TrainKind | null;
-  foundKind: BuildingKind | null;
-  swampT: number;
-  fireT: number;
-  flyVx: number;
-  flyVz: number;
-  flyVy: number;
-  enterT: number;
-}
-
-export interface Building {
-  id: number;
-  team: Team;
-  kind: BuildingKind;
-  x: number;
-  z: number;
-  y: number;
-  yaw: number;
-  padW: number;
-  padD: number;
-  level: number;
-  hp: number;
-  maxHp: number;
-  prod: number;
-  wood: number;
-  need: number;
-  shell: boolean;
-  dwell: number;
-  born: number;
-  wantLevel: number;
-}
-
-export interface Tree {
-  id: number;
-  x: number;
-  z: number;
-  y: number;
-  alive: boolean;
-  regen: number;
-}
+export { BaseEntity } from "./entities/entity";
+export { Unit } from "./entities/unit";
+export { Building } from "./entities/building";
+export { Tree } from "./entities/tree";
 
 export interface Cell {
   x: number;

@@ -1,5 +1,5 @@
 import { Sim } from "./sim";
-import { BLUE, houseHp, houseMaxPop, woodNeedFor } from "./types";
+import { BLUE, houseHp, houseMaxPop, Tree, woodNeedFor } from "./types";
 import { World } from "./world";
 
 function assert(cond: boolean, msg: string): void {
@@ -22,7 +22,7 @@ function testWoodChoppingAndDelivery(): void {
   assert(sim.needsWood(site!), "site needs wood");
 
   // Create a tree right next to walker for chopping
-  const tree = { id: 9999, x: walker!.x + 0.6, y: sim.world.heightAt(walker!.x + 0.6, walker!.z), z: walker!.z, alive: true, regen: 0 };
+  const tree = new Tree(9999, walker!.x + 0.6, walker!.z, sim.world.heightAt(walker!.x + 0.6, walker!.z), true, 0);
   sim.trees.push(tree);
 
   // Walker starts chopping

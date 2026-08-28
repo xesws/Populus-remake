@@ -1,4 +1,5 @@
 import { astar, nearestLand } from "./path";
+import { createBuilding, createTree, createUnit } from "./entities";
 import {
   Ankh,
   BLUE,
@@ -203,58 +204,15 @@ export class Sim {
         }
       }
       if (blocked) continue;
-      this.trees.push({
-        id: nid(),
-        x,
-        z,
-        y: this.world.heightAt(x, z),
-        alive: true,
-        regen: 0,
-      });
+      this.trees.push(createTree(nid(), x, z, this.world.heightAt(x, z), true, 0));
     }
   }
 
   addUnit(team: Owner, kind: UnitKind, x: number, z: number, str = 1): Unit {
-    const hp = unitHp(kind, str);
-    const u: Unit = {
-      id: nid(),
-      team,
-      kind,
-      x,
-      z,
-      y: this.world.heightAt(x, z),
-      yaw: 0,
-      hp,
-      maxHp: hp,
-      str,
-      order: isTribe(team) ? this.teams[team].order : "settle",
-      path: [],
-      pathI: 0,
-      think: 0,
-      atkCd: 0,
-      selected: false,
-      phase: Math.random() * Math.PI * 2,
-      settleT: 0,
-      settleX: -1,
-      settleZ: -1,
-      settleYaw: 0,
-      channel: 0,
-      channelId: 0,
-      disguise: null,
-      carry: 0,
-      job: "idle",
-      targetId: 0,
-      atkId: 0,
-      homeId: 0,
-      trainKind: null,
-      foundKind: null,
-      swampT: 0,
-      fireT: 0,
-      flyVx: 0,
-      flyVz: 0,
-      flyVy: 0,
-      enterT: 0,
-    };
+    const u = createUnit(nid(), team, kind, x, z, this.world.heightAt(x, z), str);
+    if (isTribe(team)) {
+      u.order = this.teams[team].order;
+    }
     this.units.push(u);
     if (kind === "shaman" && isTribe(team)) this.teams[team].hasShaman = true;
     return u;
@@ -391,27 +349,21 @@ export class Sim {
     this.world.flattenPad(x, z, pad.w, pad.d, yaw, h);
     const y = this.world.heightAt(x, z);
     const hp = kind === "rebirth" ? 40 : houseHp(Math.max(1, level));
-    const b: Building = {
-      id: nid(),
+    const b = createBuilding(
+      nid(),
       team,
       kind,
       x,
       z,
       y,
-      yaw,
-      padW: pad.w,
-      padD: pad.d,
       level,
+      yaw,
+      pad.w,
+      pad.d,
       hp,
-      maxHp: hp,
-      prod: 0,
-      wood: 0,
-      need: woodNeedFor(kind, level),
-      shell: false,
-      dwell: 0,
-      born: 0,
-      wantLevel: 0,
-    };
+      hp,
+      woodNeedFor(kind, level),
+    );
     this.buildings.push(b);
     this.markHouseBlocks();
     return b;
@@ -423,27 +375,21 @@ export class Sim {
     const h = this.world.heightAt(x, z);
     this.world.flattenPad(x, z, pad.w, pad.d, yaw, h);
     const y = this.world.heightAt(x, z);
-    const b: Building = {
-      id: nid(),
+    const b = createBuilding(
+      nid(),
       team,
       kind,
       x,
       z,
       y,
+      0,
       yaw,
-      padW: pad.w,
-      padD: pad.d,
-      level: 0,
-      hp: 12,
-      maxHp: 12,
-      prod: 0,
-      wood: 0,
-      need: woodNeedFor(kind, 0),
-      shell: false,
-      dwell: 0,
-      born: 0,
-      wantLevel: 0,
-    };
+      pad.w,
+      pad.d,
+      12,
+      12,
+      woodNeedFor(kind, 0),
+    );
     this.buildings.push(b);
     this.markHouseBlocks();
     return b;

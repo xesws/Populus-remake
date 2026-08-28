@@ -1,5 +1,5 @@
 import { Sim } from "./sim";
-import { BLUE, BuildingKind, houseHp, isCampKind, RED, WORLD } from "./types";
+import { BLUE, BuildingKind, houseHp, isCampKind, RED, Tree, WORLD } from "./types";
 import { inPad, worldOnPad, World } from "./world";
 import { View } from "./render";
 import { HUD } from "./ui";
@@ -1135,14 +1135,14 @@ export class ShotDirector {
           have[i]!.alive = true;
           have[i]!.regen = 0;
         } else {
-          this.sim.trees.push({
-            id: 9000 + i,
+          this.sim.trees.push(new Tree(
+            9000 + i,
             x,
             z,
-            y: this.world.heightAt(x, z),
-            alive: true,
-            regen: 0,
-          });
+            this.world.heightAt(x, z),
+            true,
+            0,
+          ));
         }
       }
       this.sim.markHouseBlocks();
