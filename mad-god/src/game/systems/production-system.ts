@@ -100,10 +100,11 @@ export class ProductionSystem implements ISystem {
         }
         b.prod = 0;
         b.born += 1;
+        // v0.11b 出生即占位：补 homeId + 进门动画，避免 dwell 卡死在上限以下让整屋锁死。
         const baby = sim.addUnit(b.team, "walker", spot.x, spot.z);
-        baby.homeId = 0;
-        const out = sim.padLocalToWorld(b, 0, b.padD / 2 + 2.0);
-        sim.sendMove(baby, out.x, out.z);
+        baby.homeId = b.id;
+        baby.enterT = 0.42;
+        b.dwell += 1;
         if (b.born >= 2 && b.level === 1) b.wantLevel = 2;
         else if (b.born >= 5 && b.level === 2) b.wantLevel = 3;
       }

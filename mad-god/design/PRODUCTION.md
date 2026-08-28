@@ -70,6 +70,23 @@ Object 过了。这一刀只做生产和建造循环。不打、不法、不补�
 - **名额释放（bug 修复）**：住户死亡在 `cull` 里释放 `dwell −1`；房屋被毁时住户迁出（`homeId` 清零、安置在原屋旁），不再出现「名额被尸体占死 / 居民随屋蒸发」。
 - 升级规则不变：L1 born≥2 → L2，L2 born≥5 → L3（自动）。
 
+## v0.11b 修复：生产死锁（出生即占位）
+
+v0.11 留了一个隐藏 bug：新生村民在 `production-system.ts:103-106` 被强制 `homeId=0` + `sendMove(出屋门)`，**永远不入住**。这导致 `dwell` 在首轮生产后立刻卡死（永远<cap）——看似"疯狂生产"实则是满员守卫形同虚设：第一个新生走光后再生的村民占同一屋不会让 dwell 变化，dwell 一直停 1，第二轮 guard 立刻 `continue`、整屋看似"住满即停"。
+
+修复：
+
+- 出生瞬间补 `homeId = hut.id` + `enterT = 0.42`（与 `occupy` 进门动画一致）；`b.dwell += 1` 与人口上限同步增长。
+- 删除 `sendMove` 出屋逻辑，出生点取 `sim.hutDoor(b)`（门口）。
+- `production-system.ts:88` 的满员守卫现在真正有意义：dwell==cap 时停（满员），与 L0 升级到 L1 的"出生后占位"语义对齐。
+
+副作用极小：玩家若想让村民出屋干活，可右键指派（`assignBuilders` 或 sendMove），与既有机制一致。
+
+回归（`produce-check`）：
+- `testNewbornImmediatelyOccupies`：出生瞬间 dwell+1、homeId 同步。
+- `testL1CapFullStop`：满员后整屋停 prod，5s 不再生（正向：守卫有效）。
+- `testL1KeepsProducingWhileNotFull`：1 人时持续产到 dwell=2（不是死锁），之后才触顶停。
+
 ## v0.11a 修复：升级占地恒定，只许长高
 
 旧版 L2/L3 会把 pad 扩到 4.4/6.4 并重建更大的模型——升级瞬间把邻居房屋挤掉。现改为：

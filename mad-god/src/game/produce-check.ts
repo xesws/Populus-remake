@@ -136,35 +136,106 @@ function testHutOccupancy(): void {
 
 function testProductionAndUpgrade(): void {
   const sim = new Sim(new World(42));
-  // Place an extra hut so popCap has headroom (popCap goes from 4 to 6)
+  // v0.11b 出生即占位：新生村民计入 popCap。
+  // 起始蓝方 2 个 L1 hut = popCap 4，起始 4 个 walker + 1 个 shaman = pop=5 >= popCap，整屋无法生产。
+  // 先把第二间 L1 升 L2（cap=5）留出 1 个空位给生产路径。
   const s = sim.world.startPad(BLUE);
-  sim.placeComplete(BLUE, s.x + 8, s.z + 8, s.yaw, "hut", 1);
+  const huts = sim.buildings.filter((b) => b.team === BLUE && b.kind === "hut" && b.level === 1);
+  assert(huts.length >= 2, "need at least 2 blue L1 huts");
+  sim.productionSystem.upgradeBuilding(sim, huts[1]!, 2);
+  // 同时给起始 shaman（无家可归）迁出——它持续驻留但不产人，占着 pop 不影响 hut 生产
+  // （shaman 计数会爆 popCap 吗？不会，shaman 仍计入 pop，但 popCap 已扩到 5，pop=5+1=6 仍超，故也需降一个 walker 入住）
+  const walker = sim.units.find((u) => u.team === BLUE && u.kind === "walker" && u.homeId === 0)!;
+  sim.occupy(walker, huts[0]!);
+  assert(huts[0]!.dwell === 1, "hut has 1 occupant");
 
-  const hut = sim.buildings.find((b) => b.team === BLUE && b.kind === "hut" && b.level === 1);
-  assert(!!hut, "need starting L1 hut");
-
-  // Add 1 occupant to hut (dwell < houseMaxPop(1), so dwell=1 is allowed to reproduce)
-  const walker = sim.units.find((u) => u.team === BLUE && u.kind === "walker")!;
-  sim.occupy(walker, hut!);
-  assert(hut!.dwell === 1, "hut has 1 occupant");
-
+  const hut = huts[0]!;
   const popBefore = sim.countPop(BLUE);
-
-  // Rate for L1 with dwell === 1 is 0.10/sec. 10s = 200 ticks at 0.05s.
-  for (let i = 0; i < 220; i++) sim.tick(0.05);
-
-  assert(hut!.born >= 1, "at least 1 baby born from hut");
+  // hut 1（cap 2，dwell=1）→ 可产；新生即占位 dwell=2 → 撞上限停；hut 2（L2 cap 5 dwell=0）继续生产
+  for (let i = 0; i < 800 && hut.born < 1; i++) sim.tick(0.05);
+  assert(hut.born >= 1, "at least 1 baby born from hut");
   assert(sim.countPop(BLUE) > popBefore, "population increased");
 
-  // Advance more to get 2nd baby born (born >= 2), which sets wantLevel = 2 and triggers upgrade
-  for (let i = 0; i < 220; i++) sim.tick(0.05);
-
-  assert(hut!.born >= 2, "at least 2 babies born total");
-  assert(hut!.level === 2, "house upgraded from L1 to L2 at 2 births");
-  assert(hut!.hp === houseHp(2), "hut hp upgraded to L2 house hp");
-  assert(houseMaxPop(2) === 5, "L2 max pop is 5");
+  for (let i = 0; i < 200 && hut.born < 2; i++) sim.tick(0.05);
+  // v0.11b：出生即占位，hut 1 cap=2 → 不会产第 2 个
+  assert(hut.born === 1, "L1 hut cap=2 + 出生即占位 = 仅产 1 个后停");
+  assert(hut.dwell === 2, "dwell 触顶 2");
+  assert(hut.hp === houseHp(1), "hut hp remains at L1");
 
   console.log("testProductionAndUpgrade ok");
+}
+
+// v0.11b 死锁修复：出生即占位 + 满员守卫有效
+
+function testNewbornImmediatelyOccupies(): void {
+  const sim = new Sim(new World(42));
+  // v0.11b：让起始 L1 hut 有人住、且 popCap 还有空位（先升级一间 L1 → L2 让 cap=5，给生产留位置）。
+  const s = sim.world.startPad(BLUE);
+  const huts = sim.buildings.filter((b) => b.team === BLUE && b.kind === "hut" && b.level === 1);
+  assert(huts.length >= 2, "need at least 2 blue L1 huts");
+  sim.productionSystem.upgradeBuilding(sim, huts[1]!, 2);
+  const hut = huts[0]!;
+
+  const walker = sim.units.find((u) => u.team === BLUE && u.kind === "walker" && u.homeId === 0)!;
+  sim.occupy(walker, hut);
+  const dwell0 = hut.dwell;
+  assert(dwell0 === 1, "起始入住后 dwell=1（仍未满员）");
+
+  // 让屋子持续产 1 个村民
+  for (let i = 0; i < 600 && hut.born < 1; i++) sim.tick(0.05);
+  assert(hut.born === 1, "成功产出第一个新生村民");
+  assert(hut.dwell === dwell0 + 1, "出生即占位：dwell 同步加 1（关键：避免锁死）");
+  const baby = sim.units.find((u) => u.team === BLUE && u.kind === "walker" && u.homeId === hut.id);
+  assert(!!baby, "新生村民 homeId 立刻等于 hut.id");
+
+  console.log("testNewbornImmediatelyOccupies ok");
+}
+
+function testL1CapFullStop(): void {
+  const sim = new Sim(new World(42));
+  // v0.11b：起始 pop=5、popCap=4（L1×2），任何入住都会顶 popCap 而被全局 guard 卡。
+  // 先升一间 L1 → L2 释放 cap=5，再放入 2 名村民让 hut 满员。
+  const s = sim.world.startPad(BLUE);
+  const huts = sim.buildings.filter((b) => b.team === BLUE && b.kind === "hut" && b.level === 1);
+  assert(huts.length >= 2, "need at least 2 blue L1 huts");
+  sim.productionSystem.upgradeBuilding(sim, huts[1]!, 2);
+  const hut = huts[0]!;
+
+  const w1 = sim.addUnit(BLUE, "walker", hut.x + 1, hut.z + 1);
+  const w2 = sim.addUnit(BLUE, "walker", hut.x - 1, hut.z + 1);
+  assert(sim.occupy(w1, hut) && sim.occupy(w2, hut), "两名村民入住 L1");
+  assert(hut.dwell === 2, "L1 满员 dwell=2");
+
+  const born0 = hut.born;
+  for (let i = 0; i < 200; i++) sim.tick(0.05); // 10s
+  assert(hut.born === born0, "满员后整屋停止生产（正向：守卫有效）");
+  assert(hut.prod === 0, "prod 不再累加");
+
+  console.log("testL1CapFullStop ok");
+}
+
+function testL1KeepsProducingWhileNotFull(): void {
+  const sim = new Sim(new World(42));
+  const s = sim.world.startPad(BLUE);
+  const huts = sim.buildings.filter((b) => b.team === BLUE && b.kind === "hut" && b.level === 1);
+  assert(huts.length >= 2, "need at least 2 blue L1 huts");
+  sim.productionSystem.upgradeBuilding(sim, huts[1]!, 2);
+  const hut = huts[0]!;
+
+  const w1 = sim.addUnit(BLUE, "walker", hut.x + 1, hut.z + 1);
+  assert(sim.occupy(w1, hut), "1 名村民入住 L1（dwell=1，仍可生产）");
+
+  const born0 = hut.born;
+  const dwell0 = hut.dwell;
+  for (let i = 0; i < 600 && hut.born < born0 + 1; i++) sim.tick(0.05);
+  assert(hut.born === born0 + 1, "L1 1人时持续产第 1 个新生");
+  assert(hut.dwell === dwell0 + 1, "出生即占位：dwell 同步加 1（关键：保证下一次仍可生产）");
+
+  for (let i = 0; i < 200 && hut.born < born0 + 2; i++) sim.tick(0.05);
+  // v0.11b：dwell 已到上限 2，停止生产
+  assert(hut.dwell === 2 && hut.born === born0 + 1, "dwell 触顶，停止生产（不是死锁，是满员停）");
+
+  console.log("testL1KeepsProducingWhileNotFull ok");
 }
 
 // v0.11 生产系统：速率随 dwell 连续加速、L3 上限 10、住户死亡/房屋被毁的名额释放。
@@ -294,7 +365,10 @@ function main(): void {
   testDwellReleasedOnDeath();
   testHouseDestroyedReleasesDwellers();
   testUpgradeKeepsFootprint();
-  console.log("produce-check ok (v0.11 生产 + v0.11a 占地恒定)");
+  testNewbornImmediatelyOccupies();
+  testL1CapFullStop();
+  testL1KeepsProducingWhileNotFull();
+  console.log("produce-check ok (v0.11 + v0.11a 占地 + v0.11b 出生即占位)");
 }
 
 main();
