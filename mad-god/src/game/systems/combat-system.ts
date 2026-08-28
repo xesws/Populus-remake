@@ -6,9 +6,9 @@ import {
   canConvert,
   clamp,
   dist2,
-  FIRE_KNOCK_CHANCE,
-  FIRE_LAND_DMG,
-  FIRE_LAUNCH_CHANCE,
+  FIRE_CRIT_CHANCE,
+  FIRE_DOWN_TIME,
+  FIRE_KNOCK_DIST,
   FIREBALL_SPEED,
   isTribe,
   NEUTRAL,
@@ -21,6 +21,9 @@ import {
   unitHp,
   unitRange,
   UNIT_SIGHT,
+  WARRIOR_CRIT_CHANCE,
+  WARRIOR_CRIT_KNOCK_MAX,
+  WARRIOR_CRIT_KNOCK_MIN,
   WORLD,
 } from "../types";
 import { applyBuildingDamage, applyUnitDamage } from "../damage";
@@ -41,8 +44,8 @@ export class CombatSystem implements ISystem {
     for (const u of sim.units) {
       if (!isTribe(u.team) || u.hp <= 0 || u.homeId > 0) continue;
       if (u.atkCd > 0) u.atkCd = Math.max(0, u.atkCd - dt);
-      // v0.9 腾空中的单位不能出刀（冷却照常走）。
-      if (u.flyVy !== 0 || u.y > sim.world.heightAt(u.x, u.z) + 0.08) continue;
+      // v0.9 腾空中的单位不能出刀（冷却照常走）；v0.12 倒地单位同样不能行动。
+      if (u.flyVy !== 0 || u.y > sim.world.heightAt(u.x, u.z) + 0.08 || u.downT > 0) continue;
       if (!u.atkId) continue;
       // v0.8 自动索敌拴绳：agroX = -1 表示玩家手动指令，不受拴绳限制。
       if (u.agroX >= 0 && dist2(u.x, u.z, u.agroX, u.agroZ) > AGRO_LEASH * AGRO_LEASH) {
@@ -69,11 +72,20 @@ export class CombatSystem implements ISystem {
         }
         if (u.atkCd <= 0 && d2 <= range * range) {
           applyUnitDamage(tu, u.kind);
+          // v0.12 武士暴击：50% 沿攻击方向击退 2~3 格，并追加伤害（合计 = 普通 ×2）；普攻无特效。
+          if (u.kind === "warrior" && tu.hp > 0 && Math.random() < WARRIOR_CRIT_CHANCE) {
+            applyUnitDamage(tu, u.kind);
+            if (tu.hp > 0) {
+              const knock =
+                WARRIOR_CRIT_KNOCK_MIN + Math.random() * (WARRIOR_CRIT_KNOCK_MAX - WARRIOR_CRIT_KNOCK_MIN);
+              this.pushUnit(sim, tu, u.x, u.z, knock);
+            }
+          }
           u.atkCd = attackInterval(u.kind);
-          if (tu.hp > 0) {
-            this.retaliate(sim, tu, u);
-          } else {
+          if (tu.hp <= 0) {
             u.atkId = 0;
+          } else {
+            this.retaliate(sim, tu, u);
           }
         }
         continue;
@@ -218,6 +230,7 @@ export class CombatSystem implements ISystem {
     if (u.hp <= 0 || u.homeId > 0) return;
     if (!isTribe(u.team)) return;
     if (u.job === "train") return;
+    if (u.downT > 0 || u.flyVy !== 0) return; // v0.12 倒地/腾空不索敌
     if (!u.isSoldier()) return;
     const sight = UNIT_SIGHT[u.kind];
     if (sight <= 0) return;
@@ -298,23 +311,31 @@ export class CombatSystem implements ISystem {
     });
   }
 
-  /** v0.9 火球命中结算：统一伤害入口 + 概率击退 / 原地击飞（击飞附带落地伤害）。 */
+  /**
+   * v0.12 火球命中结算：
+   * - 暴击（FIRE_CRIT_CHANCE）：照抄闪电参数真正打飞（沿弹道方向），落地直接死亡（flyKill）。
+   * - 默认：随机方向击退半格并倒地，伤害延到站起瞬间（path-system 结算 downDmg）。
+   */
   fireballHit(sim: Sim, u: Unit, p: Projectile): void {
     p.life = 0;
-    applyUnitDamage(u, "firewarrior");
-    if (u.hp <= 0) return;
-    const roll = Math.random();
-    if (roll < FIRE_KNOCK_CHANCE) {
-      this.pushUnit(sim, u, p.ox, p.oz, 1.2);
-    } else if (roll < FIRE_KNOCK_CHANCE + FIRE_LAUNCH_CHANCE) {
-      // 原地击飞：仅垂直速度，落地时结算 flyDmg（path-system 落地分支）。
-      u.flyVx = 0;
-      u.flyVz = 0;
-      u.flyVy = 5.2;
-      u.y = Math.max(u.y, sim.world.heightAt(u.x, u.z)) + 0.3;
-      u.flyDmg = FIRE_LAND_DMG;
+    if (Math.random() < FIRE_CRIT_CHANCE) {
+      const len = Math.hypot(p.vx, p.vz) || 1;
+      u.flyVx = (p.vx / len) * (4.4 + Math.random() * 0.6);
+      u.flyVz = (p.vz / len) * (4.4 + Math.random() * 0.6);
+      u.flyVy = 5.6;
+      u.y = sim.world.heightAt(u.x, u.z) + 1.55;
+      u.flyKill = true;
+      u.flyDmg = 0;
       u.path = [];
       u.pathI = 0;
+      return;
     }
+    // 默认击退：随机方向半格（pushUnit 分段探测，撞墙截断），倒地 + 伤害延付。
+    const ang = Math.random() * Math.PI * 2;
+    this.pushUnit(sim, u, u.x - Math.cos(ang), u.z - Math.sin(ang), FIRE_KNOCK_DIST);
+    u.downT = FIRE_DOWN_TIME;
+    u.downDmg += unitAttack("firewarrior");
+    u.path = [];
+    u.pathI = 0;
   }
 }

@@ -21,27 +21,36 @@ function fireAndHit(sim: Sim, dt = 0.05): void {
   assert(sim.shots.length === 0, "火球已结算消失");
 }
 
-function testLaunchAndPlainHit(): void {
+function testFireballDefaultKnockdown(): void {
   const sim = new Sim(new World(42));
   const fire = sim.addUnit(BLUE, "firewarrior", 20, 20);
-  const foe = sim.addUnit(RED, "warrior", 22, 20); // 距离 2 < 射程 4.5
+  const foe = sim.addUnit(RED, "warrior", 22, 20);
   fire.atkId = foe.id;
   fire.order = "fight";
-  const full = foe.hp; // 12
+  const full = foe.hp;
 
-  const orig = stubRandom(0.99); // > 0.4+0.2：纯伤害
+  const orig = stubRandom(0.99); // ≥ 0.2：默认击退倒地（随机方向角也由 stub 常数决定，确定性）
   try {
     fireAndHit(sim);
   } finally {
     Math.random = orig;
   }
-  const dmg = damageAfterArmor("firewarrior", "warrior"); // 5-2=3
-  assert(Math.abs(foe.hp - (full - dmg)) < 1e-6, `纯伤害命中：火球经统一结算入口扣 ${dmg} 血`);
-  assert(foe.flyVy === 0 && foe.flyDmg === 0, "纯伤害不击飞");
-  assert(Math.abs(foe.x - 22) < 1e-6, "纯伤害不位移");
-  assert(fire.atkId === foe.id, "目标存活攻击者保持目标");
+  assert(foe.hp === full, "倒地瞬间不扣血（伤害延迟到站起）");
+  assert(foe.downT > 0, "被火球命中后倒地");
+  const moved = Math.hypot(foe.x - 22, foe.z - 20);
+  assert(moved > 0.1 && moved <= 0.6, `随机方向击退约半格（d=${moved.toFixed(2)}）`);
+  assert(foe.flyVy === 0 && !foe.flyKill, "默认命中不打飞");
 
-  console.log("testLaunchAndPlainHit ok");
+  fire.atkId = 0; // 停火，观察站起结算
+  for (let i = 0; i < 100 && foe.downT > 0; i++) sim.tick(0.05);
+  assert(foe.downT === 0, "0.9s 后站起");
+  assert(foe.downDmg === 0, "延迟伤害已清零");
+  assert(
+    Math.abs(foe.hp - (full - damageAfterArmor("firewarrior", "warrior"))) < 1e-6,
+    "站起瞬间结算伤害（5 − 甲 2 = 3）"
+  );
+
+  console.log("testFireballDefaultKnockdown ok");
 }
 
 function testLosBlocksLaunch(): void {
@@ -87,7 +96,7 @@ function testMidFlightTerrainCrash(): void {
   console.log("testMidFlightTerrainCrash ok");
 }
 
-function testKnockbackOnHit(): void {
+function testFireballCritLethalLaunch(): void {
   const sim = new Sim(new World(42));
   const fire = sim.addUnit(BLUE, "firewarrior", 20, 20);
   const foe = sim.addUnit(RED, "warrior", 22, 20);
@@ -95,46 +104,24 @@ function testKnockbackOnHit(): void {
   fire.order = "fight";
   const full = foe.hp;
 
-  const orig = stubRandom(0.1); // < 0.4：击退
+  const orig = stubRandom(0.1); // < 0.2：暴击
   try {
     fireAndHit(sim);
   } finally {
     Math.random = orig;
   }
-  assert(foe.hp < full, "击退命中同样结算伤害");
-  assert(foe.x > 22.5, `被沿弹向击退（x=${foe.x.toFixed(2)} > 22.5）`);
-  assert(foe.flyVy === 0, "击退不是击飞");
+  assert(foe.flyVy > 0, "暴击真正打飞（获得垂直速度）");
+  assert(foe.flyKill, "标记落地即死");
+  assert(foe.y > sim.world.heightAt(foe.x, foe.z), "被抛到空中");
+  assert(foe.hp === full, "击飞瞬间不结算伤害（落地才死）");
 
-  console.log("testKnockbackOnHit ok");
-}
-
-function testKnockupAndLandingDamage(): void {
-  const sim = new Sim(new World(42));
-  const fire = sim.addUnit(BLUE, "firewarrior", 20, 20);
-  const foe = sim.addUnit(RED, "warrior", 22, 20);
-  fire.atkId = foe.id;
-  fire.order = "fight";
-  const full = foe.hp;
-
-  const orig = stubRandom(0.5); // 0.4 <= r < 0.6：原地击飞
-  try {
-    fireAndHit(sim);
-  } finally {
-    Math.random = orig;
-  }
-  const hitDmg = damageAfterArmor("firewarrior", "warrior");
-  assert(foe.flyVy > 0, "原地击飞：获得垂直速度");
-  assert(foe.flyDmg === 2, "击飞附带落地伤害标记");
-  assert(foe.y > sim.world.heightAt(foe.x, foe.z), "单位腾空");
-
-  fire.atkId = 0; // 停止后续攻击，观察落地
+  fire.atkId = 0;
   for (let i = 0; i < 200 && foe.flyVy !== 0; i++) sim.tick(0.05);
-  assert(foe.flyVy === 0, "单位已落地");
-  assert(foe.flyDmg === 0, "落地伤害标记已清零");
-  // 落地伤害 = max(1, 2 - 护甲2) = 1
-  assert(Math.abs(foe.hp - (full - hitDmg - 1)) < 1e-6, "落地瞬间结算落地伤害（经护甲）");
+  assert(foe.flyVy === 0, "已落地");
+  assert(foe.hp <= 0, "暴击击飞：摔下来直接死亡");
+  assert(!foe.flyKill, "标记已复位");
 
-  console.log("testKnockupAndLandingDamage ok");
+  console.log("testFireballCritLethalLaunch ok");
 }
 
 function testFlyingUnitsNotMeleed(): void {
@@ -186,14 +173,13 @@ function testFireballVsBuilding(): void {
 }
 
 function main(): void {
-  testLaunchAndPlainHit();
+  testFireballDefaultKnockdown();
+  testFireballCritLethalLaunch();
   testLosBlocksLaunch();
   testMidFlightTerrainCrash();
-  testKnockbackOnHit();
-  testKnockupAndLandingDamage();
   testFlyingUnitsNotMeleed();
   testFireballVsBuilding();
-  console.log("projectile-check ok (v0.9 火球弹道与命中效果)");
+  console.log("projectile-check ok (v0.12 火球：倒地延迟扣血 / 暴击致死击飞)");
 }
 
 main();

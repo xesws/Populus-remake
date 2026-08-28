@@ -41,6 +41,11 @@ export abstract class Unit extends BaseEntity {
   agroZ = -1;
   // v0.9 击飞落地伤害：击飞来源（火球）在击飞时写入，落地结算后清零；法术击飞保持 0 不受影响。
   flyDmg = 0;
+  // v0.12 倒地与暴击：被火球默认击中后倒下（downT 倒计时），站起瞬间经伤害入口结算 downDmg；
+  // flyKill = 暴击击飞标记，落地直接死亡（法术击飞恒为 false）。
+  downT = 0;
+  downDmg = 0;
+  flyKill = false;
   // v0.10 建工指派：assignBuilders 写入的在建工地 id；工地完工/损毁自动失效。蓝方待机豁免依赖它。
   buildId = 0;
 

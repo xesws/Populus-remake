@@ -134,11 +134,17 @@ export const COUNTER_MULT: Partial<Record<UnitKind, Partial<Record<UnitKind, num
 // 自动索敌/还手的追击拴绳（格）：自动获得的目标离锚点超过该距离就放弃；玩家手动指令不受拴绳限制。
 export const AGRO_LEASH = 8;
 
-// v0.9 火球参数：弹速（格/秒）、命中效果概率与击飞落地伤害。
+// v0.9/v0.12 火球参数：弹速、暴击击飞（落地即死）与默认击退倒地。
 export const FIREBALL_SPEED = 4;
-export const FIRE_KNOCK_CHANCE = 0.4; // 命中击退（沿弹向推 1.2 格）
-export const FIRE_LAUNCH_CHANCE = 0.2; // 命中原地击飞（附带落地伤害）
-export const FIRE_LAND_DMG = 2;
+export const FIRE_CRIT_CHANCE = 0.2; // 暴击：像闪电一样真正打飞，摔下来直接死亡
+export const FIRE_KNOCK_DIST = 0.5; // 默认命中：随机方向击退半格并倒地
+export const FIRE_DOWN_TIME = 0.9; // 倒地时长，站起瞬间才结算伤害
+
+// v0.12 武士暴击：概率击退并追加伤害（村民/传教士/间谍/萨满无暴击）。
+export const WARRIOR_CRIT_CHANCE = 0.5;
+export const WARRIOR_CRIT_MULT = 2;
+export const WARRIOR_CRIT_KNOCK_MIN = 2;
+export const WARRIOR_CRIT_KNOCK_MAX = 3;
 
 // v0.11a 修复：房屋升级不再扩大占地（否则升级会把邻居挤掉）。各级 pad / 墙体面积恒定为 L1 尺寸，只许长高。
 export const HOUSE_WALL = [0, 2.2, 2.2, 2.2] as const;
@@ -265,7 +271,8 @@ export function dist2(ax: number, az: number, bx: number, bz: number): number {
 
 export function unitHp(kind: UnitKind, str: number): number {
   if (kind === "shaman") return 14;
-  if (kind === "warrior") return 10 + str * 2;
+  // v0.12：武士（盾+刀）恒为火战士（无甲远程脆皮）的 3 倍血量：24+3s = 3×(8+s)。
+  if (kind === "warrior") return 24 + str * 3;
   if (kind === "preacher") return 7 + str;
   if (kind === "firewarrior") return 8 + str;
   if (kind === "spy") return 4 + str;

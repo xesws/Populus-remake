@@ -1,9 +1,15 @@
 import { Sim } from "./sim";
-import { attackInterval, BLUE, damageAfterArmor, houseHp, RED, unitDamageToBuilding } from "./types";
+import { attackInterval, BLUE, damageAfterArmor, houseHp, RED, unitDamageToBuilding, unitHp } from "./types";
 import { World } from "./world";
 
 function assert(cond: boolean, msg: string): void {
   if (!cond) throw new Error(msg);
+}
+
+function stubRandom(v: number): () => number {
+  const orig = Math.random;
+  Math.random = () => v;
+  return orig;
 }
 
 // v0.7 数值与伤害判定体系：护甲、克制、攻击间隔单发结算。
@@ -16,14 +22,19 @@ function testWarriorTwoHitsKillFirewarrior(): void {
   warrior.order = "fight";
 
   const full = foe.hp;
-  sim.combat(0.05);
-  assert(
-    Math.abs(foe.hp - (full - damageAfterArmor("warrior", "firewarrior"))) < 1e-6,
-    "首刀伤害 = 攻击 - 护甲（经统一结算入口）"
-  );
-  assert(foe.hp > 0, "火战士（9 血）第一刀不死");
+  const orig = stubRandom(0.99); // v0.12：≥ 0.5 无暴击，锁定普攻数值
+  try {
+    sim.combat(0.05);
+    assert(
+      Math.abs(foe.hp - (full - damageAfterArmor("warrior", "firewarrior"))) < 1e-6,
+      "首刀伤害 = 攻击 - 护甲（经统一结算入口）"
+    );
+    assert(foe.hp > 0, "火战士（9 血）第一刀不死");
 
-  sim.combat(attackInterval("warrior") + 0.01);
+    sim.combat(attackInterval("warrior") + 0.01);
+  } finally {
+    Math.random = orig;
+  }
   assert(foe.hp <= 0, "武士两刀解决火战士（克制关系）");
   assert(warrior.atkId === 0, "击杀后清 atkId");
 
@@ -67,11 +78,18 @@ function testCounterMultiplier(): void {
   fire.atkId = villager.id;
   fire.order = "fight";
 
-  // v0.9 起火战士远程发射火球：出刀后需推进弹道到命中。
-  sim.combat(0.05);
-  assert(sim.shots.length === 1, "火战士在射程内发射火球");
-  while (sim.shots.length) sim.projectiles(0.05);
-  assert(villager.hp <= 0, "克制系数表生效：火战士对村民 1.2 倍，一发火球 6 血带走");
+  // v0.12 起火球默认命中为倒地延迟扣血；伤害在站起瞬间经克制结算。
+  const orig = stubRandom(0.99); // 无暴击
+  try {
+    sim.combat(0.05);
+    assert(sim.shots.length === 1, "火战士在射程内发射火球");
+    while (sim.shots.length) sim.projectiles(0.05);
+  } finally {
+    Math.random = orig;
+  }
+  assert(villager.downT > 0 && villager.hp > 0, "默认命中：倒地、伤害延迟到站起");
+  for (let i = 0; i < 100 && villager.downT > 0; i++) sim.tick(0.05);
+  assert(villager.hp <= 0, "克制系数表生效：火战士对村民 ×1.2，站起结算 round(5×1.2)=6 直接带走");
 
   console.log("testCounterMultiplier ok");
 }
@@ -154,15 +172,59 @@ function testOrderAttackTarget(): void {
   console.log("testOrderAttackTarget ok");
 }
 
+// v0.12：武士血量恒为牛头人 3 倍（盾+刀 vs 无甲脆皮）。
+function testWarriorHpTripleFirewarrior(): void {
+  assert(unitHp("warrior", 1) === 27 && unitHp("firewarrior", 1) === 9, "基础血量 武士 27 / 牛头人 9");
+  assert(unitHp("warrior", 1) === 3 * unitHp("firewarrior", 1), "武士血量 = 牛头人 ×3（str=1）");
+  assert(unitHp("warrior", 2) === 3 * unitHp("firewarrior", 2), "武士血量 = 牛头人 ×3（str=2，公式恒等）");
+
+  console.log("testWarriorHpTripleFirewarrior ok");
+}
+
+// v0.12 武士暴击：50% 沿攻击方向击退 2~3 格 + 伤害 ×2；普攻无特效。
+function testWarriorCrit(): void {
+  const sim = new Sim(new World(42));
+  const warrior = sim.addUnit(BLUE, "warrior", 20, 20);
+  const foe = sim.addUnit(RED, "warrior", 20.5, 20); // 27 血甲 2：普通 4/刀，暴击 8/刀
+  warrior.atkId = foe.id;
+  warrior.order = "fight";
+  const full = foe.hp;
+
+  let orig = stubRandom(0.1); // < 0.5 → 暴击；击退距离 = 2 + 0.1 ≈ 2.1
+  try {
+    sim.combat(0.05);
+  } finally {
+    Math.random = orig;
+  }
+  assert(Math.abs(foe.hp - (full - 8)) < 1e-6, "暴击伤害 = 普通 ×2（4×2 = 8）");
+  const knocked = Math.hypot(foe.x - 20.5, foe.z - 20);
+  assert(knocked >= 2, `暴击沿攻击方向击退 2~3 格（d=${knocked.toFixed(2)}）`);
+
+  foe.x = 20.5;
+  foe.z = 20;
+  orig = stubRandom(0.6); // ≥ 0.5 → 无暴击
+  try {
+    sim.combat(attackInterval("warrior") + 0.01);
+  } finally {
+    Math.random = orig;
+  }
+  assert(Math.abs(foe.hp - (full - 12)) < 1e-6, "无暴击只扣普通伤害（累计 8 + 4）");
+  assert(Math.abs(foe.x - 20.5) < 1e-6 && Math.abs(foe.z - 20) < 1e-6, "普攻无位移无特效");
+
+  console.log("testWarriorCrit ok");
+}
+
 function main(): void {
   testWarriorTwoHitsKillFirewarrior();
   testWarriorOneHitKillsWalker();
   testArmorReducesDamage();
   testCounterMultiplier();
   testAttackCooldownGating();
+  testWarriorHpTripleFirewarrior();
+  testWarriorCrit();
   testHutDamageSkeletonAndDestruction();
   testOrderAttackTarget();
-  console.log("combat-check ok (v0.7 数值与伤害判定)");
+  console.log("combat-check ok (v0.7 数值伤害 + v0.12 武士暴击与 3× 血量)");
 }
 
 main();

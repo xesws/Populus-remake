@@ -1,6 +1,6 @@
 import * as THREE from "three";
 import { Sim } from "./sim";
-import { BLUE, clamp, FxBolt, houseMaxPop, isCampKind, SAMPLES, STEP, Team, TRAIN_TIME, WATER, WORLD } from "./types";
+import { BLUE, clamp, FIRE_DOWN_TIME, FxBolt, houseMaxPop, isCampKind, SAMPLES, STEP, Team, TRAIN_TIME, WATER, WORLD } from "./types";
 import { World } from "./world";
 
 const RT_W = 800;
@@ -684,6 +684,13 @@ export class View {
       const bob = Math.abs(Math.sin(this.t * 8 + u.phase)) * 0.03;
       g.position.set(u.x, u.y + bob, u.z);
       g.rotation.y = u.yaw;
+      // v0.12 倒地动画：命中后 0.2s 倒下 → 平躺 → 归零前 0.2s 爬起，倾角按包络系数过渡。
+      if (u.downT > 0) {
+        const f = Math.min(1, Math.min(u.downT, FIRE_DOWN_TIME - u.downT) / 0.2);
+        g.rotation.z = f * 1.4;
+      } else if (g.rotation.z !== 0) {
+        g.rotation.z = 0;
+      }
       let pack = g.getObjectByName("woodpack") as THREE.Mesh | undefined;
       if (!pack) {
         pack = new THREE.Mesh(

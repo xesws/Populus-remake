@@ -31,6 +31,7 @@ import {
   Tree,
   Unit,
   UnitKind,
+  unitRange,
   WATER,
   woodNeedFor,
   WORLD,
@@ -579,6 +580,24 @@ export class Sim {
     return null;
   }
 
+  /** v0.12 远程拉停：远程兵种（火战士）已在射程内且视线通畅时应站住开火，不再前压。 */
+  rangedHold(u: Unit, tu: Unit): boolean {
+    if (u.kind !== "firewarrior") return false;
+    const range = unitRange(u.kind);
+    if (Math.hypot(tu.x - u.x, tu.z - u.z) > range - 0.2) return false;
+    return !this.world.losBlocked(u.x, u.z, tu.x, tu.z);
+  }
+
+  /** v0.12 远程逼近点：停在射程边沿（range − 0.6），不走到目标脚下；近战兵种返回目标位置。 */
+  attackApproach(u: Unit, tu: { x: number; z: number }): { x: number; z: number } {
+    if (u.kind !== "firewarrior") return { x: tu.x, z: tu.z };
+    const stand = unitRange(u.kind) - 0.6;
+    const dx = u.x - tu.x;
+    const dz = u.z - tu.z;
+    const d = Math.hypot(dx, dz) || 1;
+    return { x: tu.x + (dx / d) * stand, z: tu.z + (dz / d) * stand };
+  }
+
   chaseAttack(u: Unit): void {
     const dest = this.liveAttackDest(u);
     if (!dest) {
@@ -590,8 +609,17 @@ export class Sim {
     this.clearOrders(u);
     u.atkId = atkId;
     u.job = "move";
-    u.path = astar(this.world, u.x, u.z, dest.x, dest.z);
-    if (!u.path.length) u.path = [{ x: dest.x, z: dest.z }];
+    const tu = this.unitById(u.atkId);
+    if (tu && this.rangedHold(u, tu)) {
+      // v0.12 已进射程且视线通畅：站住开火，不再向前移动。
+      u.path = [];
+      u.pathI = 0;
+      u.think = 0.3;
+      return;
+    }
+    const target = tu ? this.attackApproach(u, tu) : dest;
+    u.path = astar(this.world, u.x, u.z, target.x, target.z);
+    if (!u.path.length) u.path = [{ x: target.x, z: target.z }];
     u.pathI = 0;
     u.think = 0.55;
   }
@@ -1031,7 +1059,15 @@ export class Sim {
     if (u.atkId) {
       const tgt = this.liveAttackDest(u);
       if (tgt) {
-        u.path = astar(this.world, u.x, u.z, tgt.x, tgt.z);
+        const tu = this.unitById(u.atkId);
+        if (tu && this.rangedHold(u, tu)) {
+          // v0.12 远程拉停：射程内且视线通畅 → 站住开火。
+          u.path = [];
+          u.pathI = 0;
+          return;
+        }
+        const dest = tu ? this.attackApproach(u, tu) : tgt;
+        u.path = astar(this.world, u.x, u.z, dest.x, dest.z);
         u.pathI = 0;
         return;
       }

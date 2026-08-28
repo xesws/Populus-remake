@@ -32,12 +32,27 @@ export class PathSystem implements ISystem {
           u.flyVy = 0;
           u.flyVx = 0;
           u.flyVz = 0;
-          // v0.9 落地伤害：击飞来源（火球）写入的 flyDmg 在落地瞬间结算；法术击飞 flyDmg=0 不受影响。
-          if (u.flyDmg > 0) {
+          if (u.flyKill) {
+            // v0.12 暴击击飞：摔下来直接死亡。
+            u.flyKill = false;
+            u.flyDmg = 0;
+            u.hp = 0;
+          } else if (u.flyDmg > 0) {
+            // v0.9 落地伤害：击飞来源（火球）写入的 flyDmg 在落地瞬间结算；法术击飞 flyDmg=0 不受影响。
             applyUnitDamage(u, "firewarrior", u.flyDmg);
             u.flyDmg = 0;
           }
         }
+        continue;
+      }
+      if (u.downT > 0) {
+        // v0.12 倒地：不移动，倒计时；站起瞬间结算火球默认命中的延迟伤害。
+        u.downT = Math.max(0, u.downT - dt);
+        if (u.downT === 0 && u.downDmg > 0) {
+          applyUnitDamage(u, "firewarrior", u.downDmg);
+          u.downDmg = 0;
+        }
+        u.y = sim.world.heightAt(u.x, u.z);
         continue;
       }
       const swamp = sim.world.swamp[sim.world.sampleAt(u.x, u.z)]! > 0;

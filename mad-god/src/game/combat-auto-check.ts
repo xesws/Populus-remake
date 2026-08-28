@@ -129,13 +129,64 @@ function testAgroLeash(): void {
   console.log("testAgroLeash ok");
 }
 
+/** v0.12 远程拉停：火战士进射程即停、不再前压；武士对照贴身肉搏。 */
+function testFirewarriorStandsOff(): void {
+  const sim = new Sim(new World(42));
+  const fire = sim.addUnit(BLUE, "firewarrior", 20, 20);
+  fire.order = "fight";
+  const foe = sim.addUnit(RED, "walker", 26, 20); // 距离 6 > 索敌 5.5，模拟玩家手动下令
+  fire.atkId = foe.id;
+
+  let minDist = 1e9;
+  let hit = false;
+  for (let i = 0; i < 100; i++) {
+    sim.tick(0.05);
+    foe.x = 26;
+    foe.z = 20; // 钉住敌人，观察火战士自身走位
+    const d = Math.hypot(fire.x - 26, fire.z - 20);
+    if (d < minDist) minDist = d;
+    if (foe.hp < foe.maxHp || foe.downT > 0 || foe.flyVy !== 0 || foe.hp <= 0) hit = true;
+    if (foe.hp <= 0) break;
+  }
+  assert(hit, "远程持续开火命中（倒地/击飞/掉血至少其一）");
+  const d = Math.hypot(fire.x - 26, fire.z - 20);
+  assert(d <= 4.6 && d >= 3.2, `停在射程边沿开火（d=${d.toFixed(2)}）`);
+  assert(minDist >= 2.8, `不进入肉搏距离（min=${minDist.toFixed(2)}）`);
+
+  console.log("testFirewarriorStandsOff ok");
+}
+
+function testWarriorClosesToMelee(): void {
+  const sim = new Sim(new World(42));
+  const warrior = sim.addUnit(BLUE, "warrior", 20, 20);
+  warrior.order = "fight";
+  const foe = sim.addUnit(RED, "walker", 24, 20);
+  warrior.atkId = foe.id; // 距离 4 > 索敌 3.5，手动下令
+
+  let minDist = 1e9;
+  for (let i = 0; i < 100; i++) {
+    sim.tick(0.05);
+    foe.x = 24;
+    foe.z = 20;
+    if (foe.hp > 0) {
+      const d = Math.hypot(warrior.x - 24, warrior.z - 20);
+      if (d < minDist) minDist = d;
+    } else break;
+  }
+  assert(minDist <= 1.1, `武士贴身肉搏（min=${minDist.toFixed(2)}）`);
+
+  console.log("testWarriorClosesToMelee ok");
+}
+
 function main(): void {
   testWarriorAutoAcquire();
   testNoAcquireOutOfSight();
   testShamanRetaliate();
   testRedFightOrderAcquires();
   testAgroLeash();
-  console.log("combat-auto-check ok (v0.8 自动索敌与还手)");
+  testFirewarriorStandsOff();
+  testWarriorClosesToMelee();
+  console.log("combat-auto-check ok (v0.8 索敌还手 + v0.12 远程拉停)");
 }
 
 main();

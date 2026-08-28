@@ -13,6 +13,9 @@ Houses hold 2/5/10 residents by level; more residents breed faster,
 with a green progress bar over producing huts.
 Units have attack, armor, attack interval and counter stats; melee hits
 are cooldown-gated single strikes (see design/COMBAT.md).
+Firewarriors stand off at range and knock enemies down (crits launch for
+an instant kill); warriors have 3x firewarrior HP and 50% crit knockback;
+villagers punch with no frills.
 Train warriors with T, preachers with Y, firewarriors with G, spies with H.
 If the shaman is lost, send a follower to the ankh (order V).
 Win when the other side has no people and no houses.
