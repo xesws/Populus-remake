@@ -39,7 +39,7 @@ import {
   woodNeedFor,
   WORLD,
 } from "./types";
-import { inDoorSlit, inPad, Pad, padsOverlap, worldOnPad, World } from "./world";
+import { inDoorSlit, inPad, Pad, padsOverlap, PAD_STAND_INFLATE, worldOnPad, World } from "./world";
 import {
   CombatSystem,
   HazardSystem,
@@ -202,17 +202,28 @@ export class Sim {
   }
 
   seedWildmen(): void {
-    const pts = [
-      { x: 26, z: 26 },
-      { x: 22, z: 30 },
-      { x: 30, z: 22 },
-      { x: 24, z: 18 },
-      { x: 18, z: 24 },
-      { x: 33, z: 28 },
-      { x: 28, z: 34 },
-    ];
-    for (const p of pts) {
-      if (this.world.land(p.x, p.z)) this.addUnit(NEUTRAL, "wildman", p.x, p.z);
+    // v0.24 取点改为跟着地图走：旧实现写死 7 个 (18~34) 坐标，那是 52 格图的中心区，
+    // 换成模板化的 72 格图后中心经常是海面（群岛/环礁/半岛），于是一张图可能
+    // 一只野人都没有——感化（招降成村民）这条玩法链路直接失效（object-check 抓到）。
+    // 新语义：野人成对撒在**两方出生点的近郊**（6~13 格环带），既保证与主陆同域可达
+    // （出生点已由 WorldGen 的 8 向开阔度判据筛过），又保留"开局附近能碰上野人"的设计意图。
+    const rng = this.world.rng;
+    const sides = [this.world.startPad(BLUE), this.world.startPad(RED)];
+    let placed = 0;
+    for (let round = 0; round < 26 && placed < 7; round++) {
+      const s = sides[round % 2]!;
+      for (let t = 0; t < 30 && placed < 7; t++) {
+        const ang = rng.float(0, Math.PI * 2);
+        const r = rng.float(6, 13);
+        const x = s.x + Math.cos(ang) * r;
+        const z = s.z + Math.sin(ang) * r;
+        if (!inMap(x, z)) continue;
+        if (!this.world.walkableAt(x, z)) continue;
+        if (this.world.slopeAt(x, z) > 0.55) continue;
+        this.addUnit(NEUTRAL, "wildman", x, z);
+        placed++;
+        break; // 每一轮最多放一只，保证两侧交替、分布均匀
+      }
     }
   }
 
@@ -275,7 +286,7 @@ export class Sim {
 
   padEdge(cx: number, cz: number, w: number, d: number, yaw: number, fromX: number, fromZ: number): Cell {
     const pad: Pad = { x: cx, z: cz, w, d, yaw };
-    const inflate = 0.62;
+    const inflate = PAD_STAND_INFLATE;
     const local = (px: number, pz: number) => {
       const dx = px - pad.x;
       const dz = pz - pad.z;

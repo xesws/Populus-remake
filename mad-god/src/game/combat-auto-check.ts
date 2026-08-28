@@ -1,5 +1,5 @@
 import { Sim } from "./sim";
-import { BLUE, RED } from "./types";
+import { BLUE, RED, unitRange } from "./types";
 import { World } from "./world";
 
 function assert(cond: boolean, msg: string): void {
@@ -114,7 +114,10 @@ function testRedFightOrderAcquires(): void {
 function testAgroLeash(): void {
   const sim = new Sim(new World(42));
   const warrior = sim.addUnit(BLUE, "warrior", 20, 20);
-  sim.addUnit(RED, "walker", 21.5, 20);
+  const foe = sim.addUnit(RED, "walker", 21.5, 20);
+  // 靶子血量拉满：武士一刀就砍死 6 血村民（v0.19 数值克制的设计），而本用例要验的是
+  // 「自动获得目标 → 拉开锚点距离 → 自动放弃」两段判定，目标中途阵亡就没得判了。
+  foe.hp = 999;
 
   tickFor(sim, 0.5);
   assert(warrior.atkId !== 0, "leash: 武士已自动获得 atkId");
@@ -161,19 +164,27 @@ function testWarriorClosesToMelee(): void {
   const warrior = sim.addUnit(BLUE, "warrior", 20, 20);
   warrior.order = "fight";
   const foe = sim.addUnit(RED, "walker", 24, 20);
+  // 靶子血量拉满：村民只有 6 血，武士一刀就砍死，循环立刻 break，minDist 量到的其实是
+  // "敌人暴毙前武士还没走完的路"（实测 1.12），而不是近战贴身能力。这条要测的是
+  // 「远程手动下令后武士会一路贴到近战判定内」，所以敌人必须活得够久。
+  foe.hp = 999;
   warrior.atkId = foe.id; // 距离 4 > 索敌 3.5，手动下令
 
   let minDist = 1e9;
+  let hit = false;
   for (let i = 0; i < 100; i++) {
     sim.tick(0.05);
     foe.x = 24;
     foe.z = 20;
+    if (foe.hp < 999) hit = true;
     if (foe.hp > 0) {
       const d = Math.hypot(warrior.x - 24, warrior.z - 20);
       if (d < minDist) minDist = d;
     } else break;
   }
-  assert(minDist <= 1.1, `武士贴身肉搏（min=${minDist.toFixed(2)}）`);
+  // 近战判定半径就是 unitRange("warrior")=0.95：贴进这个圈才算真正能出刀。
+  assert(hit, "武士确实出刀命中（敌人掉血）");
+  assert(minDist <= unitRange("warrior"), `武士贴身肉搏（min=${minDist.toFixed(2)}）`);
 
   console.log("testWarriorClosesToMelee ok");
 }

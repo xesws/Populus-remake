@@ -29,6 +29,7 @@ import {
   WORLD,
 } from "../types";
 import { astar } from "../path";
+import { PAD_STAND_INFLATE, padSupportRadius } from "../world";
 import { applyBuildingDamage, applyUnitDamage } from "../damage";
 import type { Sim } from "../sim";
 import type { ISystem } from "./system";
@@ -123,7 +124,14 @@ export class CombatSystem implements ISystem {
         u.atkId = 0;
         continue;
       }
-      const edge = Math.max(b.padW, b.padD) * 0.5;
+      // v0.24 拆屋射程的几何修正：地基是**旋转矩形**，中心到边缘的距离随接近方向在
+      // half(1.30) ~ half·√2(1.84) 之间变，旧写法一律按 max(padW,padD)*0.5 当圆半径，
+      // 于是"武士能不能拆这座屋"取决于它从哪个方向走过来：padEdge 让它站在
+      // 边界外 0.62 处（斜角折合 2.2~2.7 格），而 reach 恒等于 1.3+0.95=2.25，
+      // 实测斜角站位 2.28 就永远差 0.03 格砍不到。现在按当前方向取真实支撑半径，
+      // 并把 padEdge 的站位外扩一并计入，指令与射程判定同一套几何、恒自洽。
+      const pad = { x: b.x, z: b.z, w: b.padW, d: b.padD, yaw: b.yaw };
+      const edge = padSupportRadius(pad, u.x, u.z);
       // v0.9 火战士对建筑同样远程喷火（以 pad 边缘起算射程）。
       if (u.kind === "firewarrior") {
         const d = Math.hypot(b.x - u.x, b.z - u.z) - edge;
@@ -133,7 +141,7 @@ export class CombatSystem implements ISystem {
         }
         continue;
       }
-      const reach = edge + 0.95;
+      const reach = edge + PAD_STAND_INFLATE + unitRange(u.kind);
       if (u.atkCd > 0 || dist2(u.x, u.z, b.x, b.z) > reach * reach) continue;
       applyBuildingDamage(sim, b, unitDamageToBuilding(u.kind));
       u.atkCd = attackInterval(u.kind);

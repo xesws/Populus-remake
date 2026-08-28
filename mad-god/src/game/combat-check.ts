@@ -119,8 +119,12 @@ function testHutDamageSkeletonAndDestruction(): void {
   assert(!hut!.shell, "hut starts not in skeleton stage");
 
   const warrior = sim.addUnit(BLUE, "warrior", hut!.x, hut!.z + 1.2);
-  warrior.atkId = hut!.id;
-  warrior.order = "fight";
+  // v0.24 改走玩家真实的"点敌屋拆屋"指令链：orderAttackTarget 会先 sendMove 到 pad 边缘
+  // 再挂 atkId。旧写法只挂 atkId——近战对建筑的判定半径是 edge+0.95=2.25，而 +1.2 的落点
+  // 在地基内、被 addUnit 就近吸到 2.59 格外，武士砍完第一刀就永远够不着房。
+  // 那时测到的是"指令链路缺一段行军"，不是本用例要测的房屋骨架(shell)状态机。
+  warrior.selected = true;
+  sim.orderAttackTarget(BLUE, hut!);
   const hit = unitDamageToBuilding("warrior");
   assert(hit === 4, "拆屋伤害 = 攻击 × 0.6（武士 4/刀）");
 

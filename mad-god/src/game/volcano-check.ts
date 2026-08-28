@@ -79,11 +79,22 @@ function testPlateauShape(): void {
   }
   // v0.22 平滑穹顶语义：中间高、四周矮——中心显著高于 1.5 格圈（坡降明显），
   // 顶面不再要求平坦也不再要求起伏；穹顶整体平滑（无高频噪声）。
+  // v0.24 取整圈均值：v0.22 的穹顶**刻意**带 ±15% 低频方位扰动（喷射方向各向差异），
+  // 只取正东一个点等于拿随机相位去卡固定阈值（实测差 0.01 而误报"不是穹顶"）。
+  // 整圈平均仍然是"中间高四周矮"的原判据，且与朝向无关。
   const hCenter = w.heightAt(VX, VZ);
-  const hRing1 = w.heightAt(VX + 1.5, VZ);
-  const hRing3 = w.heightAt(VX + 3.2, VZ);
-  assert(hCenter - hRing1 >= 0.35, `中间高四周矮：中心比 1.5 格圈高 ${(hCenter - hRing1).toFixed(2)} ≥ 0.35`);
-  assert(hRing1 > hRing3, `穹顶单调下降：1.5 格圈(${hRing1.toFixed(2)}) > 3.2 格圈(${hRing3.toFixed(2)})`);
+  const ringAvg = (r: number) => {
+    let sum = 0;
+    for (let k = 0; k < 16; k++) {
+      const a = (k / 16) * Math.PI * 2;
+      sum += w.heightAt(VX + Math.cos(a) * r, VZ + Math.sin(a) * r);
+    }
+    return sum / 16;
+  };
+  const hRing1 = ringAvg(1.5);
+  const hRing3 = ringAvg(3.2);
+  assert(hCenter - hRing1 >= 0.35, `中间高四周矮：中心比 1.5 格圈均值高 ${(hCenter - hRing1).toFixed(2)} ≥ 0.35`);
+  assert(hRing1 > hRing3, `穹顶单调下降：1.5 格圈均值(${hRing1.toFixed(2)}) > 3.2 格圈均值(${hRing3.toFixed(2)})`);
   assert(hCenter - lo >= 0.35, `中心为最高点（中心与采样极差 ${(hCenter - lo).toFixed(2)} ≥ 0.35）`);
   assert(
     Math.abs(hCenter - Math.min(h0 + 2.6, 8)) < 0.9,

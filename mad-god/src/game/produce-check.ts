@@ -1,9 +1,60 @@
 import { Sim } from "./sim";
-import { BLUE, houseBaseRate, houseHp, houseMaxPop, HOUSE_DWELL_BONUS, Tree, Unit, woodNeedFor } from "./types";
+import {
+  BLUE,
+  houseBaseRate,
+  houseHp,
+  houseMaxPop,
+  HOUSE_DWELL_BONUS,
+  inMap,
+  padSize,
+  Tree,
+  Unit,
+  woodNeedFor,
+} from "./types";
 import { World, padsOverlap } from "./world";
 
 function assert(cond: boolean, msg: string): void {
   if (!cond) throw new Error(msg);
+}
+
+/**
+ * v0.24 地图模板化后，找一个「确实能落下 L0 房基」的落脚点。
+ * 旧用例写死 walker.x + 3.0：52 格平缓图上那一点几乎必然可建，换成 72 格模板图后
+ * 经常是海水/陡坡/树，canFound 直接拒（foundSite 返回 null）。这里螺旋外扩试探，
+ * 返回第一个真正落成站的坐标——测的是"建房+运木+入住"链路，不是"正东 3 格必须能盖房"。
+ */
+function hutSiteNear(sim: Sim, u: Unit) {
+  for (let r = 2.0; r <= 6.0; r += 0.5) {
+    for (let a = 0; a < 16; a++) {
+      const ang = (a / 16) * Math.PI * 2;
+      const x = Math.round((u.x + Math.cos(ang) * r) * 2) / 2;
+      const z = Math.round((u.z + Math.sin(ang) * r) * 2) / 2;
+      sim.tryPrepFound(x, z, 0);
+      const site = sim.foundSite(BLUE, x, z, 0, "hut");
+      if (site) return site;
+    }
+  }
+  return null;
+}
+
+/**
+ * v0.24 找一个「地形真正养得住一座 L1 屋」的落点（绕开出生点近圈，向外扩 5~16 格）。
+ * 判据与游戏的存活规则同源（production-system.refreshHouses → world.houseLevelAt →
+ * padReady：land≥0.80、variance<0.22、maxSlope<0.70、mean>WATER），
+ * 这样测的才是"升级占地恒定"这件事本身，而不是被一处不合格地基的自塌打断。
+ */
+function readyHutSpot(sim: Sim, ox: number, oz: number, yaw: number) {
+  const pad = padSize(1);
+  for (let r = 5; r <= 16; r += 1) {
+    for (let a = 0; a < 24; a++) {
+      const ang = (a / 24) * Math.PI * 2;
+      const x = ox + Math.cos(ang) * r;
+      const z = oz + Math.sin(ang) * r;
+      if (!inMap(x, z)) continue;
+      if (sim.world.padReady(x, z, pad.w, pad.d, yaw)) return { x, z };
+    }
+  }
+  return null;
 }
 
 function testWoodChoppingAndDelivery(): void {
@@ -11,18 +62,32 @@ function testWoodChoppingAndDelivery(): void {
   const walker = sim.units.find((u) => u.team === BLUE && u.kind === "walker");
   assert(!!walker, "need a blue walker");
 
-  // Prep pad and place an L0 hut site near walker
-  const siteX = walker!.x + 3.0;
-  const siteZ = walker!.z;
-  sim.tryPrepFound(siteX, siteZ, 0);
-  const site = sim.foundSite(BLUE, siteX, siteZ, 0, "hut");
-  assert(site !== null, "L0 hut site founded");
+  // Prep pad and place an L0 hut site near walker（v0.24：就近试探可建点，不再写死正东 3 格）
+  const site = hutSiteNear(sim, walker!);
+  assert(site !== null, "L0 hut site founded（附近存在可落房基的陆地）");
   assert(site!.level === 0, "site is level 0");
   assert(site!.need === 2, "L0 hut needs 2 wood");
   assert(sim.needsWood(site!), "site needs wood");
 
-  // Create a tree right next to walker for chopping
-  const tree = new Tree(9999, walker!.x + 0.6, walker!.z, sim.world.heightAt(walker!.x + 0.6, walker!.z), true, 0);
+  // Create a tree right next to walker for chopping（v0.24：树也要摆在真正可走的格子上，
+  // 旧实现写死 walker.x + 0.6，模板图上可能落在水里/别的地基里，砍树链路就测不到底）
+  let tx = walker!.x + 0.6;
+  let tz = walker!.z;
+  if (!sim.world.walkableAt(tx, tz)) {
+    outer: for (let r = 0.6; r <= 2.5; r += 0.2) {
+      for (let a = 0; a < 16; a++) {
+        const ang = (a / 16) * Math.PI * 2;
+        const x = walker!.x + Math.cos(ang) * r;
+        const z = walker!.z + Math.sin(ang) * r;
+        if (sim.world.walkableAt(x, z)) {
+          tx = x;
+          tz = z;
+          break outer;
+        }
+      }
+    }
+  }
+  const tree = new Tree(9999, tx, tz, sim.world.heightAt(tx, tz), true, 0);
   sim.trees.push(tree);
 
   // Walker starts chopping
@@ -315,7 +380,12 @@ function testUpgradeKeepsFootprint(): void {
   const sim = new Sim(new World(42));
   const a = sim.buildings.find((b) => b.team === BLUE && b.kind === "hut" && b.level === 1)!;
   const s = sim.world.startPad(BLUE);
-  const c = sim.placeComplete(BLUE, s.x + 8, s.z + 8, s.yaw, "hut", 1);
+  // v0.24：邻屋选址改走"地形真合格"的判据。placeComplete 不校验地形（正式链路是
+  // foundSite→canFound 才校验），而 refreshHouses 每帧按 houseLevelAt/padReady 判毁——
+  // 旧用例写死 s.x+8,s.z+8，在模板化地图上常踩到坡地浅滩，升级链路还没测就被自己塌房打断。
+  const spot = readyHutSpot(sim, s.x, s.z, s.yaw);
+  assert(spot !== null, "出生点附近存在地形合格的屋址");
+  const c = sim.placeComplete(BLUE, spot!.x, spot!.z, s.yaw, "hut", 1);
   assert(!!c, "邻屋放置成功");
   assert(a.padW === 2.6 && c!.padW === 2.6, "两屋初始 pad 均为 2.6");
 

@@ -1,8 +1,9 @@
-export const WORLD = 52;
+// v0.24 地图放大：52 → 72 格（SAMPLES = WORLD/STEP + 1 = 289；改 WORLD 必须同步 SAMPLES）。
+export const WORLD = 72;
 export const SIZE = WORLD;
 export const RES = 4;
 export const STEP = 0.25;
-export const SAMPLES = 209;
+export const SAMPLES = 289;
 export const MAX_H = 8;
 export const WATER = 0.20;
 export const MAX_SLOPE = 0.70;

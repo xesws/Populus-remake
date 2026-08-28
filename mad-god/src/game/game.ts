@@ -57,6 +57,7 @@ export class Game {
     this.seed = 1989 + ((Math.random() * 1000) | 0);
     this.world = new World(this.seed);
     this.sim = new Sim(this.world);
+    this.logWorld("开局");
     this.view = new View(canvas, this.world);
     this.hud = new HUD();
     // v0.17 敌方 AI：URL ?ai=easy|normal|hard 选难度（默认 normal）；AIDirector 支持多部落 brain。
@@ -67,7 +68,7 @@ export class Game {
     this.aiDirector = new AIDirector([[RED, this.aiProfile]]);
     this.aiDirector.attach(this.sim);
     this.shotDirector = new ShotDirector(this);
-    this.view.look.set(18, 0, 32);
+    this.view.look.set(30, 0, 44); // v0.24 大地图（72 格）视角：中心偏南俯瞰双方出生带
     this.bind();
     this.view.draw(this.sim, [], 0);
     logger.info("session", "Game 构造完成", {
@@ -409,14 +410,28 @@ export class Game {
     requestAnimationFrame((t) => this.frame(t));
   }
 
+  /**
+   * v0.24 把本局地图的身份写进日志系统（seed / 地貌模板 / 出生点 / 强制平滑的改动量）。
+   * 手测时一句「这图怎么这么挤」就能靠日志定位到底是哪张模板、平滑器改了多少格。
+   */
+  private logWorld(when: string): void {
+    const w = this.world;
+    const r = w.smoothReport;
+    logger.info(
+      "world",
+      `${when}：seed=${w.genSeed} 地貌=${w.templateId}(${w.templateName}) 出生点=(${w.starts[0].x.toFixed(0)},${w.starts[0].z.toFixed(0)})↔(${w.starts[1].x.toFixed(0)},${w.starts[1].z.toFixed(0)}) 平滑=填缺${r ? r.filled : 0}/削刺${r ? r.pruned : 0}/尖峰${r ? r.spikes : 0}`,
+    );
+  }
+
   restart(): void {
     this.seed = 1989 + ((Math.random() * 9999) | 0);
     this.world = new World(this.seed);
     this.sim = new Sim(this.world);
+    this.logWorld("重开");
     this.view.world = this.world;
     this.view.resetFx();
     this.view.rebuildTerrain();
-    this.view.look.set(18, 0, 32);
+    this.view.look.set(30, 0, 44); // v0.24 大地图（72 格）视角：中心偏南俯瞰双方出生带
     this.aiDirector = new AIDirector([[RED, this.aiProfile]]);
     this.aiDirector.attach(this.sim);
     this.shotDirector.reset();

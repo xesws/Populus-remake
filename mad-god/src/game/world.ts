@@ -14,6 +14,8 @@ import {
   WATER,
   WORLD,
 } from "./types";
+import { WorldGen } from "./world-gen";
+import { MapSmoother, type SmoothReport } from "./map-smoother";
 
 export interface Pad {
   x: number;
@@ -36,6 +38,28 @@ export function localOnPad(px: number, pz: number, pad: Pad): { x: number; z: nu
   const c = Math.cos(-pad.yaw);
   const s = Math.sin(-pad.yaw);
   return { x: dx * c - dz * s, z: dx * s + dz * c };
+}
+
+/**
+ * 站位外扩（格）：padEdge 把"可站立的边缘点"放在地基边界再往外这么多，
+ * 单位不会贴墙站（贴墙会与 resolveCollisions 的推出互斥、抖个没完）。
+ * v0.24 提为常量：攻击建筑的射程判定也必须按同一口径算，否则会出现
+ * "指令让你站的地方，比射程允许的更远"——武士永远拆不到屋（实测斜角差 0.03 格）。
+ */
+export const PAD_STAND_INFLATE = 0.62;
+
+/**
+ * 旋转矩形地基沿 (px,pz) 方向的**支撑半径**：从中心到该方向上边界点的距离。
+ * 旧代码到处用 max(padW,padD)*0.5 当半径，等于把地基当圆——2.6 见方的地基从中心
+ * 到边缘是 1.30（正对边）到 1.84（对角）之间变化，用定值就会让"能不能打到建筑"
+ * 取决于单位从哪个方向接近。与 localOnPad 同一套坐标变换，口径一致。
+ */
+export function padSupportRadius(pad: Pad, px: number, pz: number): number {
+  const l = localOnPad(px, pz, pad);
+  const hw = pad.w / 2;
+  const hd = pad.d / 2;
+  const t = Math.max(Math.abs(l.x) / hw, Math.abs(l.z) / hd, 1e-6);
+  return Math.hypot(l.x, l.z) / t;
 }
 
 export function inPad(px: number, pz: number, pad: Pad, inflate = 0): boolean {
@@ -182,6 +206,13 @@ export class World {
   starts: [StartPad, StartPad];
   lastSwampX = 0;
   lastSwampZ = 0;
+  /** v0.24 生成种子（rng.s 会被推进，原 seed 单独存以便复现/日志）。 */
+  genSeed = 0;
+  /** v0.24 最后一次强制平滑的统计（填缺/削刺/去尖峰/残留绊人边数），供日志与检查断言。 */
+  smoothReport: SmoothReport | null = null;
+  /** v0.24 本图所用世界模板（供 logger 与 terrain-gen-check 断言；同 seed 必同模板）。 */
+  templateId = "";
+  templateName = "";
 
   constructor(seed = 1989) {
     this.h = new Float32Array(SAMPLES * SAMPLES);
@@ -189,9 +220,10 @@ export class World {
     this.scorch = new Float32Array(SAMPLES * SAMPLES);
     this.swamp = new Float32Array(SAMPLES * SAMPLES);
     this.rng = new RNG(seed);
+    this.genSeed = seed;
     this.starts = [
-      { x: 11.2, z: 38.4, yaw: 0.18, h: 2.05 },
-      { x: 39.4, z: 12.2, yaw: -0.22, h: 2.05 },
+      { x: 15, z: 54, yaw: 0.18, h: 2.05 },
+      { x: 55, z: 15, yaw: -0.22, h: 2.05 },
     ];
     this.generate();
   }
@@ -301,6 +333,156 @@ export class World {
     if (nv <= WATER) {
       this.lava[i] = 0;
       this.swamp[i] = 0;
+    }
+  }
+
+  /**
+   * v0.24 单块可通行大陆：以游戏真实通行判据（h > WATER）做 4 邻接 BFS，只保留最大连通
+   * 陆域，其余飞地降回浅海基准（0.04）。返回被填平的采样格数。
+   * 为什么必要：WorldGen 的连通域标记只用于挑出生点，小块飞地仍是"可走陆地"——
+   * 单位寻路/建筑随机取点一旦落到孤岛，astar 直接给不出完整路径
+   *（实测 move-check 10 次挂 4 次：plain arrives d=6.13、long path len=30 截断）。
+   * 本项目没有船只，跨海不可达的地块对玩法就是废地块，填平成海才是一劳永逸的解。
+   * 必须放在滩涂抬升**之后**：滩涂 0.16 仍低于 WATER，不会被垫成假连通；
+   * 也必须在出生平台整平之前：出生点已由 WorldGen 保证落在其最大域内，这里再校验一次，
+   * 万一该格被本步骤判为飞地（平滑/削峰改变了海陆界），就地迁到保留域内的最近格。
+   */
+  floodDisconnectedLand(): number {
+    const n = SAMPLES * SAMPLES;
+    const lab = new Int32Array(n).fill(-1);
+    const queue = new Int32Array(n); // BFS 队列入队总次数 ≤ 格数，一次预分配
+    let kept = -1;
+    let keptCount = 0;
+    let label = 0;
+    for (let i = 0; i < n; i++) {
+      if (lab[i] !== -1 || this.h[i]! <= WATER) continue;
+      let head = 0;
+      let tail = 0;
+      queue[tail++] = i;
+      lab[i] = label;
+      while (head < tail) {
+        const cur = queue[head++]!;
+        const cz = (cur / SAMPLES) | 0;
+        const cx = cur - cz * SAMPLES;
+        // 4 邻接（不用 8 邻接）：对角相接不算连通，与 astar 的通行语义一致。
+        if (cx > 0) {
+          const nb = cur - 1;
+          if (lab[nb] === -1 && this.h[nb]! > WATER) {
+            lab[nb] = label;
+            queue[tail++] = nb;
+          }
+        }
+        if (cx < SAMPLES - 1) {
+          const nb = cur + 1;
+          if (lab[nb] === -1 && this.h[nb]! > WATER) {
+            lab[nb] = label;
+            queue[tail++] = nb;
+          }
+        }
+        if (cz > 0) {
+          const nb = cur - SAMPLES;
+          if (lab[nb] === -1 && this.h[nb]! > WATER) {
+            lab[nb] = label;
+            queue[tail++] = nb;
+          }
+        }
+        if (cz < SAMPLES - 1) {
+          const nb = cur + SAMPLES;
+          if (lab[nb] === -1 && this.h[nb]! > WATER) {
+            lab[nb] = label;
+            queue[tail++] = nb;
+          }
+        }
+      }
+      if (tail > keptCount) {
+        keptCount = tail;
+        kept = label;
+      }
+      label++;
+    }
+    let flooded = 0;
+    for (let i = 0; i < n; i++) {
+      if (this.h[i]! <= WATER || lab[i] === kept) continue;
+      // 走 setSample：降为海的同时清掉该格 lava/swamp，语义与天然海格一致。
+      this.setSample(i % SAMPLES, (i / SAMPLES) | 0, 0.04);
+      flooded++;
+    }
+    // 出生点若被判为飞地（削峰/平滑改写了海陆界时才可能），螺旋迁到保留域内最近格。
+    for (const s of this.starts) {
+      const si = (Math.round(s.z / STEP) * SAMPLES + Math.round(s.x / STEP)) | 0;
+      if (lab[si] === kept) continue;
+      let bx = -1;
+      let bz = -1;
+      outer: for (let r = 1; r < 40; r++) {
+        for (let dz = -r; dz <= r; dz++) {
+          for (let dx = -r; dx <= r; dx++) {
+            if (Math.abs(dx) !== r && Math.abs(dz) !== r) continue;
+            const ix = Math.round(s.x / STEP) + dx;
+            const iz = Math.round(s.z / STEP) + dz;
+            if (ix < 1 || iz < 1 || ix >= SAMPLES - 1 || iz >= SAMPLES - 1) continue;
+            if (lab[iz * SAMPLES + ix] !== kept) continue;
+            bx = ix * STEP;
+            bz = iz * STEP;
+            break outer;
+          }
+        }
+      }
+      if (bx >= 0) {
+        s.x = bx;
+        s.z = bz;
+      }
+    }
+    return flooded;
+  }
+
+  /**
+   * v0.24 坡度钳制：把任意相邻采样的高差压到 maxDH 以内（削峰，不填谷）——
+   * ridge 窄脊等陡壁靠盒滤压不平时使用；多轮迭代让削掉的量沿坡向下传导。
+   * 只处理陆地格（水面以下不动），保证坡度测试阈值稳定通过。
+   * v0.24 修正两处漏网：
+   * 1) 原来只扫 [1..SAMPLES-2]，**图边框一整圈从未被钳过**——peninsula 模板的陆地
+   *    本来就是贴边伸入的（楔形基底压图边），边框处留下 2.9+ 的陡壁（坡度检查挂）。
+   *    现在全格扫描，越界的邻格直接不参与比较。
+   * 2) 观测口径 slopeAt 是 hypot(Δh/Δx, Δh/Δz) 的中心差分：45° 斜坡上两个分量同时取满，
+   *    实测上界 = hypot(1,1)×(2·maxDH/0.5格)。maxDH 取 0.40 时理论上界 2.26，
+   *    给坡度检查的阈值 2.5 留出余量（0.55 时上界 2.545，正好压线导致偶发超标）。
+   */
+  clampSlope(maxDH: number): void {
+    // v0.24 改成 chamfer 式双向扫描。
+    // 旧写法是单向 Gauss-Seidel（每轮按行扫描、只跟 4 邻比较）：往"右下"方向一遍就能
+    // 传到位，往"左上"方向要一格一轮——72 格图（289 采样）最坏要 ~150 轮，实测 465ms，
+    // 光造一张图就够玩家感觉到卡顿。现在正向（左上→右下，吃左/上邻）+ 反向
+    //（右下→左上，吃右/下邻）各扫一遍即可把削量传到全图，4 轮内必然收敛。
+    const cap = (nh: number) => Math.max(WATER + 0.02, nh + maxDH);
+    for (let round = 0; round < 4; round++) {
+      let changed = false;
+      for (let iz = 0; iz < SAMPLES; iz++) {
+        for (let ix = 0; ix < SAMPLES; ix++) {
+          const i = iz * SAMPLES + ix;
+          if (this.h[i]! <= WATER) continue;
+          let v = this.h[i]!;
+          if (ix > 0) v = Math.min(v, cap(this.h[i - 1]!));
+          if (iz > 0) v = Math.min(v, cap(this.h[i - SAMPLES]!));
+          if (v !== this.h[i]) {
+            this.h[i] = v;
+            changed = true;
+          }
+        }
+      }
+      for (let iz = SAMPLES - 1; iz >= 0; iz--) {
+        for (let ix = SAMPLES - 1; ix >= 0; ix--) {
+          const i = iz * SAMPLES + ix;
+          if (this.h[i]! <= WATER) continue;
+          let v = this.h[i]!;
+          if (ix < SAMPLES - 1) v = Math.min(v, cap(this.h[i + 1]!));
+          if (iz < SAMPLES - 1) v = Math.min(v, cap(this.h[i + SAMPLES]!));
+          if (v !== this.h[i]) {
+            this.h[i] = v;
+            changed = true;
+          }
+        }
+      }
+      if (!changed) break;
     }
   }
 
@@ -425,9 +607,35 @@ export class World {
     return this.inMap(x, z) && this.heightAt(x, z) > WATER;
   }
 
+  /**
+   * 所在双线性格是否四角全为陆地（取格口径与 heightAt 完全一致）。
+   * v0.24 新增：「整格一致」可走判据的基础，见 walkableAt。
+   */
+  cellLand(x: number, z: number): boolean {
+    const fx = clamp(x / STEP, 0, SAMPLES - 1);
+    const fz = clamp(z / STEP, 0, SAMPLES - 1);
+    const ix = Math.floor(fx);
+    const iz = Math.floor(fz);
+    const x1 = Math.min(ix + 1, SAMPLES - 1);
+    const z1 = Math.min(iz + 1, SAMPLES - 1);
+    return (
+      this.h[this.idx(ix, iz)]! > WATER &&
+      this.h[this.idx(x1, iz)]! > WATER &&
+      this.h[this.idx(ix, z1)]! > WATER &&
+      this.h[this.idx(x1, z1)]! > WATER
+    );
+  }
+
   walkableAt(x: number, z: number): boolean {
     if (!this.inMap(x, z)) return false;
-    if (this.heightAt(x, z) <= WATER) return false;
+    // v0.24 陆海可走性升到「整格一致」：所在双线性格的 4 个角点必须全是陆地。
+    // 旧判据 heightAt(x,z) > WATER 是**点判据**，允许"正好踩在一个海角上"算陆，
+    // 于是同一条线段两端都可走、中段却被另一侧的海角点拉回水下：实测半岛 seed 7
+    // 的 walker 站在 (63.62,22.97)，正前方 0.11 格处 h=0.106——这种格内不一致是
+    // 寻路/移动层怎么加密采样都追不上的（永远有更细的缝）。
+    // 而双线性是四角的凸组合：四角都 >WATER ⟹ 格内处处 >WATER，
+    // 从此点判据对整条线段都说话算话，而不是只对端点算话。代价是岸边少掉 ≤0.25 格。
+    if (!this.cellLand(x, z)) return false;
     for (const p of this.pads) {
       if (inPad(x, z, p) && !inDoorSlit(x, z, p)) return false;
     }
@@ -602,8 +810,14 @@ export class World {
         const t = 1 - d / r;
         const fall = t * t * (3 - 2 * t);
         const i = this.idx(ix, iz);
-        const nv = Math.max(0.02, this.h[i]! - depth * fall);
-        if (nv !== this.h[i]) {
+        const orig = this.h[i]!;
+        // v0.24 陆地格坑底不得入水：低地（如 0.8 的整平平台）挖 0.64 深的沟会让沟底
+        // 掉到 0.16 < WATER，地震裂缝变成水道——岩浆泡在水里（seedLava 的浆会被
+        // setSample 的水下清除逻辑抹掉），裂缝上也找不到任何立足点/可建点。
+        // 只钳陆地格（原高 > WATER），水下格保持"最低 0.02"的原语义。
+        const floorH = orig > WATER ? WATER + 0.14 : 0.02;
+        const nv = Math.max(floorH, orig - depth * fall);
+        if (nv !== orig) {
           this.h[i] = nv;
           this.markSample(ix, iz);
         }
@@ -797,54 +1011,21 @@ export class World {
   }
 
   generate(): void {
-    const rng = this.rng;
-    const cx = WORLD * 0.5;
-    const cz = WORLD * 0.5;
-    const n1 = rng.float(0, 2);
-    const n2 = rng.float(0, 2);
-    for (let iz = 0; iz < SAMPLES; iz++) {
-      for (let ix = 0; ix < SAMPLES; ix++) {
-        const x = ix * STEP;
-        const z = iz * STEP;
-        const dx = x - cx;
-        const dz = z - cz;
-        const dist = Math.hypot(dx, dz);
-        const n =
-          Math.sin(x * 0.28 + n1) * 0.95 +
-          Math.cos(z * 0.22 + n2) * 0.75 +
-          Math.sin((x + z) * 0.15) * 0.5 +
-          Math.sin(x * 0.71) * Math.cos(z * 0.53) * 0.42;
-        const edge = 19.6 + n * 1.7;
-        const t = clamp((edge + 0.6 - dist) / 2.8, 0, 1);
-        const land = t * t * (3 - 2 * t);
-        let h = 0.04;
-        if (land > 0) {
-          const inland = Math.max(0, 1 - dist / Math.max(edge, 1));
-          h = 0.06 + land * (0.32 + inland * 2.05 + n * 0.5);
-          const knoll = Math.sin(x * 0.52) * Math.cos(z * 0.41);
-          if (inland > 0.32) {
-            // v0.13 用 smoothstep(0,1,knoll) 替代 max(0,knoll)：保留"鼓包只增不减"的形态，去掉导数尖点。
-            const k = clamp(knoll, 0, 1);
-            h += k * k * (3 - 2 * k) * 1.05 * inland;
-          }
-        }
-        this.h[this.idx(ix, iz)] = clamp(h, 0, MAX_H);
-      }
-    }
-    // v0.13 生成期 3 轮盒式松弛：消除高频颗粒感，保留岛屿宏观形状（水面以下不动）。
+    // v0.24 模板化生成：六地貌模板（大陆/群岛/半岛/双半岛/环礁/高地）× seeded fBm/ridge 噪声，
+    // 高度场与双方出生点由 WorldGen 产出（连通域保证互达）；
+    // 松弛/滩涂/pad 平台的 v0.13 管线保留在本方法内（坡度与海岸平滑仍由这里负责）。
+    const gen = WorldGen.generate(this.genSeed, SAMPLES, STEP);
+    this.h.set(gen.heights);
+    this.templateId = gen.templateId;
+    this.templateName = gen.templateName;
+    this.starts = [
+      { x: gen.starts[0].x, z: gen.starts[0].z, yaw: gen.starts[0].yaw, h: gen.starts[0].h },
+      { x: gen.starts[1].x, z: gen.starts[1].z, yaw: gen.starts[1].yaw, h: gen.starts[1].h },
+    ];
+    // v0.13 生成期 4 轮盒式松弛（v0.24 由 3 轮加一轮）：72 格大图的山脊带更长更陡，多松一轮压坡度。
+    this.smoothField(4, 0, 0, SAMPLES - 1, SAMPLES - 1);
+    // v0.13 山脊融入 3 轮松弛（WorldGen 的 ridge 分量随高度场一起平滑）。
     this.smoothField(3, 0, 0, SAMPLES - 1, SAMPLES - 1);
-    const ridgeX0 = 14;
-    const ridgeZ0 = 36;
-    const ridgeX1 = 36;
-    const ridgeZ1 = 16;
-    for (let i = 0; i <= 36; i++) {
-      const t = i / 36;
-      const x = ridgeX0 + (ridgeX1 - ridgeX0) * t;
-      const z = ridgeZ0 + (ridgeZ1 - ridgeZ0) * t;
-      this.sculpt(x, z, 1.8, 0.35);
-    }
-    // v0.13 山脊凸包后再松弛 2 轮，让 ridge 融入地形。
-    this.smoothField(2, 0, 0, SAMPLES - 1, SAMPLES - 1);
     // v0.13 浅水滩涂：紧邻陆地的水域抬到 0.16（仍低于 WATER，可通行性不变），海岸线从断崖变缓滩。
     for (let iz = 1; iz < SAMPLES - 1; iz++) {
       for (let ix = 1; ix < SAMPLES - 1; ix++) {
@@ -862,11 +1043,26 @@ export class World {
         }
       }
     }
+    // v0.24 强制地图平滑（第 1 遍）：抹掉 0.25 格尺度上的"陆→水→陆"毛刺，让点判据
+    // walkableAt 与单位每帧 0.12 格的步长口径一致（见 map-smoother.ts）。
+    // 放在填海/出生平台之前，后面几步才是在干净地形上做决策。
+    this.smoothReport = MapSmoother.smooth(this.h);
+    // v0.24 单块可通行大陆：填平与最大陆域不连通的飞地（并把被迫落在飞地上的出生点
+    // 迁进保留域）。必须在滩涂之后、出生平台整平之前——见 floodDisconnectedLand 注释。
+    this.floodDisconnectedLand();
     for (const s of this.starts) {
-      // v0.13 出生平台高度随当地地形（+0.25）：出生点大多在海岸边，固定 2.05 会在平台边造出两米海崖。
+      // v0.13 出生平台高度随当地地形（+0.25）：避免固定高度在平台边造出海崖。
       const sh = Math.max(this.heightAt(s.x, s.z), 0.8) + 0.25;
       this.flattenPad(s.x, s.z, 3.2, 3.2, s.yaw, sh);
     }
+    // v0.24 坡度钳制（管线最后一步）：ridge 窄脊陡壁靠盒滤压不平、出生平台在山脚的
+    // 接缝也会产生新陡壁——统一在收尾逐对削峰到每采样高差 ≤0.40（差分口径的上界 2.26，
+    // 低于坡度检查阈值 2.5，见 clampSlope 注释）。
+    this.clampSlope(0.4);
+    // v0.24 强制地图平滑（终遍，权威）：出生平台整平与削峰都会重新刻出亚格毛刺
+    // （平台边缘的环形缓坡、pad 内高精度格与 pad 外低格之间的落差），所以出图前
+    // 必须再扫一遍。residualSeams 就是"还能把单位绊倒的边"的数量，检查脚本断言它为 0。
+    this.smoothReport = MapSmoother.smooth(this.h);
     this.markAll();
   }
 

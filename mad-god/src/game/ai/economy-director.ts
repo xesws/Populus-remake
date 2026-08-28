@@ -219,8 +219,9 @@ export class EconomyDirector implements IEconomyDirector {
 
   /** 沿"家→敌"连线铺一条通向敌人的平地走廊，顺带挑新宅基地（旧 GodAI.expandFrontier 迁移）。 */
   private expandFrontier(sim: Sim, mine: { x: number; z: number }[], foe: { x: number; z: number }[]): void {
-    const dest = foe[0] ?? { x: 11, z: 38 };
-    const from = mine[0] ?? { x: 39, z: 12 };
+    // v0.24 兜底坐标改从出生点取（大地图上写死旧图坐标会指错位置）。
+    const dest = foe[0] ?? sim.world.startPad(this.team === RED ? BLUE : RED);
+    const from = mine[0] ?? sim.world.startPad(this.team);
     let edits = 0;
     for (let i = 1; i <= 10 && edits < 3; i++) {
       const t = i / 12;

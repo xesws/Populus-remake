@@ -85,7 +85,7 @@ export class View {
   look = new THREE.Vector3(26, 0, 26);
   yaw = 0.72;
   pitch = 0.72;
-  dist = 22;
+  dist = 30; // v0.24 大地图拉远视角
   shake = 0;
   t = 0;
   quakeT = 0;

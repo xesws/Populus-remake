@@ -120,8 +120,69 @@ export class PathSystem implements ISystem {
         continue;
       }
       const m = Math.min(1, (spd * dt) / len);
-      u.x += dx * m;
-      u.z += dz * m;
+      // v0.24 硬不变量 + 退半步：绝不允许一步迈进不可走的格子（ghostT 穿墙兜底除外）。
+      // 为什么需要：点判据 walkableAt 只看格心，而两节点之间的直线会擦过海湾/建筑地基
+      // 的缝隙；单位一踏进去，resolveCollisions 立刻用 nearestLand 把它整段弹回栅格点
+      //（进度清零）→ repath → 再踏进去，实测每 0.7s 一轮、原地抖 20 秒不前进——
+      // 就是用户说的"人物行走卡顿、寻路反复 retry"。
+      // 为什么不直接停住：第一版这里写的是"迈不出去就 continue"，结果单位在自家
+      // 门口地基边冻 1.5 秒，被 watchStuck 判卡后靠 ghostT 穿墙脱身（观感是人傻站着）。
+      // 现在按 m、m/2、m/4、m/8 逐级回退，取"还迈得出去的最远一段"：贴着水湾/地基
+      // 边缘照样一格一格往前挪；整步都迈不动才改瞄下一个节点（末节点交给看门狗绕路）。
+      // 正向：按 m、m/2、m/4、m/8 逐级回退，取"还迈得出去的最远一段"。
+      let mv = 0;
+      let mx = 0;
+      let mz = 0;
+      for (let k = 0; k < 4; k++) {
+        const f = m / (1 << k);
+        if (this.canStandOn(sim, u, u.x + dx * f, u.z + dz * f)) {
+          mv = f;
+          mx = dx * f;
+          mz = dz * f;
+          break;
+        }
+      }
+      // 正向全挡：贴着障碍侧滑（±35°、±70°）。房角/树根这类障碍在 0.5 格寻路栅格上
+      // 分辨不出来——实测蓝方 walker 卡在地基拐角，正前 0.07 格处高度 0.397（明明是干的）
+      // 却整格落在地基内，只退半步就会永久冻在屋角，侧滑才是玩家期待的"擦着屋角绕过去"。
+      if (mv <= 0) {
+        const an = Math.atan2(dz, dx);
+        for (const off of [0.61, -0.61, 1.22, -1.22]) {
+          const ca = an + off;
+          const ax = Math.cos(ca);
+          const az = Math.sin(ca);
+          for (let k = 0; k < 3; k++) {
+            const f = m / (1 << k);
+            if (this.canStandOn(sim, u, u.x + ax * f, u.z + az * f)) {
+              mv = f;
+              mx = ax * f;
+              mz = az * f;
+              break;
+            }
+          }
+          if (mv > 0) break;
+        }
+      }
+      if (mv <= 0) {
+        // v0.24 整步都迈不出去时，**不要**u.pathI++ 跳过节点：跳过等于让单位隔着障碍
+        // 去瞄更远的前方节点（实测瞄到 2.4 格外），下一步照样被拦，一路跳到路径末尾
+        // → 路径清空 → 走上面 !u.path.length 的"直冲目的地"兜底 → 扎进水里 → 卡死穿墙。
+        // 正确做法是就地向 A* 要一条"从脚下出发"的新走廊（首节点必在 0.5 格内），
+        // 并用 think 做 0.35s 节流，避免每帧重算。
+        // 节流：think 还大于 0.05 说明刚刚已经重算过一条走廊了（每帧重算会把 CPU 烧光，
+        // 而且新走廊和旧的一样拦住去路时，重算本身没有任何信息增益）。
+        if (u.think <= 0.05) {
+          const dest = this.goalCell(sim, u);
+          if (dest) this.repathKeepJob(sim, u, dest);
+          else u.path = [];
+          u.pathI = 0;
+          u.think = 0.35;
+        }
+        u.y = sim.world.heightAt(u.x, u.z);
+        continue;
+      }
+      u.x += mx;
+      u.z += mz;
       u.yaw = Math.atan2(dx, dz);
       u.y = sim.world.heightAt(u.x, u.z);
     }
@@ -133,6 +194,18 @@ export class PathSystem implements ISystem {
       u.y += (gh - u.y) * Math.min(1, 20 * dt);
       if (u.y > gh + 0.02) u.y = gh + 0.02;
     }
+  }
+
+  /**
+   * 单位能否站到 (x,z)：ghostT（穿墙兜底）放行、整格可走放行、训练位放行。
+   * 抽成单一入口，免得正向与侧滑两处判据走偏。
+   */
+  canStandOn(sim: Sim, u: Unit, x: number, z: number): boolean {
+    return (
+      u.ghostT > 0 ||
+      sim.world.walkableAt(x, z) ||
+      sim.trainingSystem.trainAllows(sim, u, x, z)
+    );
   }
 
   onArrive(sim: Sim, u: Unit): void {

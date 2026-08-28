@@ -21,6 +21,25 @@ function blueWalker(sim: Sim): Unit {
   return u!;
 }
 
+/**
+ * v0.24：按"到没到"推进，而不是给一个写死的秒数窗口。
+ * 72 格模板图比原来 52 格的平缓图丘陵得多：walker 上坡要按坡度降速（下限 0.5 格/s）、
+ * 还要绕建筑地基，实测同样 7 格的路程需要 3~9 秒（还受 think 计时与暴击击退的随机抖动影响），
+ * 所以写死 tickFor(sim, 8) 会偶发误报（10 次挂 2 次）。本用例真正要断言的是
+ * 「指令目的地会被走到并清掉」，速度另有 terrain-gen-check 的用例负责。
+ * 这里给宽容上限、到达即提前退出，因此不会拖慢测试。
+ */
+function untilArrived(sim: Sim, u: Unit, capSec: number): number {
+  const steps = Math.round(capSec / 0.05);
+  for (let i = 0; i < steps; i++) {
+    sim.tick(0.05);
+    // 判据用游戏自己的"到达事件"（onArrive 会清掉 move 目的地），
+    // 而不是"离目标 0.35 格内"——后者会在单位还没走完路径时就抢先返回。
+    if (u.moveX < 0) return (i + 1) * 0.05;
+  }
+  return -1;
+}
+
 /** Find a walkable cell with 8-neighbour clearance near a ring distance from an origin. */
 function openCellNear(sim: Sim, ox: number, oz: number, minD: number, maxD: number): Cell {
   for (let r = minD; r <= maxD; r += 0.5) {
@@ -49,8 +68,8 @@ function testPlainStraightMove(): void {
   sim.sendMove(u, dest.x, dest.z);
   assert(u.job === "move", "plain: job is move");
   assert(u.moveX === dest.x && u.moveZ === dest.z, "plain: move dest persisted");
-  tickFor(sim, 8);
-  assert(dist(u.x, u.z, dest.x, dest.z) < 0.35, `plain: arrives (d=${dist(u.x, u.z, dest.x, dest.z).toFixed(2)})`);
+  const tArr = untilArrived(sim, u, 20);
+  assert(tArr > 0, `plain: arrives (d=${dist(u.x, u.z, dest.x, dest.z).toFixed(2)} 20s 内没走到)`);
   assert(u.moveX < 0, "plain: move dest cleared on arrival");
   // Hold: unit must not wander away from the ordered destination
   tickFor(sim, 4);
@@ -67,9 +86,9 @@ function testCornerAroundHut(): void {
   const dest = openCellNear(sim, hut!.x, hut!.z, 3.5, 6);
   const startD = dist(u.x, u.z, dest.x, dest.z);
   sim.sendMove(u, dest.x, dest.z);
-  tickFor(sim, 10);
+  const tCorner = untilArrived(sim, u, 24);
   const endD = dist(u.x, u.z, dest.x, dest.z);
-  assert(endD < 0.35, `corner: arrives past hut (d=${endD.toFixed(2)})`);
+  assert(tCorner > 0 && endD < 0.35, `corner: arrives past hut (d=${endD.toFixed(2)})`);
   assert(endD < startD - 1, "corner: made real progress");
   console.log("testCornerAroundHut ok");
 }
