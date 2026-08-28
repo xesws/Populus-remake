@@ -6,8 +6,6 @@ import {
   Building,
   BuildingKind,
   CAMP_FOR,
-  TRAIN_FOR_CAMP,
-  canConvert,
   Cell,
   CHOP_TIME,
   clamp,
@@ -27,31 +25,31 @@ import {
   snapYaw,
   Team,
   TeamState,
-  TRAIN_TIME,
+  TRAIN_FOR_CAMP,
   TrainKind,
   TREE_REGEN,
   Tree,
-  UNIT_RADIUS,
   Unit,
   UnitKind,
-  unitHp,
   WATER,
   woodNeedFor,
   WORLD,
 } from "./types";
-import { inDoorSlit, inPad, Pad, padsOverlap, pushCircleFromPad, TREE_BLOCK_R, worldOnPad, World } from "./world";
+import { inDoorSlit, inPad, Pad, padsOverlap, worldOnPad, World } from "./world";
+import {
+  CombatSystem,
+  HazardSystem,
+  MergeSystem,
+  PathSystem,
+  ProductionSystem,
+  TrainingSystem,
+  WinSystem,
+} from "./systems";
 
 let NEXT = 1;
 function nid(): number {
   return NEXT++;
 }
-
-const TRAIN_DONE: Record<TrainKind, string> = {
-  warrior: "一名勇士成为武士",
-  preacher: "一名勇士成为传教士",
-  firewarrior: "一名勇士成为火战士",
-  spy: "一名勇士成为间谍",
-};
 
 export class Sim {
   world: World;
@@ -117,6 +115,14 @@ export class Sim {
   blastHitZ = 0;
   blastFlyer: { x: number; y: number; z: number } | null = null;
   stuckWatch = new Map<number, { x: number; z: number; t: number }>();
+
+  readonly productionSystem = new ProductionSystem();
+  readonly trainingSystem = new TrainingSystem();
+  readonly pathSystem = new PathSystem();
+  readonly combatSystem = new CombatSystem();
+  readonly hazardSystem = new HazardSystem();
+  readonly mergeSystem = new MergeSystem();
+  readonly winSystem = new WinSystem();
 
   constructor(world: World) {
     this.world = world;
@@ -296,7 +302,7 @@ export class Sim {
   }
 
   treeRim(tree: Tree, fromX: number, fromZ: number): Cell {
-    const r = TREE_BLOCK_R + 0.30;
+    const r = 0.38 + 0.30;
     let dx = fromX - tree.x;
     let dz = fromZ - tree.z;
     let len = Math.hypot(dx, dz);
@@ -329,7 +335,7 @@ export class Sim {
     const trees = [];
     for (const t of this.trees) {
       if (!t.alive) continue;
-      trees.push({ x: t.x, z: t.z, r: TREE_BLOCK_R });
+      trees.push({ x: t.x, z: t.z, r: 0.38 });
     }
     this.world.setTrees(trees);
   }
@@ -610,19 +616,7 @@ export class Sim {
   }
 
   sendWalkerToCamp(u: Unit, camp: Building, kind: TrainKind): void {
-    u.job = "train";
-    u.trainKind = kind;
-    u.targetId = camp.id;
-    u.atkId = 0;
-    u.carry = 0;
-    u.channel = 0;
-    u.channelId = this.trainJoinN++;
-    u.path = [];
-    u.pathI = 0;
-    u.think = 0;
-    const q = this.trainQueue(camp.id);
-    const slot = Math.max(0, q.findIndex((o) => o.id === u.id));
-    this.pathToSlot(u, this.trainSlotPos(camp, slot));
+    this.trainingSystem.sendWalkerToCamp(this, u, camp, kind);
   }
 
   padLocalToWorld(camp: Building, lx: number, lz: number): { x: number; z: number } {
@@ -632,10 +626,7 @@ export class Sim {
   }
 
   trainDoor(camp: Building): { x: number; z: number; fx: number; fz: number } {
-    const fx = -Math.sin(camp.yaw);
-    const fz = Math.cos(camp.yaw);
-    const dist = camp.padD / 2 + 0.12;
-    return { x: camp.x + fx * dist, z: camp.z + fz * dist, fx, fz };
+    return this.trainingSystem.trainDoor(camp);
   }
 
   /** Walkable cell just outside the hut door (local +Z), not inside the pad. */
@@ -654,87 +645,23 @@ export class Sim {
   }
 
   occupy(u: Unit, hut: Building): boolean {
-    if (u.kind !== "walker" || u.homeId > 0) return false;
-    if (hut.kind !== "hut" || hut.level < 1 || hut.hp <= 0) return false;
-    if (hut.team !== u.team) return false;
-    if (hut.dwell >= houseMaxPop(hut.level)) return false;
-    hut.dwell += 1;
-    u.homeId = hut.id;
-    u.selected = false;
-    u.path = [];
-    u.pathI = 0;
-    u.job = "idle";
-    u.think = 99;
-    u.targetId = 0;
-    u.atkId = 0;
-    u.carry = 0;
-    u.channel = 0;
-    return true;
+    return this.productionSystem.occupy(this, u, hut);
   }
 
   tryOccupy(u: Unit): boolean {
-    if (u.kind !== "walker" || u.homeId > 0 || !u.targetId) return false;
-    const hut = this.buildingById(u.targetId);
-    if (!hut || hut.kind !== "hut" || hut.level < 1 || hut.hp <= 0 || hut.team !== u.team) return false;
-    const door = this.hutDoor(hut);
-    if (dist2(u.x, u.z, door.x, door.z) > 1.2 * 1.2) return false;
-    if (!this.occupy(u, hut)) return false;
-    u.enterT = 0.42;
-    return true;
+    return this.productionSystem.tryOccupy(this, u);
   }
 
   snapTrainSlot(camp: Building, raw: { x: number; z: number }): { x: number; z: number } {
-    const pad = this.buildingPad(camp);
-    if (this.trueRim(raw.x, raw.z, pad)) return raw;
-    const edge = this.padEdge(camp.x, camp.z, camp.padW, camp.padD, camp.yaw, raw.x, raw.z);
-    if (this.trueRim(edge.x, edge.z, pad)) return edge;
-    const rim = this.nearestRim(pad, 0.62, raw.x, raw.z);
-    if (rim) return rim;
-    const safe = nearestLand(this.world, raw.x, raw.z);
-    return safe ?? edge;
+    return this.trainingSystem.snapTrainSlot(this, camp, raw);
   }
 
   trainSlotPos(camp: Building, slot: number): { x: number; z: number } {
-    const inflate = 0.62;
-    if (slot <= 0) {
-      const doorRim = this.padLocalToWorld(camp, 0, camp.padD / 2 + inflate);
-      return this.snapTrainSlot(camp, doorRim);
-    }
-    const hw = camp.padW / 2 + inflate;
-    const hd = camp.padD / 2 + inflate;
-    const segs: Array<[[number, number], [number, number]]> = [
-      [[0, hd], [-hw, hd]],
-      [[-hw, hd], [-hw, -hd]],
-      [[-hw, -hd], [hw, -hd]],
-      [[hw, -hd], [hw, hd]],
-      [[hw, hd], [0, hd]],
-    ];
-    let remain = Math.max(0, slot) * 0.7;
-    const loop = 4 * (hw + hd);
-    if (loop > 0.01) remain = remain % loop;
-    let lx = 0;
-    let lz = hd;
-    for (const [a, b] of segs) {
-      const dx = b[0] - a[0];
-      const dz = b[1] - a[1];
-      const len = Math.hypot(dx, dz);
-      if (remain <= len) {
-        const t = len < 1e-6 ? 0 : remain / len;
-        lx = a[0] + dx * t;
-        lz = a[1] + dz * t;
-        break;
-      }
-      remain -= len;
-      lx = b[0];
-      lz = b[1];
-    }
-    return this.snapTrainSlot(camp, this.padLocalToWorld(camp, lx, lz));
+    return this.trainingSystem.trainSlotPos(this, camp, slot);
   }
 
   trainQueue(campId: number): Unit[] {
-    return this.units
-      .filter((u) => u.job === "train" && u.targetId === campId)
-      .sort((a, b) => a.channelId - b.channelId || a.id - b.id);
+    return this.trainingSystem.trainQueue(this, campId);
   }
 
   assignCampFounder(u: Unit, campKind: BuildingKind): void {
@@ -760,66 +687,7 @@ export class Sim {
   }
 
   train(team: Team, kind: TrainKind): boolean {
-    const selected = this.selectedOf(team);
-    let walkers: Unit[];
-    if (team === BLUE) {
-      if (!selected.length) {
-        this.toast("先选人");
-        return false;
-      }
-      walkers = selected.filter((u) => u.kind === "walker" && u.homeId === 0 && !this.inSwamp(u));
-      if (!walkers.length) {
-        this.toast("选中的人不能训练");
-        return false;
-      }
-    } else {
-      walkers = this.units.filter((u) => u.team === team && u.kind === "walker" && u.homeId === 0);
-      if (!walkers.length) return false;
-    }
-    const campKind = CAMP_FOR[kind];
-    const camps = this.buildings.filter((b) => b.team === team && b.kind === campKind && b.level >= 1 && b.hp > 0);
-    if (!camps.length) {
-      if (team !== BLUE) {
-        const t = this.teams[team];
-        if (!t.wanted.includes(campKind)) t.wanted.push(campKind);
-        const already = this.units.find((u) => u.team === team && u.kind === "walker" && u.foundKind === campKind);
-        if (!already) {
-          const idle = walkers.find((u) => u.carry === 0 && u.job !== "train" && u.job !== "haul" && u.job !== "chop")
-            ?? walkers.find((u) => u.carry === 0 && u.job !== "train");
-          if (idle) this.assignCampFounder(idle, campKind);
-        }
-      }
-      this.toast("先盖训练营");
-      return false;
-    }
-    const queued = walkers.filter((w) => w.job === "train");
-    const ready = walkers.filter((w) => w.job !== "train");
-    if (!ready.length) return true;
-    let camp = camps[0]!;
-    const follow = queued[0] ? this.buildingById(queued[0].targetId) : undefined;
-    if (follow && follow.hp > 0 && follow.level >= 1) {
-      camp = follow;
-    } else {
-      let cx = 0;
-      let cz = 0;
-      for (const w of ready) {
-        cx += w.x;
-        cz += w.z;
-      }
-      cx /= ready.length;
-      cz /= ready.length;
-      let bestD = dist2(cx, cz, camp.x, camp.z);
-      for (const c of camps) {
-        const d = dist2(cx, cz, c.x, c.z);
-        if (d < bestD) {
-          bestD = d;
-          camp = c;
-        }
-      }
-    }
-    for (const w of ready) this.sendWalkerToCamp(w, camp, kind);
-    if (team === BLUE) this.toast("前往训练");
-    return true;
+    return this.trainingSystem.train(this, team, kind);
   }
 
   tick(dt: number): void {
@@ -849,111 +717,23 @@ export class Sim {
   }
 
   tickEnter(dt: number): void {
-    for (const u of this.units) {
-      if (u.enterT <= 0) continue;
-      const hut = this.buildingById(u.homeId);
-      const dest = hut ? this.padLocalToWorld(hut, 0, hut.padD * 0.12) : { x: u.x, z: u.z };
-      const dx = dest.x - u.x;
-      const dz = dest.z - u.z;
-      const len = Math.hypot(dx, dz);
-      if (len > 0.02) {
-        const step = Math.min(len, 2.6 * dt);
-        u.x += (dx / len) * step;
-        u.z += (dz / len) * step;
-        u.yaw = Math.atan2(dx, dz);
-      }
-      u.y = this.world.heightAt(u.x, u.z);
-      u.enterT -= dt;
-      if (u.enterT <= 0) {
-        u.enterT = 0;
-        if (u.team === BLUE && hut) {
-          this.toast(`勇士住进茅屋（${hut.dwell}/${houseMaxPop(hut.level)}）`);
-        }
-      }
-    }
+    this.productionSystem.tickEnter(this, dt);
   }
 
   tickTrees(dt: number): void {
-    for (const t of this.trees) {
-      if (t.alive) continue;
-      t.regen -= dt;
-      if (t.regen > 0) continue;
-      if (this.world.heightAt(t.x, t.z) <= WATER) {
-        t.regen = 4;
-        continue;
-      }
-      t.alive = true;
-      t.regen = 0;
-      t.y = this.world.heightAt(t.x, t.z);
-    }
+    this.productionSystem.tickTrees(this, dt);
   }
 
   regenMana(dt: number): void {
-    for (const team of [BLUE, RED] as Team[]) {
-      const t = this.teams[team];
-      let cap = 80;
-      let regen = 1.2;
-      for (const b of this.buildings) {
-        if (b.team !== team || b.kind !== "hut" || b.level < 1) continue;
-        cap += b.level * 18;
-        regen += b.level * 0.85;
-      }
-      const pop = this.countPop(team);
-      cap += Math.min(80, pop * 2);
-      regen += pop * 0.1;
-      t.manaCap = cap;
-      t.mana = clamp(t.mana + regen * dt, 0, t.manaCap);
-    }
+    this.productionSystem.regenMana(this, dt);
   }
 
   refreshHouses(): void {
-    for (const b of this.buildings) {
-      if (this.world.heightAt(b.x, b.z) <= WATER) {
-        b.hp = 0;
-        continue;
-      }
-      if (b.shell || this.lavaOnPad(b)) continue;
-      if (b.kind === "hut") {
-        if (this.world.houseLevelAt(b.x, b.z, b.yaw) === 0) b.hp = 0;
-      } else if (isCampKind(b.kind)) {
-        const s = this.world.padStats(b.x, b.z, b.padW, b.padD, b.yaw);
-        if (s.n === 0 || s.land < 0.55 || s.mean <= WATER) b.hp = 0;
-      }
-    }
+    this.productionSystem.refreshHouses(this);
   }
 
   produce(dt: number): void {
-    if (this.freezeProd) return;
-    for (const b of this.buildings) {
-      if (b.hp <= 0 || b.kind !== "hut" || b.level < 1) continue;
-      if (b.wantLevel > b.level) {
-        if (b.level === 1) this.upgradeBuilding(b, 2);
-        else if (b.level === 2) this.upgradeBuilding(b, 3);
-        b.wantLevel = 0;
-      }
-      if (b.dwell <= 0) continue;
-      if (b.dwell >= houseMaxPop(b.level)) continue;
-      if (this.countPop(b.team) >= this.popCap(b.team)) continue;
-      const rate = b.level === 3 ? 0.28 : b.level === 2 ? 0.18 : b.dwell >= 2 ? 0.14 : 0.1;
-      b.prod += rate * dt;
-      if (b.prod >= 1) {
-        const spot = this.hutDoor(b);
-        if (!this.world.walkableAt(spot.x, spot.z)) {
-          const fallback = this.spawnNear(b);
-          if (!fallback) continue;
-          spot.x = fallback.x;
-          spot.z = fallback.z;
-        }
-        b.prod = 0;
-        b.born += 1;
-        const baby = this.addUnit(b.team, "walker", spot.x, spot.z);
-        baby.homeId = 0;
-        const out = this.padLocalToWorld(b, 0, b.padD / 2 + 2.0);
-        this.sendMove(baby, out.x, out.z);
-        if (b.born >= 2 && b.level === 1) b.wantLevel = 2;
-        else if (b.born >= 5 && b.level === 2) b.wantLevel = 3;
-      }
-    }
+    this.productionSystem.produce(this, dt);
   }
 
   spawnNear(b: Building): Cell | null {
@@ -1077,162 +857,43 @@ export class Sim {
   }
 
   walkableTrainDest(u: Unit, dest: { x: number; z: number }): { x: number; z: number } {
-    if (this.world.walkableAt(dest.x, dest.z)) return dest;
-    const camp = this.buildingById(u.targetId);
-    if (camp) {
-      const edge = this.padEdge(camp.x, camp.z, camp.padW, camp.padD, camp.yaw, dest.x, dest.z);
-      if (this.world.walkableAt(edge.x, edge.z)) return edge;
-    }
-    return nearestLand(this.world, dest.x, dest.z) ?? dest;
+    return this.trainingSystem.walkableTrainDest(this, u, dest);
   }
 
   pathToSlot(u: Unit, dest: { x: number; z: number }): void {
-    const d = this.walkableTrainDest(u, dest);
-    const last = u.path.length ? u.path[u.path.length - 1] : null;
-    if (last && dist2(last.x, last.z, d.x, d.z) <= 0.16) return;
-    u.path = astar(this.world, u.x, u.z, d.x, d.z);
-    if (!u.path.length) {
-      const safe = this.world.walkableAt(d.x, d.z) ? d : nearestLand(this.world, d.x, d.z);
-      u.path = safe ? [safe] : [];
-    }
-    u.pathI = 0;
+    this.trainingSystem.pathToSlot(this, u, dest);
   }
 
   advanceTrain(u: Unit, dt: number): boolean {
-    const camp = this.buildings.find((b) => b.id === u.targetId && b.hp > 0 && b.level >= 1);
-    if (!camp || !u.trainKind) {
-      u.job = "idle";
-      u.trainKind = null;
-      u.channel = 0;
-      u.targetId = 0;
-      return false;
-    }
-    const queue = this.trainQueue(camp.id);
-    let slot = queue.findIndex((o) => o.id === u.id);
-    if (slot < 0) slot = queue.length;
-    const dest = this.trainSlotPos(camp, slot);
-    if (dist2(u.x, u.z, dest.x, dest.z) > 0.18 * 0.18) {
-      this.pathToSlot(u, dest);
-      return true;
-    }
-    u.path = [];
-    u.pathI = 0;
-    u.x = dest.x;
-    u.z = dest.z;
-    u.y = this.world.heightAt(u.x, u.z);
-    u.yaw = Math.atan2(camp.x - u.x, camp.z - u.z);
-    if (slot === 0) {
-      u.channel += dt;
-      if (u.channel >= TRAIN_TIME) this.finishTrain(u, camp);
-    } else {
-      u.channel = 0;
-    }
-    return true;
+    return this.trainingSystem.advanceTrain(this, u, dt);
   }
 
   finishTrain(u: Unit, camp: Building): void {
-    const kind = u.trainKind!;
-    u.kind = kind;
-    u.str = Math.max(u.str, 1);
-    u.hp = u.maxHp = unitHp(kind, u.str);
-    u.order = kind === "spy" ? this.teams[u.team as Team].order : "fight";
-    u.job = "idle";
-    u.trainKind = null;
-    u.channel = 0;
-    u.channelId = 0;
-    u.carry = 0;
-    u.targetId = 0;
-    u.disguise = kind === "spy" ? null : u.disguise;
-    const door = this.trainDoor(camp);
-    const rx = Math.cos(camp.yaw);
-    const rz = -Math.sin(camp.yaw);
-    let sx = door.x + rx * 0.8;
-    let sz = door.z + rz * 0.8;
-    if (!this.world.walkableAt(sx, sz)) {
-      sx = door.x - rx * 0.8;
-      sz = door.z - rz * 0.8;
-    }
-    if (!this.world.walkableAt(sx, sz)) {
-      const safe = nearestLand(this.world, sx, sz);
-      if (safe) {
-        sx = safe.x;
-        sz = safe.z;
-      }
-    }
-    u.x = sx;
-    u.z = sz;
-    u.y = this.world.heightAt(u.x, u.z);
-    u.path = [];
-    u.pathI = 0;
-    u.think = 0.2;
-    this.toast(TRAIN_DONE[kind]);
-    const nxt = this.trainQueue(camp.id)[0];
-    if (nxt) {
-      nxt.think = 0;
-      nxt.path = [];
-      nxt.pathI = 0;
-    }
+    this.trainingSystem.finishTrain(this, u, camp);
   }
 
   deliverWood(b: Building): void {
-    if (this.review) return;
-    if (b.hp <= 0 || b.need <= 0 || b.wood >= b.need) return;
-    b.wood += 1;
-    if (b.wood < b.need) return;
-    this.completeStep(b);
+    this.productionSystem.deliverWood(this, b);
   }
 
   completeStep(b: Building): void {
-    if (b.kind === "hut") {
-      if (b.level === 0) this.upgradeBuilding(b, 1);
-      return;
-    }
-    if (isCampKind(b.kind) && b.level === 0) this.upgradeBuilding(b, 1);
+    this.productionSystem.completeStep(this, b);
   }
 
   upgradeBuilding(b: Building, level: number): void {
-    b.level = level;
-    const pad = padSize(b.kind === "hut" ? level : 1);
-    const h = this.world.heightAt(b.x, b.z);
-    this.world.flattenPad(b.x, b.z, pad.w, pad.d, b.yaw, h);
-    b.padW = pad.w;
-    b.padD = pad.d;
-    b.y = this.world.heightAt(b.x, b.z);
-    const hp = houseHp(Math.max(1, level));
-    const ratio = b.maxHp > 0 ? b.hp / b.maxHp : 1;
-    b.maxHp = hp;
-    b.hp = Math.max(1, Math.round(hp * ratio));
-    b.wood = 0;
-    b.need = woodNeedFor(b.kind, level);
-    this.markHouseBlocks();
-    if (b.kind === "hut") {
-      if (level === 1) this.toast(b.team === BLUE ? "子民筑起一座屋宇" : "敌民筑屋");
-      else this.toast(b.team === BLUE ? `茅屋升至 ${level} 级` : "敌方茅屋升级");
-    } else if (isCampKind(b.kind)) {
-      this.toast(b.team === BLUE ? "训练营落成" : "敌方训练营落成");
-    }
+    this.productionSystem.upgradeBuilding(this, b, level);
   }
 
   needsWood(b: Building): boolean {
-    return b.hp > 0 && b.need > 0 && b.wood < b.need;
+    return this.productionSystem.needsWood(b);
   }
 
   hasNeedSite(team: Team): boolean {
-    return this.buildings.some((b) => b.team === team && this.needsWood(b));
+    return this.productionSystem.hasNeedSite(this, team);
   }
 
   nearestNeedSite(team: Team, x: number, z: number): Building | null {
-    let best: Building | null = null;
-    let bestD = 1e9;
-    for (const b of this.buildings) {
-      if (b.team !== team || !this.needsWood(b)) continue;
-      const d = dist2(x, z, b.x, b.z);
-      if (d < bestD) {
-        bestD = d;
-        best = b;
-      }
-    }
-    return best;
+    return this.productionSystem.nearestNeedSite(this, team, x, z);
   }
 
   buildingById(id: number): Building | null {
@@ -1535,565 +1196,71 @@ export class Sim {
   }
 
   moveUnits(dt: number): void {
-    for (const u of this.units) {
-      if (u.homeId > 0) continue;
-      if (u.fireT > 0) u.fireT = Math.max(0, u.fireT - dt);
-      const g0 = this.world.heightAt(u.x, u.z);
-      if (u.flyVy !== 0 || u.y > g0 + 0.08) {
-        u.flyVy -= 18 * dt;
-        u.x = clamp(u.x + u.flyVx * dt, 0.3, WORLD - 0.3);
-        u.z = clamp(u.z + u.flyVz * dt, 0.3, WORLD - 0.3);
-        u.y += u.flyVy * dt;
-        u.path = [];
-        u.pathI = 0;
-        const g1 = this.world.heightAt(u.x, u.z);
-        if (u.y <= g1) {
-          u.y = g1;
-          u.flyVy = 0;
-          u.flyVx = 0;
-          u.flyVz = 0;
-        }
-        continue;
-      }
-      const swamp = this.world.swamp[this.world.sampleAt(u.x, u.z)]! > 0;
-      let spd = 2.4;
-      if (u.kind === "warrior") spd = 3.3;
-      else if (u.kind === "preacher") spd = 2.55;
-      else if (u.kind === "firewarrior") spd = 2.7;
-      else if (u.kind === "shaman") spd = 2.1;
-      else if (u.kind === "spy") spd = 2.8;
-      else if (u.kind === "wildman") spd = 1.8;
-      if (swamp) spd *= 0.04;
-      const sl = this.world.slopeAt(u.x, u.z);
-      spd *= 1 / (1 + sl * 2.8);
-      if (spd < 0.22) spd = 0.22;
-      if (u.kind === "preacher" && u.channel > 0) {
-        u.y = this.world.heightAt(u.x, u.z);
-        continue;
-      }
-      if (u.job === "train" && u.channel > 0) {
-        u.y = this.world.heightAt(u.x, u.z);
-        continue;
-      }
-      if (!u.path.length) {
-        const dest = this.goalCell(u);
-        const going =
-          u.job === "move" ||
-          u.job === "haul" ||
-          (u.job === "train" && u.channel <= 0) ||
-          (u.job === "chop" && u.channel <= 0);
-        if (going && dest && this.world.land(u.x, u.z) && this.world.land(dest.x, dest.z)) {
-          u.path = [{ x: dest.x, z: dest.z }];
-          u.pathI = 0;
-        } else {
-          u.y = this.world.heightAt(u.x, u.z);
-          continue;
-        }
-      }
-      if (u.pathI >= u.path.length) {
-        u.path = [];
-        this.onArrive(u);
-        u.y = this.world.heightAt(u.x, u.z);
-        continue;
-      }
-      const step = u.path[u.pathI]!;
-      if (!this.world.walkableAt(step.x, step.z) && !this.trainAllows(u, step.x, step.z)) {
-        u.pathI++;
-        continue;
-      }
-      const dx = step.x - u.x;
-      const dz = step.z - u.z;
-      const len = Math.hypot(dx, dz);
-      if (len < 0.08) {
-        u.pathI++;
-        if (u.pathI >= u.path.length) {
-          u.path = [];
-          this.onArrive(u);
-        }
-        continue;
-      }
-      const m = Math.min(1, (spd * dt) / len);
-      u.x += dx * m;
-      u.z += dz * m;
-      u.yaw = Math.atan2(dx, dz);
-      u.y = this.world.heightAt(u.x, u.z);
-    }
-    this.resolveCollisions();
-    for (const u of this.units) {
-      if (u.flyVy !== 0 || u.y > this.world.heightAt(u.x, u.z) + 0.08) continue;
-      u.y = this.world.heightAt(u.x, u.z);
-    }
+    this.pathSystem.moveUnits(this, dt);
   }
 
   trainAllows(u: Unit, x: number, z: number): boolean {
-    if (u.job !== "train") return false;
-    const camp = this.buildingById(u.targetId);
-    if (!camp) return false;
-    if (inPad(x, z, this.buildingPad(camp), 0.25)) return true;
-    const queue = this.trainQueue(camp.id);
-    let slot = queue.findIndex((o) => o.id === u.id);
-    if (slot < 0) slot = 0;
-    const dest = this.trainSlotPos(camp, slot);
-    return dist2(x, z, dest.x, dest.z) <= 0.55 * 0.55;
+    return this.trainingSystem.trainAllows(this, u, x, z);
   }
 
   onArrive(u: Unit): void {
-    if (u.job === "move") u.job = "idle";
-    u.think = 0;
-    const home = this.buildingById(u.targetId);
-    if (home) {
-      u.yaw = Math.atan2(home.x - u.x, home.z - u.z);
-      return;
-    }
-    const tr = this.trees.find((t) => t.id === u.targetId);
-    if (tr) u.yaw = Math.atan2(tr.x - u.x, tr.z - u.z);
+    this.pathSystem.onArrive(this, u);
   }
 
   goalCell(u: Unit): Cell | null {
-    if (u.job === "train" && u.targetId) {
-      const camp = this.buildingById(u.targetId);
-      if (camp && camp.level >= 1) {
-        const queue = this.trainQueue(camp.id);
-        let slot = queue.findIndex((o) => o.id === u.id);
-        if (slot < 0) slot = 0;
-        return this.trainSlotPos(camp, slot);
-      }
-    }
-    if (u.path.length) {
-      const last = u.path[u.path.length - 1]!;
-      return { x: last.x, z: last.z };
-    }
-    if (u.targetId) {
-      const b = this.buildingById(u.targetId);
-      if (b) return this.padEdge(b.x, b.z, b.padW, b.padD, b.yaw, u.x, u.z);
-      const tr = this.trees.find((t) => t.id === u.targetId);
-      if (tr && tr.alive) return this.treeRim(tr, u.x, u.z);
-    }
-    if (u.settleX >= 0) {
-      const pad = padSize(1);
-      return this.padEdge(u.settleX, u.settleZ, pad.w, pad.d, u.settleYaw, u.x, u.z);
-    }
-    return null;
+    return this.pathSystem.goalCell(this, u);
   }
 
   repathKeepJob(u: Unit, dest: Cell): void {
-    u.path = astar(this.world, u.x, u.z, dest.x, dest.z);
-    if (!u.path.length) u.path = [{ x: dest.x, z: dest.z }];
-    u.pathI = 0;
+    this.pathSystem.repathKeepJob(this, u, dest);
   }
 
   detourAround(u: Unit, dest: Cell): Cell | null {
-    let bx = (u.x + dest.x) * 0.5;
-    let bz = (u.z + dest.z) * 0.5;
-    let bestD = 1e9;
-    let found = false;
-    for (const b of this.buildings) {
-      if (b.hp <= 0) continue;
-      const midX = (u.x + dest.x) * 0.5;
-      const midZ = (u.z + dest.z) * 0.5;
-      const pad = this.buildingPad(b);
-      if (!inPad(u.x, u.z, pad, 2.6) && !inPad(midX, midZ, pad, 1.4)) continue;
-      const d = dist2(u.x, u.z, b.x, b.z);
-      if (d < bestD) {
-        bestD = d;
-        bx = b.x;
-        bz = b.z;
-        found = true;
-      }
-    }
-    for (const t of this.trees) {
-      if (!t.alive) continue;
-      const d = dist2(u.x, u.z, t.x, t.z);
-      if (d < 3.4 * 3.4 && d < bestD) {
-        bestD = d;
-        bx = t.x;
-        bz = t.z;
-        found = true;
-      }
-    }
-    for (const o of this.units) {
-      if (o.id === u.id || o.hp <= 0) continue;
-      const d = dist2(u.x, u.z, o.x, o.z);
-      if (d < 0.72 * 0.72 && d < bestD) {
-        bestD = d;
-        bx = o.x;
-        bz = o.z;
-        found = true;
-      }
-    }
-    let dx = u.x - bx;
-    let dz = u.z - bz;
-    let len = Math.hypot(dx, dz);
-    if (!found || len < 1e-4) {
-      dx = dest.x - u.x;
-      dz = dest.z - u.z;
-      len = Math.hypot(dx, dz);
-      if (len < 1e-4) return null;
-    }
-    dx /= len;
-    dz /= len;
-    const sides: [number, number][] = [
-      [-dz, dx],
-      [dz, -dx],
-    ];
-    let best: Cell | null = null;
-    let bestScore = 1e9;
-    for (const [px, pz] of sides) {
-      for (const dist of [1.4, 2.1, 2.8]) {
-        const x = u.x + px * dist;
-        const z = u.z + pz * dist;
-        if (!this.world.walkableAt(x, z)) continue;
-        const score = dist2(x, z, dest.x, dest.z);
-        if (score < bestScore) {
-          bestScore = score;
-          best = { x, z };
-        }
-      }
-    }
-    return best;
+    return this.pathSystem.detourAround(this, u, dest);
   }
 
   unstick(u: Unit): void {
-    if (u.job === "chop" && u.channel > 0) return;
-    if (u.job === "train" && u.channel > 0) return;
-    if (u.kind === "preacher" && u.channel > 0) return;
-    const dest = this.goalCell(u);
-    if (!dest) return;
-    const via = this.detourAround(u, dest);
-    u.path = [];
-    u.pathI = 0;
-    let path: Cell[] = [];
-    if (via && dist2(via.x, via.z, dest.x, dest.z) > 0.16) {
-      const a = astar(this.world, u.x, u.z, via.x, via.z);
-      const b = astar(this.world, via.x, via.z, dest.x, dest.z);
-      if (a.length && b.length) path = a.concat(b);
-      else if (b.length) path = b;
-      else path = a;
-    }
-    if (!path.length) path = astar(this.world, u.x, u.z, dest.x, dest.z);
-    if (!path.length) path = [{ x: dest.x, z: dest.z }];
-    u.path = path;
-    u.pathI = 0;
+    this.pathSystem.unstick(this, u);
   }
 
   watchStuck(): void {
-    const now = this.time;
-    const live = new Set<number>();
-    for (const u of this.units) live.add(u.id);
-    for (const id of [...this.stuckWatch.keys()]) {
-      if (!live.has(id)) this.stuckWatch.delete(id);
-    }
-    for (const u of this.units) {
-      if (u.hp <= 0 || u.homeId > 0) continue;
-      if (u.flyVy !== 0 || u.y > this.world.heightAt(u.x, u.z) + 0.08) continue;
-      const going =
-        u.path.length > 0 ||
-        u.job === "move" ||
-        u.job === "haul" ||
-        (u.job === "chop" && u.channel <= 0) ||
-        (u.job === "train" && u.channel <= 0);
-      if (!going) {
-        this.stuckWatch.set(u.id, { x: u.x, z: u.z, t: now });
-        continue;
-      }
-      const prev = this.stuckWatch.get(u.id);
-      if (!prev) {
-        this.stuckWatch.set(u.id, { x: u.x, z: u.z, t: now });
-        continue;
-      }
-      const moved = Math.hypot(u.x - prev.x, u.z - prev.z);
-      if (moved >= 0.08) {
-        this.stuckWatch.set(u.id, { x: u.x, z: u.z, t: now });
-        continue;
-      }
-      if (now - prev.t >= 1.0) {
-        this.unstick(u);
-        this.stuckWatch.set(u.id, { x: u.x, z: u.z, t: now });
-      }
-    }
+    this.pathSystem.watchStuck(this);
   }
 
   resolveCollisions(): void {
-    for (const u of this.units) {
-      if (u.homeId > 0) continue;
-      if (u.flyVy !== 0 || u.y > this.world.heightAt(u.x, u.z) + 0.08) continue;
-      const r = UNIT_RADIUS[u.kind];
-      const holdTrain = u.job === "train" && u.channel > 0;
-      if (!this.world.walkableAt(u.x, u.z) && !holdTrain) {
-        const dest = this.goalCell(u);
-        const keep = !!(dest && (u.path.length || u.job === "move" || u.targetId || u.settleX >= 0));
-        const safe = nearestLand(this.world, u.x, u.z);
-        if (safe) {
-          u.x = safe.x;
-          u.z = safe.z;
-        }
-        if (keep && dest) this.repathKeepJob(u, dest);
-        else {
-          u.path = [];
-          u.pathI = 0;
-        }
-      }
-      for (const b of this.buildings) {
-        if (b.hp <= 0) continue;
-        if (holdTrain) continue;
-        const pad = this.buildingPad(b);
-        if (inDoorSlit(u.x, u.z, pad)) continue;
-        const pushed = pushCircleFromPad(u.x, u.z, r, pad);
-        u.x = pushed.x;
-        u.z = pushed.z;
-      }
-      for (const t of this.trees) {
-        if (!t.alive) continue;
-        const need = r + TREE_BLOCK_R;
-        const dx = u.x - t.x;
-        const dz = u.z - t.z;
-        const d2 = dx * dx + dz * dz;
-        if (d2 < 1e-10) {
-          u.x += need;
-          continue;
-        }
-        if (d2 >= need * need) continue;
-        const d = Math.sqrt(d2);
-        const push = (need - d) / d;
-        u.x += dx * push;
-        u.z += dz * push;
-      }
-    }
-    const n = this.units.length;
-    for (let i = 0; i < n; i++) {
-      const a = this.units[i]!;
-      if (a.homeId > 0) continue;
-      const ra = UNIT_RADIUS[a.kind];
-      for (let j = i + 1; j < n; j++) {
-        const b = this.units[j]!;
-        if (b.homeId > 0) continue;
-        const rb = UNIT_RADIUS[b.kind];
-        const dx = a.x - b.x;
-        const dz = a.z - b.z;
-        const d2 = dx * dx + dz * dz;
-        const need = ra + rb;
-        if (d2 >= need * need || d2 < 1e-8) continue;
-        const d = Math.sqrt(d2);
-        const push = ((need - d) / d) * 0.5;
-        a.x += dx * push;
-        a.z += dz * push;
-        b.x -= dx * push;
-        b.z -= dz * push;
-      }
-      a.x = clamp(a.x, 0.3, WORLD - 0.3);
-      a.z = clamp(a.z, 0.3, WORLD - 0.3);
-    }
-    for (const u of this.units) {
-      if (u.job !== "train" || !u.targetId) continue;
-      const camp = this.buildingById(u.targetId);
-      if (!camp) continue;
-      const queue = this.trainQueue(camp.id);
-      const slot = queue.findIndex((o) => o.id === u.id);
-      if (slot < 0) continue;
-      const dest = this.trainSlotPos(camp, slot);
-      if (dist2(u.x, u.z, dest.x, dest.z) < 0.55 * 0.55) {
-        u.x += (dest.x - u.x) * 0.85;
-        u.z += (dest.z - u.z) * 0.85;
-      }
-    }
+    this.pathSystem.resolveCollisions(this);
   }
 
   hurtBuilding(b: Building, dmg: number): void {
-    if (!b.shell && b.level >= 1 && b.hp - dmg <= 0) {
-      b.shell = true;
-      b.hp = Math.max(1, b.maxHp * 0.4);
-      if (b.team === BLUE && (b.kind === "hut" || isCampKind(b.kind))) this.toast("一座屋宇被拆成骨架");
-      return;
-    }
-    b.hp -= dmg;
+    this.combatSystem.hurtBuilding(this, b, dmg);
   }
 
   combat(dt: number): void {
-    for (const u of this.units) {
-      if (!isTribe(u.team) || u.hp <= 0 || u.homeId > 0) continue;
-      if (!u.atkId) continue;
-
-      const tu = this.unitById(u.atkId);
-      if (tu) {
-        const meleeR = 0.95;
-        if (dist2(u.x, u.z, tu.x, tu.z) <= meleeR * meleeR) {
-          tu.hp -= 2.2 * dt;
-          if (tu.hp <= 0) u.atkId = 0;
-        }
-        continue;
-      }
-
-      const b = this.buildingById(u.atkId);
-      if (!b) {
-        u.atkId = 0;
-        continue;
-      }
-      const reach = Math.max(b.padW, b.padD) * 0.5 + 0.95;
-      if (dist2(u.x, u.z, b.x, b.z) > reach * reach) continue;
-      this.hurtBuilding(b, 3.4 * dt);
-      if (b.hp <= 0) u.atkId = 0;
-    }
+    this.combatSystem.combat(this, dt);
   }
 
   preach(u: Unit, dt: number): void {
-    const reach2 = 1.25 * 1.25;
-    let tgt: Unit | null = null;
-    let bestD = reach2;
-    const enemy: Team = u.team === BLUE ? RED : BLUE;
-    for (const o of this.units) {
-      if (o.id === u.id) continue;
-      const foe = o.team === enemy || o.team === NEUTRAL;
-      if (!foe || !canConvert(o.kind)) continue;
-      const d = dist2(u.x, u.z, o.x, o.z);
-      if (d < bestD) {
-        bestD = d;
-        tgt = o;
-      }
-    }
-    if (!tgt) {
-      u.channel = 0;
-      u.channelId = 0;
-      return;
-    }
-    u.path = [];
-    if (u.channelId !== tgt.id) {
-      u.channel = 0;
-      u.channelId = tgt.id;
-    }
-    u.channel += dt;
-    if (u.channel < 1.35) return;
-    u.channel = 0;
-    u.channelId = 0;
-    tgt.team = u.team;
-    tgt.kind = "walker";
-    tgt.str = Math.max(1, tgt.str);
-    tgt.hp = tgt.maxHp = unitHp("walker", tgt.str);
-    tgt.order = this.teams[u.team as Team].order;
-    tgt.path = [];
-    tgt.pathI = 0;
-    tgt.think = 0;
-    tgt.channel = 0;
-    tgt.channelId = 0;
-    tgt.selected = false;
-    tgt.disguise = null;
-    tgt.carry = 0;
-    tgt.job = "idle";
-    tgt.targetId = 0;
-    tgt.atkId = 0;
-    tgt.trainKind = null;
-    tgt.foundKind = null;
-    this.toast(u.team === BLUE ? "一名敌人皈依" : "一名子民被感化");
+    this.combatSystem.preach(this, u, dt);
   }
 
   nearestConvertible(u: Unit): Unit | null {
-    const enemy: Team = u.team === BLUE ? RED : BLUE;
-    let best: Unit | null = null;
-    let bestD = 1e9;
-    for (const o of this.units) {
-      if (o.id === u.id) continue;
-      if (!canConvert(o.kind)) continue;
-      if (o.team !== enemy && o.team !== NEUTRAL) continue;
-      let d = dist2(u.x, u.z, o.x, o.z);
-      if (o.kind === "walker" || o.kind === "wildman") d *= 0.65;
-      if (d < bestD) {
-        bestD = d;
-        best = o;
-      }
-    }
-    return best;
+    return this.combatSystem.nearestConvertible(this, u);
   }
 
   pushUnit(u: Unit, fromX: number, fromZ: number, dist: number): void {
-    let dx = u.x - fromX;
-    let dz = u.z - fromZ;
-    const len = Math.hypot(dx, dz) || 1;
-    dx /= len;
-    dz /= len;
-    const steps = 10;
-    let x = u.x;
-    let z = u.z;
-    for (let i = 1; i <= steps; i++) {
-      const tx = u.x + dx * dist * (i / steps);
-      const tz = u.z + dz * dist * (i / steps);
-      if (!this.world.walkableAt(tx, tz)) break;
-      x = tx;
-      z = tz;
-    }
-    u.x = clamp(x, 0.3, WORLD - 0.3);
-    u.z = clamp(z, 0.3, WORLD - 0.3);
-    u.path = [];
-    u.pathI = 0;
-    u.think = 0.15;
+    this.combatSystem.pushUnit(this, u, fromX, fromZ, dist);
   }
 
   closestEnemyUnit(u: Unit, enemy: Team, range: number): Unit | null {
-    let best: Unit | null = null;
-    let bestD = range * range;
-    for (const o of this.units) {
-      if (o.team !== enemy) continue;
-      const d = dist2(u.x, u.z, o.x, o.z);
-      if (d < bestD) {
-        bestD = d;
-        best = o;
-      }
-    }
-    return best;
+    return this.combatSystem.closestEnemyUnit(this, u, enemy, range);
   }
 
   projectiles(dt: number): void {
-    for (const p of this.shots) {
-      p.x += p.vx * dt;
-      p.z += p.vz * dt;
-      p.life -= dt;
-      const enemy: Team = p.team === BLUE ? RED : BLUE;
-      for (const u of this.units) {
-        if (u.team !== enemy) continue;
-        if (dist2(p.x, p.z, u.x, u.z) < 0.28) {
-          u.hp -= p.dmg;
-          if (p.knock > 0) this.pushUnit(u, p.ox, p.oz, p.knock);
-          p.life = 0;
-          break;
-        }
-      }
-      if (p.life > 0) {
-        const b = this.buildingAt(p.x, p.z);
-        if (b && b.team === enemy) {
-          b.hp -= p.dmg;
-          p.life = 0;
-        }
-      }
-    }
-    this.shots = this.shots.filter((p) => p.life > 0);
+    this.combatSystem.projectiles(this, dt);
   }
 
   hazards(dt: number): void {
-    if (this.review) return;
-    for (const u of this.units) {
-      if (!inMap(u.x, u.z) || this.world.heightAt(u.x, u.z) <= WATER) {
-        u.hp -= 4 * dt;
-        continue;
-      }
-      const i = this.world.sampleAt(u.x, u.z);
-      if (this.world.lava[i]! > 0) {
-        u.hp -= 10 * dt;
-        if (!this.lavaHurt && u.team === BLUE) {
-          this.lavaHurt = true;
-          this.toast(u.kind === "shaman" ? "祭司被岩浆烫伤" : "一名子民被岩浆烫伤");
-        }
-      }
-      if (this.world.swamp[i]! > 0) {
-        u.swampT += dt;
-        if (u.swampT >= 5) {
-          u.hp = 0;
-          this.swampKill = true;
-          this.swampKillX = u.x;
-          this.swampKillZ = u.z;
-          if (u.team === BLUE) this.toast(u.kind === "shaman" ? "祭司死于毒气" : "一名子民死于毒气");
-        }
-      } else {
-        u.swampT = 0;
-      }
-    }
+    this.hazardSystem.hazards(this, dt);
   }
 
   holdPadsNearVolcano(): void {
@@ -2109,36 +1276,12 @@ export class Sim {
   }
 
   lavaOnPad(b: Building): boolean {
-    const pts: [number, number][] = [
-      [b.x, b.z],
-      [b.x + b.padW * 0.35, b.z],
-      [b.x - b.padW * 0.35, b.z],
-      [b.x, b.z + b.padD * 0.35],
-      [b.x, b.z - b.padD * 0.35],
-    ];
-    for (const [x, z] of pts) {
-      if (this.world.lava[this.world.sampleAt(x, z)]! > 0) return true;
-    }
-    return false;
+    return this.hazardSystem.lavaOnPad(this, b);
   }
 
   burnBuildings(dt: number): void {
-    for (const b of this.buildings) {
-      if (b.hp <= 0 || b.kind === "rebirth") continue;
-      if (!this.lavaOnPad(b)) continue;
-      if (!b.shell) {
-        b.shell = true;
-        b.hp = Math.max(1, b.maxHp * 0.4);
-        if (b.team === BLUE && (b.kind === "hut" || isCampKind(b.kind))) this.toast("一座屋宇烧成骨架");
-      } else {
-        b.hp -= 4 * dt;
-      }
-    }
+    this.hazardSystem.burnBuildings(this, dt);
   }
-
-
-
-
 
   blastAt(x: number, z: number): void {
     this.blast = { x, z, t: 0, life: 0.8 };
@@ -2462,22 +1605,7 @@ export class Sim {
   }
 
   mergeWalkers(): void {
-    if (this.freezeMerge) return;
-    const walkers = this.units.filter((u) => u.kind === "walker" && u.homeId === 0 && u.str < 3 && u.job !== "train" && u.carry === 0);
-    for (let i = 0; i < walkers.length; i++) {
-      const a = walkers[i]!;
-      if (a.hp <= 0) continue;
-      for (let j = i + 1; j < walkers.length; j++) {
-        const b = walkers[j]!;
-        if (b.hp <= 0 || a.team !== b.team) continue;
-        if (dist2(a.x, a.z, b.x, b.z) > 0.36) continue;
-        a.str = Math.min(3, a.str + b.str);
-        a.hp = a.maxHp = unitHp("walker", a.str);
-        b.hp = 0;
-        if (a.team === BLUE) this.toast("两名子民合为更强的行者");
-        break;
-      }
-    }
+    this.mergeSystem.mergeWalkers(this);
   }
 
   respawnShamans(dt: number): void {
@@ -2527,13 +1655,7 @@ export class Sim {
   }
 
   checkWin(): void {
-    if (this.lockWin) return;
-    if (this.time < 20) return;
-    const blueDead = this.countPop(BLUE) === 0 && this.countHouses(BLUE) === 0;
-    const redDead = this.countPop(RED) === 0 && this.countHouses(RED) === 0;
-    if (blueDead && redDead) this.winner = -1;
-    else if (blueDead) this.winner = RED;
-    else if (redDead) this.winner = BLUE;
+    this.winSystem.checkWin(this);
   }
 
   damageArea(cx: number, cz: number, r: number, dmg: number, team?: Team): void {
