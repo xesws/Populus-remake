@@ -12,6 +12,8 @@ import {
   FIREBALL_SPEED,
   isTribe,
   NEUTRAL,
+  PREACH_REACH,
+  PREACH_TIME,
   Projectile,
   RED,
   Team,
@@ -47,6 +49,8 @@ export class CombatSystem implements ISystem {
       if (u.atkCd > 0) u.atkCd = Math.max(0, u.atkCd - dt);
       // v0.9 腾空中的单位不能出刀（冷却照常走）；v0.12 倒地单位同样不能行动。
       if (u.flyVy !== 0 || u.y > sim.world.heightAt(u.x, u.z) + 0.08 || u.downT > 0) continue;
+      // v0.16 感化接线：传教士优先传教（站桩，不打断玩家指令），传教中跳过攻击逻辑。
+      if (this.autoPreach(sim, u, dt)) continue;
       if (!u.atkId) continue;
       // v0.8 自动索敌拴绳：agroX = -1 表示玩家手动指令，不受拴绳限制。
       if (u.agroX >= 0 && dist2(u.x, u.z, u.agroX, u.agroZ) > AGRO_LEASH * AGRO_LEASH) {
@@ -115,8 +119,8 @@ export class CombatSystem implements ISystem {
     }
   }
 
-  preach(sim: Sim, u: Unit, dt: number): void {
-    const reach2 = 1.25 * 1.25;
+  preach(sim: Sim, u: Unit, dt: number): boolean {
+    const reach2 = PREACH_REACH * PREACH_REACH;
     let tgt: Unit | null = null;
     let bestD = reach2;
     const enemy: Team = u.team === BLUE ? RED : BLUE;
@@ -133,7 +137,7 @@ export class CombatSystem implements ISystem {
     if (!tgt) {
       u.channel = 0;
       u.channelId = 0;
-      return;
+      return false;
     }
     u.path = [];
     if (u.channelId !== tgt.id) {
@@ -141,7 +145,7 @@ export class CombatSystem implements ISystem {
       u.channelId = tgt.id;
     }
     u.channel += dt;
-    if (u.channel < 1.35) return;
+    if (u.channel < PREACH_TIME) return true;
     u.channel = 0;
     u.channelId = 0;
     tgt.team = u.team;
@@ -167,6 +171,24 @@ export class CombatSystem implements ISystem {
     logger.info("combat", `皈依：单位#${tgt.id} → 队伍${u.team}`, {
       pop: sim.countPop(u.team as Team),
     });
+    return true;
+  }
+
+  /**
+   * v0.16 感化接线：传教士身边出现可感化目标（PREACH_REACH 内的野人/敌方单位）时
+   * 站桩引导转化——感化优先于攻击，但不打断玩家移动/训练指令，也不追击。
+   * 返回 true 表示本帧在传教，调用方跳过攻击逻辑。
+   */
+  autoPreach(sim: Sim, u: Unit, dt: number): boolean {
+    if (u.kind !== "preacher") return false;
+    if (u.hp <= 0 || u.homeId > 0) return false;
+    if (u.job === "move" || u.job === "train") return false;
+    if (u.downT > 0 || u.flyVy !== 0) return false;
+    if (!this.preach(sim, u, dt)) return false;
+    if (u.atkId) u.atkId = 0; // 放下武器转而传教
+    u.path = [];
+    u.pathI = 0;
+    return true;
   }
 
   nearestConvertible(sim: Sim, u: Unit): Unit | null {

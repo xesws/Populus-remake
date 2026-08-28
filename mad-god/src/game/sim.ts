@@ -1521,6 +1521,8 @@ export class Sim {
     const wrecked = this.buildings.filter((b) => b.hp <= 0);
     if (wrecked.length) {
       for (const b of wrecked) {
+        // v0.16 房屋被毁落日志：人口上限回落/生产骤停的排查入口（战斗/水淹/岩浆统一在此收口）。
+        logger.info("building", `建筑#${b.id}(${b.kind}) 被毁`, { team: b.team, level: b.level });
         if (b.team === BLUE && (b.kind === "hut" || isCampKind(b.kind))) this.toast("一座屋宇被毁");
         // v0.11 修复：房屋被毁时住户迁出，避免 homeId 悬空导致单位永久消失。
         for (const u of this.units) {

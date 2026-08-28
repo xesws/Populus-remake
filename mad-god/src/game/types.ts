@@ -146,6 +146,10 @@ export const WARRIOR_CRIT_MULT = 2;
 export const WARRIOR_CRIT_KNOCK_MIN = 2;
 export const WARRIOR_CRIT_KNOCK_MAX = 3;
 
+// v0.16 传教士感化：站桩引导转化身边野人/敌方单位（祭司与传教士免疫感化）。
+export const PREACH_REACH = 1.25; // 引导射程（格），站桩不追击
+export const PREACH_TIME = 1.35; // 引导时长（秒），中途目标离开则重来
+
 // v0.11a 修复：房屋升级不再扩大占地（否则升级会把邻居挤掉）。各级 pad / 墙体面积恒定为 L1 尺寸，只许长高。
 export const HOUSE_WALL = [0, 2.2, 2.2, 2.2] as const;
 export const HOUSE_ROOF = [0, 2.2, 2.2, 2.2] as const;
