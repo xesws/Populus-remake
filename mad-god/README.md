@@ -7,7 +7,7 @@ Vite plus TypeScript plus Three.js. Default port 5173.
 
 ## Play
 Blue deity versus red AI on one grassy island with water.
-Raise and lower land. Flat 3x3 hut, 5x5 house, 7x7 castle.
+Raise and lower land. Flat 3x3 hut; upgrading adds height only, never footprint.
 Walkers settle empty flats and may merge. Mana from people and homes.
 Houses hold 2/5/10 residents by level; more residents breed faster,
 with a green progress bar over producing huts.
@@ -29,7 +29,7 @@ Lightning 20. Earthquake 50 (cap 120). Swamp 36 (cap 140).
 Volcano 80 (cap 160). Armageddon 100 (cap 200).
 
 ## 中文摘要
-你是蓝方神明，对阵红方敌神。提升土地让子民筑屋，扩建平台可升级屋宇。
+你是蓝方神明，对阵红方敌神。提升土地让子民筑屋，屋宇升级只长高、不扩地。
 法力随人口与屋宇增长。数字键选神迹，Z X C V 谕令，T Y G H 征召武士 / 传教士 / 火战士 / 间谍。空格暂停。
 消灭对方全部子民与屋宇即胜。项目入口：index.html 与 src/main.ts。
 Use the package scripts named dev, build, and preview.

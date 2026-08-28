@@ -1,6 +1,6 @@
 import { Sim } from "./sim";
 import { BLUE, houseBaseRate, houseHp, houseMaxPop, HOUSE_DWELL_BONUS, Tree, Unit, woodNeedFor } from "./types";
-import { World } from "./world";
+import { World, padsOverlap } from "./world";
 
 function assert(cond: boolean, msg: string): void {
   if (!cond) throw new Error(msg);
@@ -249,6 +249,41 @@ function testHouseDestroyedReleasesDwellers(): void {
   console.log("testHouseDestroyedReleasesDwellers ok");
 }
 
+// v0.11a 修复：房屋升级占地恒定，只长高——不再把邻居挤掉。
+
+function testUpgradeKeepsFootprint(): void {
+  const sim = new Sim(new World(42));
+  const a = sim.buildings.find((b) => b.team === BLUE && b.kind === "hut" && b.level === 1)!;
+  const s = sim.world.startPad(BLUE);
+  const c = sim.placeComplete(BLUE, s.x + 8, s.z + 8, s.yaw, "hut", 1);
+  assert(!!c, "邻屋放置成功");
+  assert(a.padW === 2.6 && c!.padW === 2.6, "两屋初始 pad 均为 2.6");
+
+  // 走真实升级路径一路升到 L3
+  sim.productionSystem.upgradeBuilding(sim, a, 2);
+  sim.productionSystem.upgradeBuilding(sim, a, 3);
+  sim.productionSystem.upgradeBuilding(sim, c!, 2);
+  sim.productionSystem.upgradeBuilding(sim, c!, 3);
+
+  assert(a.level === 3 && c!.level === 3, "两屋均升至 L3");
+  assert(a.padW === 2.6 && a.padD === 2.6, "L3 后 pad 仍为 2.6（面积不变，只许长高）");
+  assert(c!.padW === 2.6 && c!.padD === 2.6, "邻屋 L3 后 pad 仍为 2.6");
+
+  const padOf = (b: { x: number; z: number; padW: number; padD: number; yaw: number }) => ({
+    x: b.x,
+    z: b.z,
+    w: b.padW,
+    d: b.padD,
+    yaw: b.yaw,
+  });
+  assert(!padsOverlap(padOf(a), padOf(c!)), "两座 L3 屋 pad 不重叠（不再挤掉邻居）");
+
+  sim.tick(0.1);
+  assert(a.hp > 0 && c!.hp > 0, "升级后房屋存活（地形判定按恒定 pad）");
+
+  console.log("testUpgradeKeepsFootprint ok");
+}
+
 function main(): void {
   testWoodChoppingAndDelivery();
   testCampSiteDelivery();
@@ -258,7 +293,8 @@ function main(): void {
   testL3CapTen();
   testDwellReleasedOnDeath();
   testHouseDestroyedReleasesDwellers();
-  console.log("produce-check ok (v0.11 生产速率/上限/名额释放)");
+  testUpgradeKeepsFootprint();
+  console.log("produce-check ok (v0.11 生产 + v0.11a 占地恒定)");
 }
 
 main();

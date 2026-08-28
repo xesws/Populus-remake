@@ -140,9 +140,10 @@ export const FIRE_KNOCK_CHANCE = 0.4; // 命中击退（沿弹向推 1.2 格）
 export const FIRE_LAUNCH_CHANCE = 0.2; // 命中原地击飞（附带落地伤害）
 export const FIRE_LAND_DMG = 2;
 
-export const HOUSE_WALL = [0, 2.2, 3.8, 5.6] as const;
-export const HOUSE_ROOF = [0, 2.2, 3.8, 5.6] as const;
-export const HOUSE_PAD = [0, 2.6, 4.4, 6.4] as const;
+// v0.11a 修复：房屋升级不再扩大占地（否则升级会把邻居挤掉）。各级 pad / 墙体面积恒定为 L1 尺寸，只许长高。
+export const HOUSE_WALL = [0, 2.2, 2.2, 2.2] as const;
+export const HOUSE_ROOF = [0, 2.2, 2.2, 2.2] as const;
+export const HOUSE_PAD = [0, 2.6, 2.6, 2.6] as const;
 
 export function houseHalf(level: number): number {
   const lv = level >= 3 ? 3 : level === 2 ? 2 : 1;

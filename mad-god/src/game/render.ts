@@ -750,8 +750,8 @@ export class View {
     const teamMat = new THREE.MeshLambertMaterial({ color: primary });
 
     if (shell && kind !== "rebirth" && level >= 1) {
-      const span = level >= 3 ? 5.6 : level === 2 ? 3.8 : kind === "hut" ? 2.2 : 2.4;
-      const h = level >= 3 ? 1.55 : 1.05;
+      const span = kind === "hut" ? 2.2 : 2.4; // v0.11a：骨架占地不再随等级扩大
+      const h = level >= 3 ? 1.35 : level === 2 ? 1.2 : 1.05; // 只许长高一点点
       const half = span * 0.42;
       const wood = new THREE.MeshLambertMaterial({ color: 0x6a4a22 });
       const char = new THREE.MeshLambertMaterial({ color: 0x3a2a18 });
@@ -838,24 +838,29 @@ export class View {
     }
 
     if (level === 2) {
-      this.box(g, 3.8, 1.1, 3.8, new THREE.MeshLambertMaterial({ color: 0x8a8478 }), 0, 0.55, 0);
-      this.box(g, 3.8, 0.55, 3.8, teamMat, 0, 1.38, 0);
-      this.box(g, 0.682, 0.7, 0.682, new THREE.MeshLambertMaterial({ color: 0x8a8478 }), 1.364, 1.45, 1.364);
+      // v0.11a：L2 石屋与 L1 同占地（2.2），只更高（石墙 + 队色屋檐 + 顶饰）。
+      const stone = new THREE.MeshLambertMaterial({ color: 0x8a8478 });
+      this.box(g, 2.2, 1.15, 2.2, stone, 0, 0.58, 0);
+      this.box(g, 2.2, 0.45, 2.2, teamMat, 0, 1.38, 0);
+      this.box(g, 0.6, 0.3, 0.6, stone, 0, 1.75, 0);
+      this.box(g, 0.44, 0.55, 0.176, teamMat, 0, 0.28, 1.188);
       return g;
     }
 
-    this.box(g, 5.6, 1.7, 5.6, new THREE.MeshLambertMaterial({ color: 0xd0cec6 }), 0, 0.85, 0);
-    const merlonMat = new THREE.MeshLambertMaterial({ color: 0xd0cec6 });
+    // v0.11a：L3 城堡同样恒定占地（2.2），再高一些：石塔 + 四角垛口 + 旗。
+    const light = new THREE.MeshLambertMaterial({ color: 0xd0cec6 });
+    this.box(g, 2.2, 1.5, 2.2, light, 0, 0.75, 0);
     for (const [x, z] of [
-      [2.33, 2.33],
-      [2.33, -2.33],
-      [-2.33, 2.33],
-      [-2.33, -2.33],
+      [0.88, 0.88],
+      [0.88, -0.88],
+      [-0.88, 0.88],
+      [-0.88, -0.88],
     ] as const) {
-      this.box(g, 0.94, 0.4, 0.94, merlonMat, x, 1.9, z);
+      this.box(g, 0.42, 0.34, 0.42, light, x, 1.67, z);
     }
-    this.box(g, 0.295, 0.9, 0.295, new THREE.MeshLambertMaterial({ color: 0x6a4a28 }), 2.358, 2.15, 2.358);
-    this.box(g, 1.65, 0.5, 0.236, teamMat, 3.3, 2.35, 2.358);
+    this.box(g, 0.28, 0.55, 0.28, new THREE.MeshLambertMaterial({ color: 0x6a4a28 }), 0.78, 1.95, 0.78);
+    this.box(g, 0.55, 0.3, 0.06, teamMat, 1.0, 2.1, 0.78);
+    this.box(g, 0.44, 0.7, 0.176, teamMat, 0, 0.35, 1.188);
     return g;
   }
 
@@ -953,7 +958,7 @@ export class View {
       const t = clamp(b.prod, 0, 1);
       g.visible = t > 0.001;
       if (!g.visible) continue;
-      const roofY = b.level >= 3 ? 2.55 : b.level === 2 ? 2.05 : 1.45;
+      const roofY = b.level >= 3 ? 2.35 : b.level === 2 ? 1.95 : 1.45;
       g.position.set(b.x, b.y + roofY + 0.35, b.z);
       const dx = this.camera.position.x - g.position.x;
       const dz = this.camera.position.z - g.position.z;
@@ -1003,7 +1008,7 @@ export class View {
       }
       g.visible = producing;
       if (!producing) continue;
-      const roofY = b.level >= 3 ? 2.55 : b.level === 2 ? 2.05 : 1.45;
+      const roofY = b.level >= 3 ? 2.35 : b.level === 2 ? 1.95 : 1.45;
       g.position.set(b.x, b.y + roofY, b.z);
       const dx = this.camera.position.x - g.position.x;
       const dz = this.camera.position.z - g.position.z;
@@ -1071,8 +1076,8 @@ export class View {
         this.dwellPips.set(b.id, g);
         this.dwellPipGroup.add(g);
       }
-      const roofY = b.level >= 3 ? 2.2 : b.level === 2 ? 1.72 : 1.22;
-      const front = b.level >= 3 ? 2.55 : b.level === 2 ? 1.72 : 1.02;
+      const roofY = b.level >= 3 ? 2.0 : b.level === 2 ? 1.6 : 1.22;
+      const front = 1.02; // v0.11a：占地恒定后门面位置不随等级变化
       g.position.set(b.x, b.y + roofY, b.z);
       g.rotation.y = b.yaw;
       const local = this.padLocalFront(b.yaw, front);

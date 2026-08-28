@@ -5,6 +5,7 @@ import {
   inMap,
   MAX_H,
   MAX_SLOPE,
+  padSize,
   RED,
   RNG,
   SAMPLES,
@@ -409,11 +410,10 @@ export class World {
     return s.n > 0 && s.land >= 0.80 && s.variance < 0.22 && s.maxSlope < 0.70 && s.mean > WATER;
   }
 
+  /** v0.11a：房屋占地各级恒定，地形只判「可住 / 不可住」；任何就绪的 L1 pad 都可一路升到 L3。 */
   houseLevelAt(cx: number, cz: number, yaw = 0): number {
-    if (this.padReady(cx, cz, 6.4, 6.4, yaw)) return 3;
-    if (this.padReady(cx, cz, 4.4, 4.4, yaw)) return 2;
-    if (this.padReady(cx, cz, 2.6, 2.6, yaw)) return 1;
-    return 0;
+    const pad = padSize(1);
+    return this.padReady(cx, cz, pad.w, pad.d, yaw) ? 3 : 0;
   }
 
   countMismatch(cx: number, cz: number, radius: number, targetH: number): Cell[] {
