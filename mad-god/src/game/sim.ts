@@ -100,6 +100,14 @@ export class Sim {
     biasWidth: number;
     /** v0.22 穹顶山形的方位扰动相位（低频不规则，cast 时随机一次） */
     shapePhase: number;
+    /**
+     * v0.26b 抬升基准与原地面快照：**必须存在 sim.volcano 上而不是 Spell 实例字段**。
+     * 旧实现存在实例字段，而 VolcanoSpell 被实例化了两份（SPELLS 表单例处理玩家/AI 的
+     * cast、Sim.volcanoSpell 处理 tick）——cast 把快照写在单例上，tick 读的是 Sim 实例的
+     * null → `null[格索引]`，火山一放就崩（日志三次 "reading '9724'/'38605'/'15200'"）。
+     */
+    liftBase: number;
+    origH: Float32Array;
   } | null = null;
   fxSplash: { x: number; z: number }[] = [];
   lavaHurt = false;
@@ -130,6 +138,12 @@ export class Sim {
     houseT: number;
     /** v0.18 入海转水龙卷标记（衰减漂移直至消散，不再反弹回陆） */
     waterspout?: boolean;
+    /**
+     * v0.26b 被龙卷风甩飞的单位 id 集合：与火山 origH 同理，跨施放状态必须挂在
+     * sim.tornado 上——TornadoSpell 同样被 SPELLS 单例与 Sim 实例各持一份，
+     * 旧实例字段 flung 在 cast/tick 两份实例间互不可见，甩飞致死判定失效。
+     */
+    flungIds: Set<number>;
   } | null = null;
   tornadoLift = false;
   tornadoLiftX = 0;

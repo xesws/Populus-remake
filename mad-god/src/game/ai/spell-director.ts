@@ -44,6 +44,8 @@ export class SpellDirector implements ISpellDirector {
     const density = foeHouses.filter((h) => dist2(h.x, h.z, focus.x, focus.z) < 16).length;
     const cap = sim.teams[this.team].manaCap;
     // v0.26 法力槽改为各技能独立充能：施法条件从"法力值够"变成"该技能有颗"。
+    // v0.26b 施法失败也必须冷却：armageddon 是占位实现（恒返回失败），旧逻辑失败不设冷却，
+    // AI 每秒空转重试 → 日志刷屏（实测 t=150~211 每秒一条"armageddon 失败"）。
     if (canUnlock("armageddon", cap) && sim.hasCharge(this.team, "armageddon")) {
       const res = cast(sim, this.team, "armageddon", focus.x, focus.z);
       this.logCast("armageddon", focus.x, focus.z, res);
@@ -51,11 +53,13 @@ export class SpellDirector implements ISpellDirector {
         this.spellCd = 99;
         return;
       }
+      this.spellCd = 10; // 失败也冷却 10s，避免每秒重试
     }
     if (canUnlock("volcano", cap) && sim.hasCharge(this.team, "volcano") && density >= 2) {
       const res = cast(sim, this.team, "volcano", focus.x, focus.z);
       this.logCast("volcano", focus.x, focus.z, res);
       if (res.ok) this.spellCd = 12;
+      else this.spellCd = 8; // 火山施放失败（还在喷/法力不足）也冷却 8s
     }
   }
 

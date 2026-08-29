@@ -142,7 +142,7 @@ function testWaterspoutDissipates(): void {
   const sim = new Sim(new World(42));
   const coast = findCoast(sim.world);
   const spd = 1.35;
-  sim.tornado = { x: coast.x, z: coast.z, vx: coast.dx * spd, vz: coast.dz * spd, t: 0, life: 16, houseT: 0 };
+  sim.tornado = { x: coast.x, z: coast.z, vx: coast.dx * spd, vz: coast.dz * spd, t: 0, life: 16, houseT: 0, flungIds: new Set() };
   let sawSpout = false;
   let spoutSpeedAtEntry = -1;
   let lifeAtEntry = -1;

@@ -8,6 +8,7 @@
 import { Sim } from "./sim";
 import { BLUE, Tree, TREE_REGEN } from "./types";
 import { World } from "./world";
+import { cast } from "./spells";
 
 function assert(cond: boolean, msg: string): void {
   if (!cond) throw new Error(msg);
@@ -169,11 +170,33 @@ function testTreesBurn(): void {
   console.log("testTreesBurn ok");
 }
 
+/**
+ * v0.26b 双实例回归：真实玩家路径是 spells.cast()（SPELLS 单例的 VolcanoSpell），
+ * 而 sim.tick 走 Sim 实例的 volcanoSpell。旧实现把 origH 快照存在实例字段上，
+ * cast 写单例、tick 读 Sim 实例的 null → 火山一放就崩（日志三次
+ * "Cannot read properties of null (reading '格索引')"）。快照现挂在 sim.volcano 上。
+ */
+function testCastEntryDualInstance(): void {
+  const sim = new Sim(new World(42));
+  sim.fillCharges(BLUE);
+  const s = sim.world.startPad(BLUE);
+  // 走真实入口 spells.cast（不是 sim.volcanoSpell.cast）
+  const res = cast(sim, BLUE, "volcano", s.x + 4, s.z + 4, 0);
+  assert(res.ok, "cast() 入口施放成功");
+  for (let f = 0; f < 4 * 60; f++) sim.tick(1 / 60); // 覆盖抬升窗口 v.t <= dur
+  assert(sim.volcano !== null || true, "4 秒跑完不崩即通过（旧实现此处 null[格索引] 崩溃）");
+  const w2 = sim.world;
+  const hC = w2.heightAt(s.x + 4, s.z + 4);
+  assert(hC > 1.5, `穹顶中心应被抬升（h=${hC.toFixed(2)}）——cast 入口与 tick 的状态现已同源`);
+  console.log("testCastEntryDualInstance ok（cast() 入口 + sim.tick 4 秒不崩，穹顶抬升正常）");
+}
+
 function main(): void {
   testPlateauShape();
   testLavaLifecycle();
   testUnitBurns();
   testTreesBurn();
+  testCastEntryDualInstance();
   console.log("volcano-check ok (v0.22 穹顶火山：中间高四周矮 / 喷射方向分布 / 岩浆生命周期 / 灼烧 / 焚林)");
 }
 

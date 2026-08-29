@@ -25,10 +25,6 @@ function sampleBiasAngle(phi: number, width: number): number {
 export class VolcanoSpell extends Spell {
   readonly id = "volcano" as const;
 
-  /** v0.18 抬升基准高度（beginVolcano 时采样）。volcano 全局唯一，spell 又是单例，实例字段即可，无需改 Sim 类型。 */
-  private liftBase = 0;
-  /** v0.22 原地面快照：raisePlateau 直接设形状需要抬升前的地面（迭代逼近会收敛成平顶）。 */
-  private origH: Float32Array | null = null;
 
   cast(sim: Sim, team: Team, x: number, z: number, _dt?: number): SpellResult {
     const empty: SpellResult = { ok: false, bolts: [], shake: 0, msg: "" };
@@ -43,22 +39,20 @@ export class VolcanoSpell extends Spell {
 
   beginVolcano(sim: Sim, x: number, z: number): boolean {
     if (sim.volcano && sim.volcano.t < sim.volcano.dur + 1.2) return false;
-    // v0.18 记下 cast 时的地形高度：穹顶目标 = 原高 + 2.6（dur 内逐帧渐进逼近）。
-    this.liftBase = Math.max(sim.world.heightAt(x, z), 0.8);
-    // v0.22 喷射方向分布（每座火山随机一次）：
-    // 35% 全向 360°；65% 扇区偏置——主方向全随机、扇宽 0.6π~1.7π（"南边多一点、北边少一点"）。
-    const omni = Math.random() < 0.35;
+    // v0.22 快照抬升前的地面：隆起动画每帧按快照直接计算目标形状（精确穹顶，不漂移）。
+    // v0.26b 快照存进 sim.volcano（VolcanoSpell 有 SPELLS 单例与 Sim 实例两份，
+    // 存实例字段会让 cast（单例）写、tick（Sim 实例）读 null → 火山一放就崩）。
     sim.volcano = {
       x,
       z,
       t: 0,
       dur: 2.6,
       biasPhi: Math.random() * Math.PI * 2,
-      biasWidth: omni ? Math.PI * 2 : Math.PI * (0.6 + Math.random() * 1.1),
+      biasWidth: Math.random() < 0.35 ? Math.PI * 2 : Math.PI * (0.6 + Math.random() * 1.1),
       shapePhase: Math.random() * Math.PI * 2,
+      liftBase: Math.max(sim.world.heightAt(x, z), 0.8),
+      origH: new Float32Array(sim.world.h),
     };
-    // v0.22 快照抬升前的地面：隆起动画每帧按快照直接计算目标形状（精确穹顶，不漂移）。
-    this.origH = new Float32Array(sim.world.h);
     // v0.21 爆发震撼：初爆震屏拉满（0.55），由渲染端衰减。
     sim.fxShake = Math.max(sim.fxShake, 0.55);
     return true;
@@ -83,7 +77,7 @@ export class VolcanoSpell extends Spell {
       if (v.t <= v.dur) {
         // v0.22 渐进抬升为平滑穹顶（中间高四周矮，按原地面快照直接设形状）+ 低频方位不规则。
         const prog = Math.min(1, v.t / v.dur);
-        sim.world.raisePlateau(v.x, v.z, 6.5, this.liftBase + 2.6 * prog, v.shapePhase, this.origH!);
+        sim.world.raisePlateau(v.x, v.z, 6.5, v.liftBase + 2.6 * prog, v.shapePhase, v.origH);
       }
       if (v.t > 0.8 && v.t <= v.dur + 2.4) {
         this.erupt(sim, v, dt);
@@ -110,7 +104,7 @@ export class VolcanoSpell extends Spell {
    */
   private erupt(
     sim: Sim,
-    v: { x: number; z: number; t: number; dur: number; biasPhi: number; biasWidth: number },
+    v: { x: number; z: number; t: number; dur: number; biasPhi: number; biasWidth: number; liftBase: number; origH: Float32Array },
     dt: number,
   ): void {
     const win = v.dur + 2.4 - 0.8;

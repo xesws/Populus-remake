@@ -23,17 +23,16 @@ export interface TornadoState {
   life: number;
   houseT: number;
   waterspout?: boolean;
+  /** v0.26b 被甩飞的单位 id（跨施放状态挂 sim 而非 Spell 实例，见 sim.ts 注释）。 */
+  flungIds: Set<number>;
 }
 
 export class TornadoSpell extends Spell {
   readonly id = "tornado" as const;
 
-  // v0.18 甩飞落水追踪：本法术甩飞过的单位 id。
-  // path-system 的落地结算没有"落水即死"分支，且落水单位会在同一帧内被
-  // resolveCollisions 拉回 nearestLand——龙卷风 tick 根本看不到"落地瞬间在水面"，
-  // 所以改为：本法术甩飞的单位在空中一旦越过海岸线（当前位置已是水面，落点必在海里）直接致死。
-  // 只追踪本法术甩飞的单位：闪电/火球/爆炸也有 flyVy，不能误伤它们的水面飞行。
-  private flung = new Set<number>();
+  // v0.26b 甩飞落水追踪移到 sim.tornado.flungIds（见 sim.ts 的注释）：
+  // TornadoSpell 被 SPELLS 单例与 Sim 实例各持一份，实例字段在 cast/tick 两份
+  // 实例间互不可见——旧写法 tick 永远读到空 Set，"甩飞落海即死"从未生效。
 
   cast(sim: Sim, team: Team, x: number, z: number, _dt?: number): SpellResult {
     const empty: SpellResult = { ok: false, bolts: [], shake: 0, msg: "" };
@@ -52,7 +51,7 @@ export class TornadoSpell extends Spell {
     // v0.18 (a) 初始方向完全随机：真正的龙卷风路径不可预测，不再特意去拆最近的建筑。
     const ang = Math.random() * Math.PI * 2;
     const spd = 1.35;
-    sim.tornado = { x, z, vx: Math.cos(ang) * spd, vz: Math.sin(ang) * spd, t: 0, life: 16, houseT: 0 };
+    sim.tornado = { x, z, vx: Math.cos(ang) * spd, vz: Math.sin(ang) * spd, t: 0, life: 16, houseT: 0, flungIds: new Set() };
     sim.fxShake = Math.max(sim.fxShake, 0.22);
     sim.tornadoLift = false;
     sim.tornadoHouse = false;
@@ -159,7 +158,7 @@ export class TornadoSpell extends Spell {
         u.flyKill = false; // 清掉可能残留的暴击击飞标记，防止落地被误判直接死亡
         u.path = [];
         u.pathI = 0;
-        this.flung.add(u.id);
+        tw.flungIds.add(u.id);
         if (u.team === BLUE && u.kind === "shaman") sim.toast("祭司被龙卷风卷走");
       }
     }
@@ -194,24 +193,25 @@ export class TornadoSpell extends Spell {
    * 所以只能在它还飞着、还跨在水面上时判死。
    */
   private tickFlungWaterDeath(sim: Sim): void {
-    if (this.flung.size === 0) return;
-    for (const id of [...this.flung]) {
+    const flung = sim.tornado?.flungIds ?? new Set<number>();
+    if (flung.size === 0) return;
+    for (const id of [...flung]) {
       const u = sim.units.find((x) => x.id === id);
       if (!u || u.hp <= 0) {
-        this.flung.delete(id);
+        flung.delete(id);
         continue;
       }
       if (u.flyVy !== 0) {
         if (!sim.world.land(u.x, u.z)) {
           u.hp = 0;
-          this.flung.delete(id);
+          flung.delete(id);
           // 祭司落水由 cull 统一播报"祭司陨落"，这里只播普通子民。
           if (u.team === BLUE && u.kind !== "shaman") sim.toast("一名子民被甩进海里");
         }
         continue;
       }
       // 已安全落地（flyVy 归零）：结束追踪。
-      this.flung.delete(id);
+      flung.delete(id);
     }
   }
 }

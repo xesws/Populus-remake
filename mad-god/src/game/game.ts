@@ -79,7 +79,10 @@ export class Game {
     });
     // 运行时异常也进日志（NaN/越界之类在浏览器里只进 console，这里统一落盘）。
     window.addEventListener("error", (e) => {
-      logger.error("js", e.message, { src: `${e.filename}:${e.lineno}` });
+      // v0.26b 补堆栈：之前只记 message+文件名，压缩构建里根本没法定位
+      //（火山期 "reading '15200'" 三次崩溃都查不到位置）。
+      const stack = e.error instanceof Error ? e.error.stack ?? "" : "";
+      logger.error("js", e.message, { src: `${e.filename}:${e.lineno}`, stack });
     });
     window.addEventListener("unhandledrejection", (e) => {
       logger.error("js", `unhandled rejection: ${String(e.reason)}`);
