@@ -5,9 +5,11 @@
 // 性能：SAMPLES≈209（WORLD 放大后 ≈289）时要求单遍生成毫秒级，
 // 因此除结果与少量工具数组外，热路径（每格循环）不做任何对象分配。
 
-import { clamp, MAX_H, RNG } from "../types";
+import { clamp, MAX_H, RNG, WATER } from "../types";
 import { makeNoiseKit, mixSeed, type NoiseKit } from "./noise";
 import { pickTemplate, type MapTemplate } from "./map-template";
+import { FeatureComposer, MASK_PEAK, type FeatureEnv, type FeatureStat } from "./terrain-features";
+import { MountainRange, mountainPlanFor } from "./features/mountain-range";
 
 /**
  * 出生点开阔度判据（v0.24）：从候选点沿 8 个罗盘方向各伸出 OPEN_REACH 格，
@@ -17,6 +19,20 @@ import { pickTemplate, type MapTemplate } from "./map-template";
  *（实测半岛图 seed 7 蓝方 walker 的可达域仅 57 格，寻路只能返回截断的部分路径，
  * 单位走半路就 idle 停下）。6 格 × 6 方向的要求正好覆盖开局铺开的尺寸。
  */
+/**
+ * v0.25 出生地偏好高程与其惩罚系数（见 attachToAnchor 注释）。
+ * 2.0 这个值落在 render.ts 的"丘带(1.4~2.6)"里：基地可以在丘上，但不该在岩带与雪线上。
+ */
+const START_PREFER_H = 2.0;
+const START_HIGH_PENALTY = 12;
+/**
+ * v0.25 出生地**硬**上限：3.2 格半径内出现高于此值的格即判为"山顶基地"，直接排除该候选。
+ * 5.2 是实测定的：偏好高程只挡住"平均高"的台地，挡不住"旁边一根尖峰"——
+ * 均值对单点尖峰不敏感（seed 99 红方基地周边均值不高、中心却坐在 7.34 的雪顶上）。
+ * 留出 5.2 而不是 4.2：highlands 这类图本来就全图是高台，卡太紧会一个候选都不剩，
+ * 那时宁可降级用高台，也不能让 findStarts 退化成"对角线硬编码点"（可能落进海里）。
+ */
+const START_MAX_H = 5.2;
 const OPEN_REACH = 6;
 const OPEN_MIN = 6;
 /** 8 个罗盘方向（4 正 + 4 斜），单位向量。 */
@@ -71,14 +87,20 @@ export interface GenStart {
 }
 
 /**
- * 一次完整生成的产物：高度场 + 模板信息 + 双方出生点。
+ * 一次完整生成的产物：高度场 + 特征掩膜 + 模板信息 + 双方出生点 + 特征统计。
  * heights 不做松弛/滩涂/pad——这些由 world.ts 既有管线在接入后统一处理。
+ * mask 必须与 heights 一起交给 world.ts：它是"特征感知平滑"的输入
+ *（见 terrain-features.ts 里 MASK_PEAK / MASK_CHANNEL 的说明）。
  */
 export interface WorldGenResult {
   heights: Float32Array;
+  /** 与 heights 等长的特征掩膜（MASK_PEAK / MASK_CHANNEL 位或）。 */
+  mask: Uint8Array;
   templateId: string;
   templateName: string;
   starts: [GenStart, GenStart];
+  /** 各地物落地统计，供日志与检查脚本断言。 */
+  features: FeatureStat[];
 }
 
 /**
@@ -98,11 +120,47 @@ export class WorldGen {
     const tpl = pickTemplate(rng);
     const noise = makeNoiseKit(mixSeed(seed ^ 0x5bf03635));
     const heights = new Float32Array(samples * samples);
+    const mask = new Uint8Array(samples * samples);
     this.fillHeights(heights, samples, step, world, tpl, noise);
-    this.smoothPlains(heights, samples, step, noise);
+    // v0.25 阶段2 顺序调整：连通域与出生点必须在**特征之前**算好——地物要拿"最大陆域"
+    // 和"出生点位置"当落位判据（山不能压在基地门口、不能印进海里）。
+    // 山脉只抬升、不造新水格，所以 labels 在特征之后依然有效；River/Lake 会改变海陆格局，
+    // 那时必须重算 labels（契约里已注明这一条）。
     const { labels, maxLabel } = this.labelLand(heights, samples);
     const starts = this.findStarts(heights, labels, maxLabel, samples, step, world, tpl);
-    return { heights, templateId: tpl.id, templateName: tpl.name, starts };
+    const features = this.composeFeatures(
+      {
+        samples,
+        step,
+        world,
+        seaH: SEA_H,
+        water: WATER,
+        maxH: MAX_H,
+        h: heights,
+        mask,
+        labels,
+        maxLabel,
+        starts,
+        rng,
+        noise,
+      },
+      tpl,
+    );
+    // 平原修饰挪到特征**之后**，且必须特征感知：它原本把选区内每格往邻域均值拉近 60%，
+    // 不排除山体的话刚撒好的山脉会被它抹掉大半。
+    this.smoothPlains(heights, samples, step, noise, mask);
+    return { heights, mask, templateId: tpl.id, templateName: tpl.name, starts, features };
+  }
+
+  /**
+   * v0.25 阶段2 「这座图放哪些地物」的唯一决定点。
+   * 目前只有山脉；阶段 3/4 的 River / Lake / Plateau 从这里追加。
+   * 各特征实现在 features/ 下互相独立，加一个不影响另一个（AGENTS.md 的 separable 要求）。
+   */
+  private static composeFeatures(env: FeatureEnv, tpl: MapTemplate): FeatureStat[] {
+    return FeatureComposer.compose(env, [
+      new MountainRange(mountainPlanFor(tpl.mountainWeight(), tpl.reliefScale())),
+    ]);
   }
 
   /**
@@ -192,6 +250,7 @@ export class WorldGen {
     samples: number,
     step: number,
     noise: NoiseKit,
+    featMask?: Uint8Array,
   ): void {
     const n = samples * samples;
     const mask = new Uint8Array(n);
@@ -208,6 +267,9 @@ export class WorldGen {
       for (let ix = 0; ix < samples; ix++) {
         const i = row + ix;
         if (mask[i] !== 1 || base[i]! <= SEA_H) continue;
+        // v0.25 山体不参与平原拉近：这条选区的本职是"把缓丘压平"，
+        // 不排除山体就会把刚撒好的山脉抹掉大半（山体自己会走后面的特征感知松弛）。
+        if (featMask && (featMask[i]! & MASK_PEAK) !== 0) continue;
         let sum = 0;
         let cnt = 0;
         for (let dz = -1; dz <= 1; dz++) {
@@ -313,6 +375,7 @@ export class WorldGen {
     const candZ = new Int32Array(cap);
     const cov = new Float32Array(cap); // 3.2 格半径内最大连通域覆盖率
     const meanH = new Float32Array(cap); // 3.2 格半径内高度场均值（出生平台高度参考）
+    const maxHc = new Float32Array(cap); // 3.2 格半径内最高格（"山顶基地"硬判据，见 START_MAX_H）
     const open = new Uint8Array(cap); // 8 向 × 6 格开阔度（0~8），见 OPEN_REACH 注释
     let candN = 0;
     // v0.24 集成修正：出生点候选必须距图边 ≥4 格（16 采样）——贴边出生会让
@@ -340,6 +403,7 @@ export class WorldGen {
       let inComp = 0;
       let tot = 0;
       let sum = 0;
+      let mx = 0;
       for (let jz = z0; jz <= z1; jz++) {
         const dz = jz - cz;
         const rowJ = jz * samples;
@@ -347,19 +411,22 @@ export class WorldGen {
           const dx = jx - cx;
           if (dx * dx + dz * dz > r2) continue;
           tot++;
-          sum += heights[rowJ + jx]!;
+          const hv = heights[rowJ + jx]!;
+          sum += hv;
+          if (hv > mx) mx = hv;
           if (labels[rowJ + jx]! === maxLabel) inComp++;
         }
       }
       cov[c] = tot > 0 ? inComp / tot : 0;
       meanH[c] = tot > 0 ? sum / tot : 0;
+      maxHc[c] = mx;
       open[c] = this.openness(labels, maxLabel, cx, cz, samples, Math.round(OPEN_REACH / step));
     }
     const anchors = tpl.anchors(world);
     let startA: GenStart | null = null;
     let startB: GenStart | null = null;
-    const ca = this.attachToAnchor(anchors[0].x, anchors[0].z, candX, candZ, cov, open, candN, step);
-    const cb = this.attachToAnchor(anchors[1].x, anchors[1].z, candX, candZ, cov, open, candN, step);
+    const ca = this.attachToAnchor(anchors[0].x, anchors[0].z, candX, candZ, cov, meanH, maxHc, open, candN, step);
+    const cb = this.attachToAnchor(anchors[1].x, anchors[1].z, candX, candZ, cov, meanH, maxHc, open, candN, step);
     if (ca >= 0 && cb >= 0) {
       const d = Math.hypot((candX[ca]! - candX[cb]!) * step, (candZ[ca]! - candZ[cb]!) * step);
       if (d >= world * 0.45) {
@@ -385,8 +452,15 @@ export class WorldGen {
   }
 
   /**
-   * 在候选中找「距锚点最近，且同时满足 3.2 格半径内最大连通域覆盖 ≥80% 与 8 向开阔度 ≥OPEN_MIN」
+   * 在候选中找「代价最小，且同时满足 3.2 格半径内最大连通域覆盖 ≥80% 与 8 向开阔度 ≥OPEN_MIN」
    * 的点；无满足者返回 -1。开阔度这条专门用来否掉蜂腰/尖嘴上的"看着开阔其实一戳就穿"的地。
+   *
+   * v0.25 阶段2 加入**低地偏好**：代价不再只是"离锚点多远"，还要加上"高出偏好线多少"的
+   * 二次惩罚。原因是 v0.25 把动态范围拉开以后，锚点附近完全可能只剩高台上的候选点，
+   * 实测 continent seed 11 的基地落在 h≈6.0 的雪带平台上（开局三座房盖在雪山顶，
+   * 既难看又让首批单位的爬坡速度吃满惩罚）。惩罚系数的量纲是"格²"，
+   * 所以 START_HIGH_PENALTY=12 的含义是：比偏好高程高 1 个单位，等价于多偏离锚点 3.5 格
+   *——足以把基地从山顶拽回山脚，又不至于破坏模板的对称落位。
    */
   private static attachToAnchor(
     ax: number,
@@ -394,23 +468,32 @@ export class WorldGen {
     candX: Int32Array,
     candZ: Int32Array,
     cov: Float32Array,
+    meanH: Float32Array,
+    maxHc: Float32Array,
     open: Uint8Array,
     candN: number,
     step: number,
   ): number {
-    let best = -1;
-    let bestD2 = Infinity;
-    for (let c = 0; c < candN; c++) {
-      if (cov[c]! < 0.8 || open[c]! < OPEN_MIN) continue;
-      const dx = candX[c]! * step - ax;
-      const dz = candZ[c]! * step - az;
-      const d2 = dx * dx + dz * dz;
-      if (d2 < bestD2) {
-        bestD2 = d2;
-        best = c;
+    // 两轮：第一轮带"山顶基地"硬排除；一个候选都不剩时第二轮放弃这条
+    //（全图皆山的模板——highlands——确实会出现），退化到"至少别再往上挑高的"。
+    for (let strict = 1; strict >= 0; strict--) {
+      let best = -1;
+      let bestCost = Infinity;
+      for (let c = 0; c < candN; c++) {
+        if (cov[c]! < 0.8 || open[c]! < OPEN_MIN) continue;
+        if (strict === 1 && maxHc[c]! > START_MAX_H) continue;
+        const dx = candX[c]! * step - ax;
+        const dz = candZ[c]! * step - az;
+        const high = Math.max(0, meanH[c]! - START_PREFER_H);
+        const cost = dx * dx + dz * dz + START_HIGH_PENALTY * high * high;
+        if (cost < bestCost) {
+          bestCost = cost;
+          best = c;
+        }
       }
+      if (best >= 0) return best;
     }
-    return best;
+    return -1;
   }
 
   /**
@@ -435,7 +518,16 @@ export class WorldGen {
     return n;
   }
 
-  /** 最大连通域内（扫描步 8）取相距最远的两点对；格数不足 2 时返回 null 交给调用方兜底。 */
+  /**
+   * 最大连通域内（扫描步 8）取"相距最远、且都不是山顶"的两点对；格数不足 2 时返回 null。
+   *
+   * v0.25 阶段2 修正：这条兜底路径其实是**主路径**——实测 8 个 seed 里有 7 个走这里
+   *（双方锚点吸附成功的图，两点距离常常到不了 world*0.45 的分隔要求）。
+   * 而它原来纯粹"取最远两点"，一点高度偏好都没有：v0.25 拉开动态范围后，
+   * 最远的两点往往正好是大陆两端的**山脊**（实测 seed 99 红方基地坐在 h=7.34 的雪顶上，
+   * seed 11 红方 4.51、seed 23 蓝方 5.25）。所以在保留"分隔公平"这个本职的前提下，
+   * 把高度惩罚算进点对得分，并先用 START_MAX_H 硬筛一轮、无解再放宽。
+   */
   private static farthestPair(
     heights: Float32Array,
     labels: Int32Array,
@@ -448,60 +540,69 @@ export class WorldGen {
     const cap = Math.ceil(samples / stride) ** 2;
     const fx = new Int32Array(cap);
     const fz = new Int32Array(cap);
+    const fMean = new Float32Array(cap);
+    const fMax = new Float32Array(cap);
     let fn = 0;
     const margin = Math.round(4 / step); // 同 findStarts：距图边 ≥4 格，防 pad 管线越界
+    const r = 3.2 / step;
+    const rS = Math.ceil(r);
+    const r2 = r * r;
     for (let iz = margin; iz < samples - margin; iz += stride) {
       const row = iz * samples;
       for (let ix = margin; ix < samples - margin; ix += stride) {
         if (labels[row + ix]! !== maxLabel) continue;
         // 兜底路径同样要过开阔度判据，否则"最远两点"会挑回蜂腰/尖嘴上（同 attachToAnchor）。
         if (
-          this.openness(
-            labels,
-            maxLabel,
-            ix,
-            iz,
-            samples,
-            Math.round(OPEN_REACH / step),
-          ) < OPEN_MIN
+          this.openness(labels, maxLabel, ix, iz, samples, Math.round(OPEN_REACH / step)) < OPEN_MIN
         ) {
           continue;
         }
+        const st = this.circleStats(heights, labels, maxLabel, ix, iz, samples, rS, r2);
         fx[fn] = ix;
         fz[fn] = iz;
+        fMean[fn] = st.mean;
+        fMax[fn] = st.maxH;
         fn++;
       }
     }
     if (fn < 2) return null;
-    let bestD2 = -1;
-    let ba = 0;
-    let bb = 1;
-    for (let i = 0; i < fn; i++) {
-      for (let j = i + 1; j < fn; j++) {
-        const dx = (fx[i]! - fx[j]!) * step;
-        const dz = (fz[i]! - fz[j]!) * step;
-        const d2 = dx * dx + dz * dz;
-        if (d2 > bestD2) {
-          bestD2 = d2;
-          ba = i;
-          bb = j;
+    let ba = -1;
+    let bb = -1;
+    let bestScore = -Infinity;
+    // strict=1：先只允许"3.2 格内没有山顶"的候选；全图都找不到一对合规的（highlands）
+    // 就退到 strict=0，此时仍靠高度惩罚尽量挑低处，而不是干脆放弃判据。
+    for (let strict = 1; strict >= 0; strict--) {
+      bestScore = -Infinity;
+      for (let i = 0; i < fn; i++) {
+        if (strict === 1 && fMax[i]! > START_MAX_H) continue;
+        for (let j = i + 1; j < fn; j++) {
+          if (strict === 1 && fMax[j]! > START_MAX_H) continue;
+          const dx = (fx[i]! - fx[j]!) * step;
+          const dz = (fz[i]! - fz[j]!) * step;
+          const hi = Math.max(0, fMean[i]! - START_PREFER_H);
+          const hj = Math.max(0, fMean[j]! - START_PREFER_H);
+          // 分隔是目标（取正向），高度是代价（取负向）：系数与 attachToAnchor 同一条口径
+          const score = dx * dx + dz * dz - START_HIGH_PENALTY * (hi * hi + hj * hj);
+          if (score > bestScore) {
+            bestScore = score;
+            ba = i;
+            bb = j;
+          }
         }
       }
+      if (ba >= 0) break;
     }
-    const r = 3.2 / step;
-    const rS = Math.ceil(r);
-    const r2 = r * r;
-    const statsA = this.circleStats(heights, labels, maxLabel, fx[ba]!, fz[ba]!, samples, rS, r2);
-    const statsB = this.circleStats(heights, labels, maxLabel, fx[bb]!, fz[bb]!, samples, rS, r2);
+    if (ba < 0) return null;
     return [
-      this.makeStart(fx[ba]!, fz[ba]!, statsA.mean, step, world),
-      this.makeStart(fx[bb]!, fz[bb]!, statsB.mean, step, world),
+      this.makeStart(fx[ba]!, fz[ba]!, fMean[ba]!, step, world),
+      this.makeStart(fx[bb]!, fz[bb]!, fMean[bb]!, step, world),
     ];
   }
 
   /**
-   * 3.2 格半径圆内的连通域覆盖率与高度场均值（含海格）。
+   * 3.2 格圆内的连通域覆盖率、高度场均值（含海格）与最高格。
    * 均值含海格是刻意的：出生平台高度参考「脚下整块地」，海岸边的起点自然更低缓。
+   * maxH 用于「山顶基地」硬判据（见 START_MAX_H）：均值对单点尖峰不敏感，挡不住山顶基地。
    */
   private static circleStats(
     heights: Float32Array,
@@ -512,7 +613,7 @@ export class WorldGen {
     samples: number,
     rS: number,
     r2: number,
-  ): { cov: number; mean: number } {
+  ): { cov: number; mean: number; maxH: number } {
     const x0 = Math.max(0, cx - rS);
     const x1 = Math.min(samples - 1, cx + rS);
     const z0 = Math.max(0, cz - rS);
@@ -520,6 +621,7 @@ export class WorldGen {
     let inComp = 0;
     let tot = 0;
     let sum = 0;
+    let mx = 0;
     for (let jz = z0; jz <= z1; jz++) {
       const dz = jz - cz;
       const rowJ = jz * samples;
@@ -527,11 +629,13 @@ export class WorldGen {
         const dx = jx - cx;
         if (dx * dx + dz * dz > r2) continue;
         tot++;
-        sum += heights[rowJ + jx]!;
+        const hv = heights[rowJ + jx]!;
+        sum += hv;
+        if (hv > mx) mx = hv;
         if (labels[rowJ + jx]! === maxLabel) inComp++;
       }
     }
-    return tot > 0 ? { cov: inComp / tot, mean: sum / tot } : { cov: 0, mean: 0 };
+    return tot > 0 ? { cov: inComp / tot, mean: sum / tot, maxH: mx } : { cov: 0, mean: 0, maxH: 0 };
   }
 
   /**

@@ -15,6 +15,7 @@ import {
   WORLD,
 } from "./types";
 import { WorldGen } from "./world-gen";
+import { MASK_PEAK, type FeatureStat } from "./world-gen/terrain-features";
 import { MapSmoother, type SmoothReport } from "./map-smoother";
 
 export interface Pad {
@@ -192,6 +193,13 @@ export function pushCircleFromPad(
 
 export class World {
   h: Float32Array;
+  /**
+   * v0.25 地貌特征掩膜（MASK_PEAK / MASK_CHANNEL 位或），与 h 等长。
+   * 只在**生成期**有意义：它告诉后面的松弛/削峰/形态学工序"这一格的高差是地物、
+   * 不是噪声毛刺"，从而对山体与河床轻手对待。对局中的法术雕刻不改它
+   *（法术本来就该留下破坏痕迹，且那时平滑工序早就跑完了）。
+   */
+  fmask: Uint8Array;
   lava: Float32Array;
   scorch: Float32Array;
   swamp: Float32Array;
@@ -213,9 +221,12 @@ export class World {
   /** v0.24 本图所用世界模板（供 logger 与 terrain-gen-check 断言；同 seed 必同模板）。 */
   templateId = "";
   templateName = "";
+  /** v0.25 本图各地物的落地统计（山脉/河流/…），供日志与检查脚本断言"特征确实放上了"。 */
+  genFeatures: FeatureStat[] = [];
 
   constructor(seed = 1989) {
     this.h = new Float32Array(SAMPLES * SAMPLES);
+    this.fmask = new Uint8Array(SAMPLES * SAMPLES);
     this.lava = new Float32Array(SAMPLES * SAMPLES);
     this.scorch = new Float32Array(SAMPLES * SAMPLES);
     this.swamp = new Float32Array(SAMPLES * SAMPLES);
@@ -489,8 +500,16 @@ export class World {
   /**
    * v0.13 盒式松弛：对 [minIx..maxIx]×[minIz..maxIz] 做 iter 轮 3×3 邻域均值。
    * 水面以下样本保持原值（clamp 不动），避免海岸被抹平；全部走脏区机制。
+   *
+   * v0.25 特征感知：登记过 MASK_PEAK 的山体只吃 PEAK_RELAX 倍的拉近量。
+   * 为什么必须这样而不是"少做几轮"：7 轮松弛是为"可走区丝滑"服务的（v0.24 的
+   * 硬指标），一刀切减轮数会让平原重新长出绊人缝；而山体的 footprint 有 3~5 格宽，
+   * 7 轮 3×3 box 的有效模糊半径 ≈2.2 采样（约 0.55 格），足矣把 5 格高的山头
+   * 削成 2 格多的丘陵——正是"加了山又等于没加"。所以只对山体减弱力度，平原照旧全松弛。
    */
   smoothField(iter: number, minIx: number, minIz: number, maxIx: number, maxIz: number): void {
+    /** 山体的松弛保留系数：0.25 = 只往均值挪四分之一，其余照旧全量。 */
+    const PEAK_RELAX = 0.25;
     const loIx = Math.max(1, minIx);
     const loIz = Math.max(1, minIz);
     const hiIx = Math.min(SAMPLES - 2, maxIx);
@@ -518,7 +537,8 @@ export class World {
         for (let ix = loIx; ix <= hiIx; ix++) {
           const i = this.idx(ix, iz);
           if (this.h[i]! <= WATER || tmp[i] === 0) continue;
-          this.h[i] = tmp[i]!;
+          const w = (this.fmask[i]! & MASK_PEAK) !== 0 ? PEAK_RELAX : 1;
+          this.h[i] = this.h[i]! + (tmp[i]! - this.h[i]!) * w;
           this.markSample(ix, iz);
         }
       }
@@ -1016,6 +1036,8 @@ export class World {
     // 松弛/滩涂/pad 平台的 v0.13 管线保留在本方法内（坡度与海岸平滑仍由这里负责）。
     const gen = WorldGen.generate(this.genSeed, SAMPLES, STEP);
     this.h.set(gen.heights);
+    this.fmask.set(gen.mask);
+    this.genFeatures = gen.features;
     this.templateId = gen.templateId;
     this.templateName = gen.templateName;
     this.starts = [

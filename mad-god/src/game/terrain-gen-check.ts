@@ -28,7 +28,7 @@ import { World } from "./world";
 import { MapSmoother } from "./map-smoother";
 import { astar } from "./path";
 import { BLUE, RED, SAMPLES, STEP, WATER, WORLD } from "./types";
-import { makeNoiseKit, mixSeed } from "./world-gen";
+import { makeNoiseKit, mixSeed, MASK_PEAK } from "./world-gen";
 
 function assert(cond: boolean, msg: string): void {
   if (!cond) throw new Error(msg);
@@ -364,6 +364,109 @@ function testWarpSanity(): void {
   console.log("testWarpSanity ok");
 }
 
+/**
+ * v0.25 阶段 2：离散山脉（随机游走撒山脊 + 特征掩膜 + 特征感知平滑）。
+ *
+ * 这一条要锁的是"地物真的活到了出图"，而不是"代码跑过了"。
+ * 背景：管线尾部有 7 轮盒式松弛 + clampSlope + MapSmoother 三道抹平工序，
+ * 它们绝不能因为加了山就关掉（"零绊人缝 / 坡度 <2.5 / 可建地 ≥40%"三条硬断言全靠它们）。
+ * 所以山必须靠掩膜申请"轻手对待"。这条测试就是那纸申请的回执：
+ *   • 特征确实落地（genFeatures 里 mountainRange 的 placed ≥1）；
+ *   • 山体格确实登记进 fmask 并活着走出来（≥200 采样）；
+ *   • 登记过的格里 ≥50% 最终仍在岩带以上（≥2.6）——低于这个就是"被抹平了"，
+ *     实测健康值 54%~99%；
+ *   • 全图有 ≥2 个**成规模**的峰顶区（h≥4.2 且面积 ≥16 采样 = 1 格²）——
+ *     用连通域而不是数局部极大值，因为噪声尖峰也能造出几百个极大值（实测 4~270 个），
+ *     只有"面积"这个口径能把"一座山"和"一个噪点"分开；
+ *   • 出生平台不许被山脉压住（3.2 格内山体格数为 0，这是 MountainRange.minStartDist 的契约），
+ *     且附近最高格 <5.2（与生成器 START_MAX_H 同一条线：基地不建在山顶）。
+ *     这条是本轮实测逼出来的——v0.25 拉开动态范围后，findStarts 的"最远点对"兜底路径
+ *     （实测 8 个 seed 里 7 个走它）完全不看高度，红方基地会坐到 h=7.34 的雪顶上。
+ */
+function testMountains(): void {
+  const n = SAMPLES * SAMPLES;
+  for (const seed of [1, 3, 5, 7, 11, 17, 19, 23, 42, 63, 88, 99]) {
+    const w = new World(seed);
+    const id = `seed ${seed}(${w.templateId})`;
+    const mr = w.genFeatures.find((f) => f.id === "mountainRange");
+    assert(!!mr && mr.placed >= 1, `${id} 至少放上 1 条山脉（实际 ${mr ? mr.placed : "无此特征"}）`);
+    let masked = 0;
+    let maskedRock = 0;
+    for (let i = 0; i < n; i++) {
+      if ((w.fmask[i]! & MASK_PEAK) === 0) continue;
+      masked++;
+      if (w.h[i]! >= 2.6) maskedRock++;
+    }
+    assert(masked >= 200, `${id} 山体掩膜至少 200 采样格（实际 ${masked}）`);
+    assert(
+      maskedRock / masked >= 0.5,
+      `${id} 山体格留存率 ${((100 * maskedRock) / masked).toFixed(0)}% ≥50%（被平滑抹掉了）`,
+    );
+    assert(summitRegions(w.h, 4.2, 16) >= 2, `${id} 成规模峰顶区 ≥2 座`);
+    for (const s of [w.startPad(BLUE), w.startPad(RED)]) {
+      const r = Math.ceil(3.2 / STEP);
+      const cix = Math.round(s.x / STEP);
+      const ciz = Math.round(s.z / STEP);
+      let peakNear = 0;
+      let nearMax = 0;
+      for (let iz = Math.max(0, ciz - r); iz <= Math.min(SAMPLES - 1, ciz + r); iz++) {
+        for (let ix = Math.max(0, cix - r); ix <= Math.min(SAMPLES - 1, cix + r); ix++) {
+          const x = ix * STEP;
+          const z = iz * STEP;
+          if (Math.hypot(x - s.x, z - s.z) > 3.2) continue;
+          const i = iz * SAMPLES + ix;
+          if ((w.fmask[i]! & MASK_PEAK) !== 0) peakNear++;
+          if (w.h[i]! > nearMax) nearMax = w.h[i]!;
+        }
+      }
+      // 山脉的 minStartDist 契约：基地半径 3.2 格内一个山体格都不许有。
+      assert(peakNear === 0, `${id} 出生平台 3.2 格内不许有山体格（实际 ${peakNear}）`);
+      // 开局高程上限（>5.6 已深入雪带，开局观感与调兵都不利）。
+      // 这里刻意不写成"附近不许有 h≥4.2 的格"：v0.25 阶段 1 的噪声起伏本身就能在
+      // 基地旁边给出 4.3 的高台（实测 seed 7 正是如此），那是合理地形不是 bug；
+      // 不可接受的是"把山硬压到基地门口"，那由上一条 mask 断言守住。
+      assert(nearMax < 5.2, `${id} 出生平台 3.2 格内最高 ${nearMax.toFixed(2)} <5.2（山顶基地）`);
+    }
+  }
+  console.log("testMountains ok");
+}
+
+/** 连通峰顶区个数（h≥fromH 的 4 邻接连通域，面积 ≥minCells 个采样才算"一座山"）。 */
+function summitRegions(h: Float32Array, fromH: number, minCells: number): number {
+  const seen = new Uint8Array(h.length);
+  const q: number[] = [];
+  let n = 0;
+  for (let s = 0; s < h.length; s++) {
+    if (seen[s] || h[s]! < fromH) continue;
+    q.length = 0;
+    q.push(s);
+    seen[s] = 1;
+    let area = 0;
+    for (let head = 0; head < q.length; head++) {
+      const cur = q[head]!;
+      area++;
+      const cz = (cur / SAMPLES) | 0;
+      const cx = cur - cz * SAMPLES;
+      for (const [dx, dz] of [
+        [1, 0],
+        [-1, 0],
+        [0, 1],
+        [0, -1],
+      ] as const) {
+        const jx = cx + dx;
+        const jz = cz + dz;
+        if (jx < 0 || jz < 0 || jx >= SAMPLES || jz >= SAMPLES) continue;
+        const j = jz * SAMPLES + jx;
+        if (seen[j] || h[j]! < fromH) continue;
+        seen[j] = 1;
+        q.push(j);
+      }
+    }
+    if (area >= minCells) n++;
+  }
+  return n;
+}
+
 function main(): void {
   testReproducible();
   testDiversity();
@@ -375,8 +478,9 @@ function main(): void {
   testWorldSize();
   testReliefRange();
   testWarpSanity();
+  testMountains();
   console.log(
-    "terrain-gen-check ok (v0.24 地图生成：可复现 / 六模板多样性 / 单连通大陆 / 平滑无绊人缝 / 寻路与行军 + v0.25 阶段1：色带多样性与坡度守护 / 域扭曲自检)",
+    "terrain-gen-check ok (v0.24 地图生成：可复现 / 六模板多样性 / 单连通大陆 / 平滑无绊人缝 / 寻路与行军 + v0.25 阶段1：色带多样性与坡度守护 / 域扭曲自检 + v0.25 阶段2：山脉落地与存活/成规模峰顶区/出生点不压山)",
   );
 }
 
