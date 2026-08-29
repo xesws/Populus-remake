@@ -40,6 +40,7 @@ import {
   WORLD,
 } from "./types";
 import { inDoorSlit, inPad, Pad, padsOverlap, PAD_STAND_INFLATE, worldOnPad, World } from "./world";
+import { ForestSeeder } from "./world-gen/forests";
 import {
   CombatSystem,
   HazardSystem,
@@ -227,35 +228,23 @@ export class Sim {
     }
   }
 
+  /**
+   * v0.25 阶段4 改为"成片森林"：位置由 world-gen/forests.ts 的 ForestSeeder 算，
+   * 实体仍走原来的可砍伐 Tree 路径（不新增渲染/交互管线）。
+   * 与旧版均匀散布的两点实质区别：
+   *  1. 成簇：5~8 片、每片 6~14 棵、簇内 sqrt 分布（中心密边缘疏）——玩家能读出"那有一片林子"，
+   *     旧版"稀疏随机树"读不出任何东西；
+   *  2. 按高度带与坡度分布：林线（h≥2.6，render.ts 的岩带下沿）以上和陡坡上不长了。
+   *     v0.25 把高度动态范围拉开以后，旧版的均匀散布会在雪顶和岩坡上留树，直接穿帮。
+   * 另外保底一条玩法判据：第一片林子强制在蓝方出生点可砍半径内挑中心，
+   * 否则可能整张图的林子都离基地很远，村民早期没木头可砍（这是玩法 bug，不是观感问题）。
+   */
   seedTrees(): void {
-    const rng = this.world.rng;
-    const n = rng.int(28, 40);
     const pads: Pad[] = this.buildings.map((b) => this.buildingPad(b));
     for (const s of this.world.starts) pads.push({ x: s.x, z: s.z, w: 3.6, d: 3.6, yaw: s.yaw });
-    let tries = 0;
-    while (this.trees.length < n && tries < 2000) {
-      tries++;
-      const x = rng.float(3, WORLD - 3);
-      const z = rng.float(3, WORLD - 3);
-      if (!this.world.land(x, z)) continue;
-      if (this.world.heightAt(x, z) <= WATER + 0.15) continue;
-      if (this.world.slopeAt(x, z) > 0.55) continue;
-      let blocked = false;
-      for (const p of pads) {
-        if (inPad(x, z, p, 0.9)) {
-          blocked = true;
-          break;
-        }
-      }
-      if (blocked) continue;
-      for (const t of this.trees) {
-        if (dist2(x, z, t.x, t.z) < 4.84) {
-          blocked = true;
-          break;
-        }
-      }
-      if (blocked) continue;
-      this.trees.push(createTree(nid(), x, z, this.world.heightAt(x, z), true, 0));
+    const spots = ForestSeeder.place(this.world, this.world.rng, WORLD, pads, this.world.starts);
+    for (const p of spots) {
+      this.trees.push(createTree(nid(), p.x, p.z, this.world.heightAt(p.x, p.z), true, 0));
     }
   }
 
