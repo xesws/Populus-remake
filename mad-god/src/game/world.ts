@@ -15,7 +15,7 @@ import {
   WORLD,
 } from "./types";
 import { WorldGen } from "./world-gen";
-import { MASK_PEAK, type FeatureStat } from "./world-gen/terrain-features";
+import { MASK_CHANNEL, MASK_PEAK, type FeatureStat } from "./world-gen/terrain-features";
 import { MapSmoother, type SmoothReport } from "./map-smoother";
 
 export interface Pad {
@@ -221,6 +221,8 @@ export class World {
   /** v0.24 本图所用世界模板（供 logger 与 terrain-gen-check 断言；同 seed 必同模板）。 */
   templateId = "";
   templateName = "";
+  /** v0.25 本图凿出的渡口数（河流切断大陆时被修复的次数，0 = 没切断或无需修）。 */
+  fordCount = 0;
   /** v0.25 本图各地物的落地统计（山脉/河流/…），供日志与检查脚本断言"特征确实放上了"。 */
   genFeatures: FeatureStat[] = [];
 
@@ -358,10 +360,19 @@ export class World {
    * 也必须在出生平台整平之前：出生点已由 WorldGen 保证落在其最大域内，这里再校验一次，
    * 万一该格被本步骤判为飞地（平滑/削峰改变了海陆界），就地迁到保留域内的最近格。
    */
-  floodDisconnectedLand(): number {
+  /**
+   * 按**游戏真实通行判据**（h > WATER）做 4 邻接连通域标记，并给出最大陆域编号。
+   *
+   * 为什么单独抽出来：v0.25 有两处要同一份连通域——`floodDisconnectedLand` 填飞地、
+   * `repairWaterCuts` 判"河有没有把大陆切开"。这两处必须用**同一个口径**，
+   * 否则会出现"修复认为连通、填海认为不连通"这种自相矛盾的图。
+   * 4 邻接而不是 8：对角相接在单位图里过不去，与 astar 的通行语义一致。
+   */
+  landLabels(): { lab: Int32Array; kept: number; sizes: number[] } {
     const n = SAMPLES * SAMPLES;
     const lab = new Int32Array(n).fill(-1);
     const queue = new Int32Array(n); // BFS 队列入队总次数 ≤ 格数，一次预分配
+    const sizes: number[] = [];
     let kept = -1;
     let keptCount = 0;
     let label = 0;
@@ -375,7 +386,6 @@ export class World {
         const cur = queue[head++]!;
         const cz = (cur / SAMPLES) | 0;
         const cx = cur - cz * SAMPLES;
-        // 4 邻接（不用 8 邻接）：对角相接不算连通，与 astar 的通行语义一致。
         if (cx > 0) {
           const nb = cur - 1;
           if (lab[nb] === -1 && this.h[nb]! > WATER) {
@@ -405,12 +415,144 @@ export class World {
           }
         }
       }
+      sizes.push(tail);
       if (tail > keptCount) {
         keptCount = tail;
         kept = label;
       }
       label++;
     }
+    return { lab, kept, sizes };
+  }
+
+  /**
+   * v0.25 水系连通性修复（AoE 的"河流是屏障但地图必须可通行"）。
+   *
+   * 问题：河流/湖泊刻的是**真水**（h < WATER），一条横贯大陆的河会把陆地切成两块。
+   * 而紧接着的 floodDisconnectedLand 只保留最大陆域、其余整块降成浅海——
+   * 也就是说一条河能让**半张地图连带一方基地**被填掉。这是水系最大的风险，
+   * 所以必须在填海之前先把切口补上。
+   *
+   * 做法（只动水系格，不动天然海岸）：
+   *  1. 按游戏判据标连通域；若除最大域外没有"足够大"的陆块，直接返回（大多数图走这条）。
+   *  2. 对每一块要救的陆块，在「陆 ∪ CHANNEL 格」上做多源 BFS 找一条到最大域的通路，
+   *     只允许穿越登记过 MASK_CHANNEL 的格——**不许借道大海**，
+   *     否则会在两片大陆之间凭空架一条跨海长堤。
+   *  3. 把这条通路上的水系格（连同左右各一格的**宽度**）抬成浅滩：
+   *     高度 WATER+0.16（与滩涂同量级，可走、视觉是"水浅处"），
+   *     并**清掉 MASK_CHANNEL**——不然收尾的形态学闭运算会把它当"该填的水缺口"处理，
+   *     或者反过来被当成"不许填的水"而白修。
+   *  4. 找不到通路（河太长/湖太大/被别的水系围死）就放弃这一块，交给 floodDisconnectedLand
+   *     按老规则填掉——宁缺毋滥，绝不留一张双方不通的图。
+   *
+   * 返回凿出的渡口数。
+   */
+  repairWaterCuts(): number {
+    const n = SAMPLES * SAMPLES;
+    // 只有存在 CHANNEL（河/湖刻出来的水）时才需要跑，纯 v0.24 的图零成本跳过
+    let hasChannel = false;
+    for (let i = 0; i < n; i++) {
+      if ((this.fmask[i]! & MASK_CHANNEL) !== 0) {
+        hasChannel = true;
+        break;
+      }
+    }
+    if (!hasChannel) return 0;
+
+    /** 小于最大域该比例的陆块不救：本来就是天然小岛，交给填海工序处理（v0.24 语义不变）。 */
+    const MIN_RESOLVE = 0.06;
+    /** 最多凿几个渡口：一条河一个就够，多几条河也就几个；上限防呆。 */
+    const MAX_FORDS = 8;
+    let fords = 0;
+
+    for (let round = 0; round < MAX_FORDS; round++) {
+      const { lab, kept, sizes } = this.landLabels();
+      if (kept < 0) break;
+      const keptSize = sizes[kept]!;
+      // 找一块需要救的陆块：面积够大、且不是最大域
+      let target = -1;
+      for (let l = 0; l < sizes.length; l++) {
+        if (l === kept) continue;
+        if (sizes[l]! >= keptSize * MIN_RESOLVE) {
+          target = l;
+          break;
+        }
+      }
+      if (target < 0) break; // 已经没有什么可救的了
+
+      // 多源 BFS：源 = 目标陆块全部格；可走 = 本块陆格 ∪ CHANNEL 格；终点 = 碰到最大域。
+      const prev = new Int32Array(n).fill(-2); // -2 未访问，-1 源
+      const q: number[] = [];
+      for (let i = 0; i < n; i++) {
+        if (lab[i] === target) {
+          prev[i] = -1;
+          q.push(i);
+        }
+      }
+      let hit = -1;
+      for (let head = 0; head < q.length && hit < 0; head++) {
+        const cur = q[head]!;
+        const cz = (cur / SAMPLES) | 0;
+        const cx = cur - cz * SAMPLES;
+        for (const [dx, dz] of [
+          [1, 0],
+          [-1, 0],
+          [0, 1],
+          [0, -1],
+        ] as const) {
+          const jx = cx + dx;
+          const jz = cz + dz;
+          if (jx < 0 || jz < 0 || jx >= SAMPLES || jz >= SAMPLES) continue;
+          const j = jz * SAMPLES + jx;
+          if (prev[j] !== -2) continue;
+          if (lab[j] === kept) {
+            // 撞到保留域：cur 就是最后一个可泅渡的水格，渡口开在这里
+            prev[j] = cur;
+            hit = j;
+            break;
+          }
+          // 只借道水系格；天然海格一律不走
+          if ((this.fmask[j]! & MASK_CHANNEL) === 0 || this.h[j]! > WATER) continue;
+          prev[j] = cur;
+          q.push(j);
+        }
+      }
+      if (hit < 0) break; // 救不了：放弃这一块（下面 floodDisconnectedLand 会按老规则处理）
+
+      // 回溯路径上所有"非陆"格，逐个抬成浅滩（含垂直方向各一格，凑够宽度不被削刺判据剪掉）
+      const track: number[] = [];
+      let c = prev[hit]!;
+      while (c >= 0 && (this.fmask[c]! & MASK_CHANNEL) !== 0 && this.h[c]! <= WATER) {
+        track.push(c);
+        c = prev[c]!;
+      }
+      if (!track.length) break;
+      for (const t of track) {
+        const tz = (t / SAMPLES) | 0;
+        const tx = t - tz * SAMPLES;
+        // 沿河的走向取法太贵，直接垫 3×3：渡口是个浅滩而不是条线，观感上也更合理
+        for (let dz = -1; dz <= 1; dz++) {
+          for (let dx = -1; dx <= 1; dx++) {
+            const jx = tx + dx;
+            const jz = tz + dz;
+            if (jx < 0 || jz < 0 || jx >= SAMPLES || jz >= SAMPLES) continue;
+            const j = jz * SAMPLES + jx;
+            if (this.h[j]! > WATER) continue; // 已是陆地，不动
+            if ((this.fmask[j]! & MASK_CHANNEL) === 0) continue; // 天然海，绝不垫
+            this.h[j] = WATER + 0.16;
+            this.fmask[j] = (this.fmask[j]! & ~MASK_CHANNEL) >>> 0;
+            this.markSample(jx, jz);
+          }
+        }
+      }
+      fords++;
+    }
+    return fords;
+  }
+
+  floodDisconnectedLand(): number {
+    const n = SAMPLES * SAMPLES;
+    const { lab, kept } = this.landLabels();
     let flooded = 0;
     for (let i = 0; i < n; i++) {
       if (this.h[i]! <= WATER || lab[i] === kept) continue;
@@ -1068,9 +1210,12 @@ export class World {
     // v0.24 强制地图平滑（第 1 遍）：抹掉 0.25 格尺度上的"陆→水→陆"毛刺，让点判据
     // walkableAt 与单位每帧 0.12 格的步长口径一致（见 map-smoother.ts）。
     // 放在填海/出生平台之前，后面几步才是在干净地形上做决策。
-    this.smoothReport = MapSmoother.smooth(this.h);
+    this.smoothReport = MapSmoother.smooth(this.h, this.fmask);
     // v0.24 单块可通行大陆：填平与最大陆域不连通的飞地（并把被迫落在飞地上的出生点
     // 迁进保留域）。必须在滩涂之后、出生平台整平之前——见 floodDisconnectedLand 注释。
+    // v0.25 水系连通性修复：必须在填海**之前**。河/湖把大陆切开的话，
+    // floodDisconnectedLand 会把切下来的那半张图（可能含一方基地）整块降成浅海。
+    this.fordCount = this.repairWaterCuts();
     this.floodDisconnectedLand();
     for (const s of this.starts) {
       // v0.13 出生平台高度随当地地形（+0.25）：避免固定高度在平台边造出海崖。
@@ -1084,7 +1229,7 @@ export class World {
     // v0.24 强制地图平滑（终遍，权威）：出生平台整平与削峰都会重新刻出亚格毛刺
     // （平台边缘的环形缓坡、pad 内高精度格与 pad 外低格之间的落差），所以出图前
     // 必须再扫一遍。residualSeams 就是"还能把单位绊倒的边"的数量，检查脚本断言它为 0。
-    this.smoothReport = MapSmoother.smooth(this.h);
+    this.smoothReport = MapSmoother.smooth(this.h, this.fmask);
     this.markAll();
   }
 

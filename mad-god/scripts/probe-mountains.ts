@@ -72,7 +72,7 @@ function summitRegions(h: Float32Array, fromH: number, minCells: number): number
 }
 
 console.log("seed tpl           placed cells  maskPEAK  snowSummits  peakH  avgPeakH  rockFrac  bigSummits");
-for (const seed of [5, 3, 17, 63, 11, 99]) {
+for (const seed of [1, 3, 5, 7, 11, 17, 19, 23, 42, 63, 88, 99]) {
   const w = new World(seed);
   let mp = 0;
   let mpRock = 0;

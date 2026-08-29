@@ -48,6 +48,12 @@ export interface FeatureStat {
   readonly cells: number;
   /** 放弃的原因（人类可读，供日志与测试报告；没有放弃时省略）。 */
   readonly note?: string;
+  /**
+   * 本特征 apply() 的墙钟耗时（ms），由 FeatureComposer 统一测量后填上。
+   * 五个特征叠在一张图上是把构图从 ~340ms 推到 1s 量级的原因，
+   * 没有这个字段就只能靠二分注释来定位是哪个特征吃掉了预算，所以直接进契约。
+   */
+  readonly ms?: number;
 }
 
 /** 一座地物对一条高度场做一件事。实现类必须无外部依赖（只用 env 里的东西）。 */
@@ -285,8 +291,9 @@ export class FeatureComposer {
   static compose(env: FeatureEnv, features: ReadonlyArray<TerrainFeature>): FeatureStat[] {
     const stats: FeatureStat[] = [];
     for (const f of features) {
+      const t0 = performance.now();
       const st = f.apply(env);
-      stats.push(st);
+      stats.push({ ...st, ms: +(performance.now() - t0).toFixed(1) });
     }
     return stats;
   }

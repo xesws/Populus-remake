@@ -8,8 +8,12 @@
 import { clamp, MAX_H, RNG, WATER } from "../types";
 import { makeNoiseKit, mixSeed, type NoiseKit } from "./noise";
 import { pickTemplate, type MapTemplate } from "./map-template";
-import { FeatureComposer, MASK_PEAK, type FeatureEnv, type FeatureStat } from "./terrain-features";
+import { FeatureComposer, MASK_CHANNEL, MASK_PEAK, type FeatureEnv, type FeatureStat } from "./terrain-features";
 import { MountainRange, mountainPlanFor } from "./features/mountain-range";
+import { Plateau, plateauPlanFor } from "./features/plateau";
+import { Canyon, canyonPlanFor } from "./features/canyon";
+import { River, riverPlanFor } from "./features/river";
+import { Lake, lakePlanFor } from "./features/lake";
 
 /**
  * 出生点开阔度判据（v0.24）：从候选点沿 8 个罗盘方向各伸出 OPEN_REACH 格，
@@ -19,6 +23,8 @@ import { MountainRange, mountainPlanFor } from "./features/mountain-range";
  *（实测半岛图 seed 7 蓝方 walker 的可达域仅 57 格，寻路只能返回截断的部分路径，
  * 单位走半路就 idle 停下）。6 格 × 6 方向的要求正好覆盖开局铺开的尺寸。
  */
+const OPEN_REACH = 6;
+const OPEN_MIN = 6;
 /**
  * v0.25 出生地偏好高程与其惩罚系数（见 attachToAnchor 注释）。
  * 2.0 这个值落在 render.ts 的"丘带(1.4~2.6)"里：基地可以在丘上，但不该在岩带与雪线上。
@@ -33,8 +39,6 @@ const START_HIGH_PENALTY = 12;
  * 那时宁可降级用高台，也不能让 findStarts 退化成"对角线硬编码点"（可能落进海里）。
  */
 const START_MAX_H = 5.2;
-const OPEN_REACH = 6;
-const OPEN_MIN = 6;
 /** 8 个罗盘方向（4 正 + 4 斜），单位向量。 */
 const OPEN_DIRS: ReadonlyArray<readonly [number, number]> = [
   [1, 0],
@@ -153,13 +157,26 @@ export class WorldGen {
   }
 
   /**
-   * v0.25 阶段2 「这座图放哪些地物」的唯一决定点。
-   * 目前只有山脉；阶段 3/4 的 River / Lake / Plateau 从这里追加。
-   * 各特征实现在 features/ 下互相独立，加一个不影响另一个（AGENTS.md 的 separable 要求）。
+   * v0.25 「这座图放哪些地物」的唯一决定点。各特征实现在 features/ 下互相独立
+   *（加一个不影响另一个，符合 AGENTS.md 的 separable 要求），但**这里的顺序是契约的一部分**，
+   * 因为四个特征落位时读的判据会互相影响：
+   *   山 → 台地 → 峡谷 → 河流 → 湖泊
+   * - 台地与峡谷要躲开已成形的雪峰，判据是"已登记的 MASK_PEAK + 那里的高度"，
+   *   所以必须排在山脉之后；反过来若把山脉后置，它的 raiseTo 会把平顶和谷底走廊埋掉。
+   * - 峡谷自己也是"先抬两侧崖肩、最后统一终裁下切谷底"的两阶段，同样依赖 MASK_PEAK 就位。
+   * - 河流是 flow-trace（顺坡下降），得在山与台地都抬完之后再跑，
+   *   否则"源头在高地"这个判据是在旧地形上算的，河会刻在已经变成山腰的地方。
+   * - 湖泊找洼地且要避开已有河道，必须最后；先放湖的话河流会绕开甚至一条都放不出。
    */
   private static composeFeatures(env: FeatureEnv, tpl: MapTemplate): FeatureStat[] {
+    const mw = tpl.mountainWeight();
+    const rs = tpl.reliefScale();
     return FeatureComposer.compose(env, [
-      new MountainRange(mountainPlanFor(tpl.mountainWeight(), tpl.reliefScale())),
+      new MountainRange(mountainPlanFor(mw, rs)),
+      new Plateau(plateauPlanFor(mw, rs)),
+      new Canyon(canyonPlanFor(mw, rs)),
+      new River(riverPlanFor(mw, rs)),
+      new Lake(lakePlanFor(mw, rs)),
     ]);
   }
 
@@ -267,9 +284,11 @@ export class WorldGen {
       for (let ix = 0; ix < samples; ix++) {
         const i = row + ix;
         if (mask[i] !== 1 || base[i]! <= SEA_H) continue;
-        // v0.25 山体不参与平原拉近：这条选区的本职是"把缓丘压平"，
-        // 不排除山体就会把刚撒好的山脉抹掉大半（山体自己会走后面的特征感知松弛）。
-        if (featMask && (featMask[i]! & MASK_PEAK) !== 0) continue;
+        // v0.25 特征不参与平原拉近：这条选区的本职是"把缓丘压平"，
+        // 不排除山体就会把刚撒好的山脉抹掉大半；不排除河床/湖床更致命——
+        // 湖床高度约 0.10~0.15，被 3×3 均值（邻域都是 0.4+ 的陆）拉近 60% 就直接
+        // 回到水上，表现为"湖刻完就干了"，而掩膜还留着 CHANNEL（现场最难查的一类 bug）。
+        if (featMask && (featMask[i]! & (MASK_PEAK | MASK_CHANNEL)) !== 0) continue;
         let sum = 0;
         let cnt = 0;
         for (let dz = -1; dz <= 1; dz++) {

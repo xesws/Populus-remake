@@ -18,6 +18,7 @@
 // 因此可以安全地在生成期调用；对局中的法术雕刻**不走**这里（法术就是要留毛刺和破坏）。
 
 import { SAMPLES, WATER } from "./types";
+import { MASK_CHANNEL } from "./world-gen/terrain-features";
 
 /** 3×3 邻域（不含自身）的偏移表，模块级复用，避免热路径分配。 */
 const NB8: ReadonlyArray<readonly [number, number]> = [
@@ -55,8 +56,14 @@ export class MapSmoother {
    * - 填缺：被 ≥3 面陆地 4 邻包围的水格抬成陆地（水下细缝消失）；
    * - 削刺：4 邻里陆地不足 2 的陆地细条退回滩涂高度（湿脚尖刺消失）。
    * 之后再做 1 轮"贴水陆格抬到安全高度"，保证插值后的中点也不再入水。
+   *
+   * v0.25 新增可选 mask（地貌特征掩膜）：**登记过 MASK_CHANNEL 的水格一律不填**。
+   * 没有这条保护时，河流/湖泊的窄处（源头收口段、湖岸犬牙的内凹）会满足
+   * "被 ≥3 面陆地 4 邻包围"，被当成亚格水缺口抬成陆地——表现为"河刻完上游一段不见了"，
+   * 而且掩膜还留着 CHANNEL，查起来完全不像平滑器干的。
+   * 不传 mask 时行为与 v0.24 完全一致（对局中的地形不携带特征掩膜，走的正是这条路径）。
    */
-  static closeShoreline(h: Float32Array, report: SmoothReport): void {
+  static closeShoreline(h: Float32Array, report: SmoothReport, mask?: Uint8Array): void {
     const n = SAMPLES * SAMPLES;
     const src = new Uint8Array(n);
     for (let i = 0; i < n; i++) src[i] = h[i]! > WATER ? 1 : 0;
@@ -72,7 +79,7 @@ export class MapSmoother {
         if (src[i + 1]) c++;
         if (src[i - SAMPLES]) c++;
         if (src[i + SAMPLES]) c++;
-        if (!src[i] && c >= 3) {
+        if (!src[i] && c >= 3 && (mask === undefined || (mask[i]! & MASK_CHANNEL) === 0)) {
           out[i] = 1;
           filled++;
         } else if (src[i] && c < 2) {
@@ -179,7 +186,7 @@ export class MapSmoother {
    * 强制全图平滑：World 生成管线收尾调用一次。两步各跑 2 轮——中值化会引入
    * 新的临界格，闭运算也会挪动海陆界，交替两轮后残差实测收敛到 0。
    */
-  static smooth(h: Float32Array): SmoothReport {
+  static smooth(h: Float32Array, mask?: Uint8Array): SmoothReport {
     const report: SmoothReport = {
       shoreline: 0,
       filled: 0,
@@ -188,7 +195,7 @@ export class MapSmoother {
       residualSeams: 0,
     };
     for (let round = 0; round < 2; round++) {
-      MapSmoother.closeShoreline(h, report);
+      MapSmoother.closeShoreline(h, report, mask);
       MapSmoother.deSpike(h, report);
     }
     // v0.24 residualSeams 不再在这里算：绊人缝的成因已经在源头消灭——

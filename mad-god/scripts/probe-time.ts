@@ -1,11 +1,13 @@
-// v0.25 探针：构图耗时（阶段 1 的预算门槛，域扭曲会给 fillHeights 加一次噪声采样）
+// v0.25 探针：稳定态构图耗时（先预热，避免把 JIT 冷启动算进预算）。
 import { World } from "../src/game/world";
-for (const seed of [1, 11, 99]) {
+new World(12345); // 预热：JIT 首轮成本高得多，不预热会把冷启动误读成回归
+const rows: number[] = [];
+for (const seed of [1, 7, 11, 19, 23, 42, 88, 99]) {
   const t = performance.now();
-  new World(seed);
-  console.log(`seed ${seed} 构图 ${(performance.now() - t).toFixed(0)}ms`);
+  const w = new World(seed);
+  const ms = performance.now() - t;
+  const fsum = w.genFeatures.reduce((a, b) => a + (b.ms ?? 0), 0);
+  rows.push(ms);
+  console.log(`seed ${String(seed).padStart(3)} ${w.templateId.padEnd(12)} 构图 ${ms.toFixed(0).padStart(4)}ms  其中特征 ${fsum.toFixed(0)}ms`);
 }
-const t0 = performance.now();
-let n = 0;
-for (let s = 1; s <= 10; s++) { new World(s); n++; }
-console.log(`${n} 张图平均 ${((performance.now() - t0) / n).toFixed(0)}ms`);
+console.log(`平均 ${(rows.reduce((a, b) => a + b, 0) / rows.length).toFixed(0)}ms`);
