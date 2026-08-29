@@ -7,3 +7,5 @@ export * from "./tornado-spell";
 export * from "./blast-spell";
 export * from "./armageddon-spell";
 export * from "./sculpt-spell";
+export * from "./fireball-spell";
+export * from "./convert-spell";

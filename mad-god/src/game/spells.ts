@@ -11,6 +11,8 @@ import {
   BlastSpell,
   ArmageddonSpell,
   SculptSpell,
+  FireballSpell,
+  ConvertSpell,
 } from "./spells/index";
 
 export type { SpellResult } from "./spells/index";
@@ -24,6 +26,8 @@ export {
   BlastSpell,
   ArmageddonSpell,
   SculptSpell,
+  FireballSpell,
+  ConvertSpell,
 } from "./spells/index";
 
 export const SPELLS: Partial<Record<Tool, Spell>> = {
@@ -36,6 +40,8 @@ export const SPELLS: Partial<Record<Tool, Spell>> = {
   tornado: new TornadoSpell(),
   blast: new BlastSpell(),
   armageddon: new ArmageddonSpell(),
+  fireball: new FireballSpell(),
+  convert: new ConvertSpell(),
 };
 
 export function canUnlock(tool: Tool, cap: number): boolean {

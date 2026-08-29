@@ -6,6 +6,7 @@ import { TornadoFX } from "./render-parts/tornado-fx";
 import { LavaFX } from "./render-parts/lava-fx";
 import { SculptIndicatorFX } from "./render-parts/sculpt-indicator-fx";
 import { GuardFireFX } from "./render-parts/guard-fire-fx";
+import { ConvertRangeFX } from "./render-parts/convert-range-fx";
 import { TerrainMesh } from "./render-parts/terrain-mesh";
 
 const RT_W = 800;
@@ -83,6 +84,8 @@ export class View {
   tornadoFX = new TornadoFX();
   lavaFX = new LavaFX();
   sculptIndicator = new SculptIndicatorFX();
+  /** v0.26 转化技能范围圈（选中 convert 工具时在鼠标处显示，超距变红灰）。 */
+  convertRange = new ConvertRangeFX();
   guardFireFX = new GuardFireFX();
   blastGroup = new THREE.Group();
   blastRingMat = new THREE.MeshBasicMaterial({ color: 0xf4f0dc, transparent: true, opacity: 0.85, side: THREE.DoubleSide });
@@ -182,6 +185,7 @@ export class View {
       this.tornadoFX.group,
       this.lavaFX.group,
       this.sculptIndicator.group,
+      this.convertRange.group,
       this.guardFireFX.group,
       this.blastGroup,
     );
@@ -671,7 +675,7 @@ export class View {
         fire.add(a, b, c);
         g.add(fire);
       }
-      fire.visible = u.fireT > 0;
+      fire.visible = u.fireT > 0 || u.burnT > 0; // v0.26 火球灼烧也点亮火焰
     }
     for (const [id, g] of this.unitMeshes) {
       if (!live.has(id)) {
@@ -1421,6 +1425,12 @@ export class View {
   updateSculptIndicator(mode: "raise" | "lower" | "off", x: number, z: number, dt: number): void {
     this.sculptIndicator.setMode(mode);
     if (mode !== "off") this.sculptIndicator.sync(x, z, this.world.heightAt(x, z), dt);
+  }
+
+  /** v0.26 转化范围圈：ok=false（距大祭司超 4 格/大祭司陨落）时红灰显示。 */
+  updateConvertIndicator(mode: "cast" | "off", ok: boolean, x: number, z: number, dt: number): void {
+    this.convertRange.setMode(mode, ok);
+    if (mode !== "off") this.convertRange.sync(x, z, this.world.heightAt(x, z), dt);
   }
 
   syncVolcanoSpray(): void {

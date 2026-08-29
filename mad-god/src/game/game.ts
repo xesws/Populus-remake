@@ -505,6 +505,15 @@ export class Game {
       this.view.updateSculptIndicator("off", 0, 0, dt);
     }
 
+    // v0.26 转化范围圈：选中 convert 且鼠标在图内时显示；距己方存活大祭司超 4 格或大祭司陨落则红灰。
+    if (this.tool === "convert" && cell && inMap(cell.x, cell.z)) {
+      const sh = this.sim.units.find((u) => u.team === 0 && u.kind === "shaman" && u.hp > 0);
+      const ok = !!sh && Math.hypot(sh.x - cell.x, sh.z - cell.z) <= 4;
+      this.view.updateConvertIndicator("cast", ok, cell.x, cell.z, dt);
+    } else {
+      this.view.updateConvertIndicator("off", false, 0, 0, dt);
+    }
+
     maybeStartSculpt(this.input);
     if (this.running && !this.paused && !this.ended) {
       if (

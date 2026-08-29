@@ -178,29 +178,9 @@ export class CombatSystem implements ISystem {
     if (u.channel < PREACH_TIME) return true;
     u.channel = 0;
     u.channelId = 0;
-    tgt.team = u.team;
-    tgt.kind = "walker";
-    tgt.str = Math.max(1, tgt.str);
-    tgt.hp = tgt.maxHp = unitHp("walker", tgt.str);
-    tgt.order = sim.teams[u.team as Team].order;
-    tgt.path = [];
-    tgt.pathI = 0;
-    tgt.think = 0;
-    tgt.channel = 0;
-    tgt.channelId = 0;
-    tgt.selected = false;
-    tgt.disguise = null;
-    tgt.carry = 0;
-    tgt.job = "idle";
-    tgt.targetId = 0;
-    tgt.atkId = 0;
-    tgt.trainKind = null;
-    tgt.foundKind = null;
+    // v0.26 换队逻辑统一走 sim.convertTo（感化与转化法术共用一个出口）。
+    sim.convertTo(tgt, u.team as Team, "preach");
     sim.toast(u.team === BLUE ? "一名敌人皈依" : "一名子民被感化");
-    // v0.15 感化直接换队、不经出生流程，是人口上涨的另一大来源——落日志可追溯。
-    logger.info("combat", `皈依：单位#${tgt.id} → 队伍${u.team}`, {
-      pop: sim.countPop(u.team as Team),
-    });
     return true;
   }
 

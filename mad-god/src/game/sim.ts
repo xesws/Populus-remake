@@ -17,6 +17,7 @@ import {
   houseHp,
   houseMaxPop,
   inMap,
+  unitHp,
   isCampKind,
   isTribe,
   NEUTRAL,
@@ -519,6 +520,50 @@ export class Sim {
     }
   }
 
+  /**
+   * v0.26 公共换队逻辑（感化/转化共用一个出口，保证行为一致）：
+   * 目标单位直接换队并重置为对方 walker，不经出生流程；source 区分来源（preach/spell）落日志。
+   */
+  convertTo(tgt: Unit, newTeam: Team, source: "preach" | "spell"): void {
+    tgt.team = newTeam;
+    tgt.kind = "walker";
+    tgt.str = Math.max(1, tgt.str);
+    tgt.hp = tgt.maxHp = unitHp("walker", tgt.str);
+    tgt.order = this.teams[newTeam].order;
+    tgt.path = [];
+    tgt.pathI = 0;
+    tgt.think = 0;
+    tgt.channel = 0;
+    tgt.channelId = 0;
+    tgt.selected = false;
+    tgt.disguise = null;
+    tgt.carry = 0;
+    tgt.job = "idle";
+    tgt.targetId = 0;
+    tgt.atkId = 0;
+    tgt.trainKind = null;
+    tgt.foundKind = null;
+    tgt.burnT = 0;
+    tgt.burnDps = 0;
+    // 换队直接生效、不经出生流程，是人口上涨的主要来源之一——落日志可追溯。
+    logger.info("combat", `皈依：单位#${tgt.id} → 队伍${newTeam}（${source}）`, {
+      pop: this.countPop(newTeam),
+      source,
+    });
+  }
+
+  /** v0.26 着火持续伤害：burnT 期间每秒 burnDps（火球法术的轻微灼烧）。 */
+  private tickBurns(dt: number): void {
+    for (const u of this.units) {
+      if (u.burnT <= 0 || u.hp <= 0) continue;
+      u.hp -= u.burnDps * dt;
+      u.burnT = Math.max(0, u.burnT - dt);
+      if (u.hp <= 0 && u.team === BLUE) {
+        this.toast(u.kind === "shaman" ? "祭司被烈焰烧死" : "一名子民被烈焰烧死");
+      }
+    }
+  }
+
   toast(msg: string): void {
     this.logs.push(msg);
     if (this.logs.length > 8) this.logs.shift();
@@ -887,6 +932,7 @@ export class Sim {
     this.combat(dt);
     this.projectiles(dt);
     this.hazards(dt);
+    this.tickBurns(dt);
     this.mergeWalkers();
     this.respawnShamans(dt);
     this.cull();

@@ -32,6 +32,10 @@ export abstract class Unit extends BaseEntity {
   foundKind: BuildingKind | null = null;
   swampT = 0;
   fireT = 0;
+  // v0.26 火球着火的持续伤害：burnT 剩余秒数，burnDps 每秒伤害。
+  // 独立于 fireT（后者只是岩浆/闪电的视觉火焰），避免与岩浆 26/s 叠加。
+  burnT = 0;
+  burnDps = 0;
   flyVx = 0;
   flyVz = 0;
   flyVy = 0;
