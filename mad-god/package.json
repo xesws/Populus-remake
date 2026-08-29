@@ -6,7 +6,7 @@
   "scripts": {
     "dev": "vite --host",
     "build": "tsc --noEmit && vite build",
-    "check": "tsx src/game/object-check.ts && tsx src/game/settle-check.ts && tsx src/game/produce-check.ts && tsx src/game/combat-check.ts && tsx src/game/move-check.ts && tsx src/game/combat-auto-check.ts && tsx src/game/projectile-check.ts && tsx src/game/idle-check.ts && tsx src/game/terrain-gen-check.ts && tsx src/game/terrain-smooth-check.ts && tsx src/game/log-check.ts && tsx src/game/convert-check.ts && tsx src/game/ai-check.ts && tsx src/game/tornado-check.ts && tsx src/game/volcano-check.ts && tsx src/game/quake-check.ts && tsx src/game/sculpt-check.ts && tsx src/game/guard-check.ts && tsx src/game/feature-plateau-check.ts && tsx src/game/feature-canyon-check.ts && tsx src/game/feature-river-check.ts && tsx src/game/feature-lake-check.ts && tsx src/game/forest-check.ts",
+    "check": "tsx src/game/object-check.ts && tsx src/game/settle-check.ts && tsx src/game/produce-check.ts && tsx src/game/combat-check.ts && tsx src/game/move-check.ts && tsx src/game/combat-auto-check.ts && tsx src/game/projectile-check.ts && tsx src/game/idle-check.ts && tsx src/game/terrain-gen-check.ts && tsx src/game/terrain-smooth-check.ts && tsx src/game/log-check.ts && tsx src/game/convert-check.ts && tsx src/game/ai-check.ts && tsx src/game/tornado-check.ts && tsx src/game/volcano-check.ts && tsx src/game/quake-check.ts && tsx src/game/sculpt-check.ts && tsx src/game/guard-check.ts && tsx src/game/feature-plateau-check.ts && tsx src/game/feature-canyon-check.ts && tsx src/game/feature-river-check.ts && tsx src/game/feature-lake-check.ts && tsx src/game/forest-check.ts && tsx src/game/terrain-mesh-check.ts",
     "preview": "vite preview --host"
   },
   "dependencies": {

@@ -6,40 +6,10 @@ import { TornadoFX } from "./render-parts/tornado-fx";
 import { LavaFX } from "./render-parts/lava-fx";
 import { SculptIndicatorFX } from "./render-parts/sculpt-indicator-fx";
 import { GuardFireFX } from "./render-parts/guard-fire-fx";
+import { TerrainMesh } from "./render-parts/terrain-mesh";
 
 const RT_W = 800;
 const RT_H = 600;
-
-const COL_SEA = new THREE.Color("#1e5a88");
-const COL_GRASS = new THREE.Color("#4e8d3b");
-const COL_HILL = new THREE.Color("#8a8a4a");
-const COL_ROCK = new THREE.Color("#9a8a6a");
-const COL_SNOW = new THREE.Color("#e8e6de");
-const COL_SCORCH = new THREE.Color("#3a2a1c");
-// v0.18 焦土三档灰褐（Agent V 建议）：按 scorch 强度从浅灰褐 → 深灰褐 → 炭黑渐进。
-const COL_SCORCH_MID = new THREE.Color("#57463a");
-const COL_SCORCH_LIGHT = new THREE.Color("#6a5745");
-const COL_LAVA = new THREE.Color("#e85d04");
-
-function heightColor(h: number, lava: number, scorch: number, out: THREE.Color): void {
-  if (lava > 8) {
-    out.copy(COL_LAVA);
-    return;
-  }
-  // v0.18b 薄浆渐变：流动前沿（lava 0.5~8）从地面色向亮橙过渡，物理流动的舌状边界肉眼可见。
-  const lavaMix = lava > 0.5 ? Math.min(1, (lava - 0.5) / 7.5) * 0.92 : 0;
-  if (scorch > 0.4) {
-    // v0.18 焦土渐变：强焦（>1.6）炭黑 → 中焦灰褐 → 弱焦浅灰褐，干涸后地面呈灰褐色带。
-    if (scorch > 1.6) out.copy(COL_SCORCH);
-    else if (scorch > 0.9) out.copy(COL_SCORCH_MID);
-    else out.copy(COL_SCORCH_LIGHT);
-  } else if (h <= WATER) out.copy(COL_SEA);
-  else if (h < 1.4) out.copy(COL_GRASS);
-  else if (h < 2.6) out.copy(COL_HILL);
-  else if (h < 4.2) out.copy(COL_ROCK);
-  else out.copy(COL_SNOW);
-  if (lavaMix > 0) out.lerp(COL_LAVA, lavaMix);
-}
 
 export class View {
   renderer: THREE.WebGLRenderer;
@@ -51,7 +21,8 @@ export class View {
   world: World;
 
   terrain: THREE.Mesh;
-  terrainGeo: THREE.BufferGeometry;
+  /** v0.25b 地形顶点（色/法线）增量的唯一维护者。 */
+  tmesh: TerrainMesh;
   water: THREE.Mesh;
 
   unitGroup = new THREE.Group();
@@ -127,7 +98,6 @@ export class View {
   roofIcons = new Map<number, THREE.Group>();
   dwellPips = new Map<number, THREE.Group>();
   treeMeshes = new Map<number, THREE.Group>();
-  _color = new THREE.Color();
   trainBarTrackMat = new THREE.MeshLambertMaterial({ color: 0x16161c });
   trainBarFillMat = new THREE.MeshLambertMaterial({ color: this.teamPrimary(BLUE) });
   trainBarMarkMat = new THREE.MeshBasicMaterial({ color: 0x5aa0ee });
@@ -165,9 +135,9 @@ export class View {
     this.scene.add(sun);
     this.scene.add(new THREE.AmbientLight(0x506070, 0.25));
 
-    this.terrainGeo = this.makeTerrainGeo();
+    this.tmesh = new TerrainMesh(world);
     this.terrain = new THREE.Mesh(
-      this.terrainGeo,
+      this.tmesh.geo,
       new THREE.MeshLambertMaterial({ vertexColors: true }),
     );
     this.terrain.frustumCulled = false;
@@ -239,35 +209,6 @@ export class View {
     window.addEventListener("resize", () => this.resize());
   }
 
-  makeTerrainGeo(): THREE.BufferGeometry {
-    const n = SAMPLES * SAMPLES;
-    const pos = new Float32Array(n * 3);
-    const col = new Float32Array(n * 3);
-    const idx: number[] = [];
-    for (let iz = 0; iz < SAMPLES; iz++) {
-      for (let ix = 0; ix < SAMPLES; ix++) {
-        const i = iz * SAMPLES + ix;
-        pos[i * 3] = ix * STEP;
-        pos[i * 3 + 1] = 0;
-        pos[i * 3 + 2] = iz * STEP;
-      }
-    }
-    for (let iz = 0; iz < SAMPLES - 1; iz++) {
-      for (let ix = 0; ix < SAMPLES - 1; ix++) {
-        const a = iz * SAMPLES + ix;
-        const b = a + 1;
-        const c = a + SAMPLES;
-        const d = c + 1;
-        idx.push(a, c, b, b, c, d);
-      }
-    }
-    const geo = new THREE.BufferGeometry();
-    geo.setAttribute("position", new THREE.BufferAttribute(pos, 3));
-    geo.setAttribute("color", new THREE.BufferAttribute(col, 3));
-    geo.setIndex(idx);
-    return geo;
-  }
-
   resize(): void {
     const w = window.innerWidth;
     const h = window.innerHeight;
@@ -284,44 +225,17 @@ export class View {
     this.camera.lookAt(this.look);
   }
 
-  paintVertex(i: number): void {
-    const pos = this.terrainGeo.getAttribute("position") as THREE.BufferAttribute;
-    const col = this.terrainGeo.getAttribute("color") as THREE.BufferAttribute;
-    const h = this.world.h[i]!;
-    pos.setY(i, h);
-    heightColor(h, this.world.lava[i]!, this.world.scorch[i]!, this._color);
-    col.setXYZ(i, this._color.r, this._color.g, this._color.b);
-  }
-
+  /** 整图重建地形顶点（开局 / 换 seed / 导演切场景时调）。 */
   rebuildTerrain(): void {
-    const n = SAMPLES * SAMPLES;
-    for (let i = 0; i < n; i++) this.paintVertex(i);
-    const pos = this.terrainGeo.getAttribute("position") as THREE.BufferAttribute;
-    const col = this.terrainGeo.getAttribute("color") as THREE.BufferAttribute;
-    pos.needsUpdate = true;
-    col.needsUpdate = true;
-    this.terrainGeo.computeVertexNormals();
-    this.world.dirty = false;
+    this.tmesh.rebuild();
   }
 
-  updateDirtyTerrain(): void {
-    if (!this.world.dirty) return;
-    const minX = Math.max(0, this.world.dirtyMinX);
-    const maxX = Math.min(SAMPLES - 1, this.world.dirtyMaxX);
-    const minZ = Math.max(0, this.world.dirtyMinZ);
-    const maxZ = Math.min(SAMPLES - 1, this.world.dirtyMaxZ);
-    const span = (maxX - minX + 1) * (maxZ - minZ + 1);
-    if (span > SAMPLES * SAMPLES * 0.35) {
-      this.rebuildTerrain();
-      return;
-    }
-    for (let iz = minZ; iz <= maxZ; iz++) {
-      for (let ix = minX; ix <= maxX; ix++) this.paintVertex(iz * SAMPLES + ix);
-    }
-    (this.terrainGeo.getAttribute("position") as THREE.BufferAttribute).needsUpdate = true;
-    (this.terrainGeo.getAttribute("color") as THREE.BufferAttribute).needsUpdate = true;
-    this.terrainGeo.computeVertexNormals();
-    this.world.dirty = false;
+  /**
+   * v0.25b 每帧消费 World 的脏区窗口（见 TerrainMesh 的说明）：旧实现每帧无条件
+   * 全量重算 8.3 万顶点法线（实测 15.6ms/帧），是火山期间页面假死的主因之一。
+   */
+  syncTerrain(): void {
+    this.tmesh.syncWindow(this.world.takeDirtyWindow());
   }
 
   makeFist(): THREE.Group {
@@ -537,7 +451,7 @@ export class View {
     }
     this.quakeT = Math.max(0, this.quakeT - dt);
     this.volcanoT = Math.max(0, this.volcanoT - dt);
-    this.updateDirtyTerrain();
+    this.syncTerrain();
     this.water.position.y = WATER + Math.sin(this.t * 1.4) * 0.03;
     this.syncUnits(sim);
     this.syncHouses(sim);

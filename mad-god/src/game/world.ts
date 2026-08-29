@@ -191,6 +191,27 @@ export function pushCircleFromPad(
   return { x: pad.x + lx * c - lz * s, z: pad.z + lx * s + lz * c };
 }
 
+/**
+ * v0.25b 渲染端每帧取走的脏区窗口：`all` 为真表示包围盒不可信、需整图重建；
+ * 否则只需重绘 `[minX..maxX] x [minZ..maxZ]` 这一块，并且**只需**重算这一块（外扩 1 圈）的法线。
+ */
+export interface DirtyWindow {
+  /** 上传区间的粗提示包围盒（重绘集合以 `paint` 为准，见 World 的说明）。 */
+  minX: number;
+  maxX: number;
+  minZ: number;
+  maxZ: number;
+  /** 包围盒不可信，整图重建。 */
+  all: boolean;
+  /**
+   * 本帧顶点色变了的线性格号（去重）。
+   * 生命周期：到下一次 `takeDirtyWindow()` / `clearDirtyWindow()` 为止，消费方不得跨帧持有。
+   */
+  paint: number[];
+  /** 本帧高度变了的线性格号（去重，`paint` 的子集）→ 只有这批需要重算法线。 */
+  geom: number[];
+}
+
 export class World {
   h: Float32Array;
   /**
@@ -205,11 +226,41 @@ export class World {
   swamp: Float32Array;
   pads: Pad[] = [];
   trees: TreeBlock[] = [];
+  /**
+   * v0.25b 脏区窗口（修"火山一开前端卡死"）。
+   * 不变量：**任何**让顶点色/高度发生变化的写入都必须经 `markSample` / `markCell` /
+   * `markAll` 登记，渲染端每帧用 `takeDirtyWindow()` 取走一个**本帧最小包围盒**。
+   * 旧实现把"是否开始累积包围盒"绑在 `dirty` 上，而 `tickFx` 岩浆冷却时直接
+   * `this.dirty = true`（不带坐标）→ `markSample` 的复位分支永远进不去 → 包围盒
+   * 只增不减，几秒内撑满全图 → 每帧全量重绘 + 8.3 万顶点重算法线（实测 15.6ms/帧，
+   * 火山活动期连续 680 帧），主线程被吃满 → 看起来就是整个页面假死。
+   */
   dirty = true;
+  /** true = 包围盒不可信，必须整图重建（`markAll`：换图/重开一局）。 */
+  dirtyAll = true;
   dirtyMinX = 0;
   dirtyMinZ = 0;
   dirtyMaxX = SAMPLES - 1;
   dirtyMaxZ = SAMPLES - 1;
+  /** 本帧是否已开始累积包围盒（`dirty` 单独为真不代表有坐标）。 */
+  private hasWindow = false;
+  /**
+   * 脏格清单（v0.25b）。`paintCells` = 本帧顶点色变了的格（含改高度的格），
+   * `geomCells` = 本帧**高度**变了的格（只有这批要重算法线）。
+   * 用 epoch 时间戳去重，所以一张格一帧内被反复标记只会进一次清单——
+   * 这很关键：火山的 `holdPadsNearVolcano` 每帧给全图每栋建筑重铺地基，
+   * 标记点散落在整张图上，任何"包围盒"口径都会被它撑满（旧实现正是如此 → 每帧全量重建）。
+   */
+  /** `flowLava` 的转移量累加缓冲（v0.25b：避免每帧 334KB 分配）。 */
+  private lavaScratch: Float32Array | null = null;
+  private paintCells: number[] = [];
+  private geomCells: number[] = [];
+  /** 双缓冲：交出去的清单要活到下一次 take 为止，所以累积中的那份不能是同一块 backing。 */
+  private paintAlt: number[] = [];
+  private geomAlt: number[] = [];
+  private paintMark: Uint32Array;
+  private geomMark: Uint32Array;
+  private epoch = 1;
   rng: RNG;
   starts: [StartPad, StartPad];
   lastSwampX = 0;
@@ -228,6 +279,8 @@ export class World {
 
   constructor(seed = 1989) {
     this.h = new Float32Array(SAMPLES * SAMPLES);
+    this.paintMark = new Uint32Array(SAMPLES * SAMPLES);
+    this.geomMark = new Uint32Array(SAMPLES * SAMPLES);
     this.fmask = new Uint8Array(SAMPLES * SAMPLES);
     this.lava = new Float32Array(SAMPLES * SAMPLES);
     this.scorch = new Float32Array(SAMPLES * SAMPLES);
@@ -315,25 +368,96 @@ export class World {
     return false;
   }
 
+  /** 登记一个**高度**变了的格子（顶点色要重画，法线也要重算）。 */
   markSample(ix: number, iz: number): void {
-    if (!this.dirty) {
+    this.markPaint(ix, iz);
+    if (this.dirtyAll) return;
+    const i = iz * SAMPLES + ix;
+    if (this.geomMark[i] === this.epoch) return;
+    this.geomMark[i] = this.epoch;
+    this.geomCells.push(i);
+  }
+
+  /**
+   * 登记一个只改了顶点色（lava / scorch / swamp）的格子：颜色要重画，但不必重算法线。
+   * 包围盒只作为"上传区间"的粗提示，真正的重绘集合是 `paintCells` 清单。
+   */
+  markPaint(ix: number, iz: number): void {
+    if (!this.hasWindow) {
       this.dirtyMinX = this.dirtyMaxX = ix;
       this.dirtyMinZ = this.dirtyMaxZ = iz;
-      this.dirty = true;
-      return;
+      this.hasWindow = true;
+    } else if (!this.dirtyAll) {
+      if (ix < this.dirtyMinX) this.dirtyMinX = ix;
+      if (ix > this.dirtyMaxX) this.dirtyMaxX = ix;
+      if (iz < this.dirtyMinZ) this.dirtyMinZ = iz;
+      if (iz > this.dirtyMaxZ) this.dirtyMaxZ = iz;
     }
-    if (ix < this.dirtyMinX) this.dirtyMinX = ix;
-    if (ix > this.dirtyMaxX) this.dirtyMaxX = ix;
-    if (iz < this.dirtyMinZ) this.dirtyMinZ = iz;
-    if (iz > this.dirtyMaxZ) this.dirtyMaxZ = iz;
+    this.dirty = true;
+    if (this.dirtyAll) return;
+    const i = iz * SAMPLES + ix;
+    if (this.paintMark[i] === this.epoch) return;
+    this.paintMark[i] = this.epoch;
+    this.paintCells.push(i);
+  }
+
+  /** 按线性格号登记颜色变更（`flowLava` / `tickFx` 这类全扫循环手里只有 i）。 */
+  markPaintCell(i: number): void {
+    this.markPaint(i % SAMPLES, (i / SAMPLES) | 0);
   }
 
   markAll(): void {
     this.dirty = true;
+    this.dirtyAll = true;
+    this.hasWindow = true;
     this.dirtyMinX = 0;
     this.dirtyMinZ = 0;
     this.dirtyMaxX = SAMPLES - 1;
     this.dirtyMaxZ = SAMPLES - 1;
+  }
+
+  /**
+   * 渲染端每帧开头取走脏区窗口并**关闭累积**：下一帧从新的最小包围盒重新累积。
+   * 没有这一步，包围盒会跨帧单调增长（哪怕每帧只改一格）——这正是火山卡死的成因。
+   * 返回 null 表示这一帧没有任何需要重绘的格子。
+   */
+  takeDirtyWindow(): DirtyWindow | null {
+    if (!this.dirty) return null;
+    const win: DirtyWindow = {
+      minX: this.dirtyMinX,
+      maxX: this.dirtyMaxX,
+      minZ: this.dirtyMinZ,
+      maxZ: this.dirtyMaxZ,
+      all: this.dirtyAll,
+      paint: this.paintCells,
+      geom: this.geomCells,
+    };
+    this.clearDirtyWindow();
+    return win;
+  }
+
+  /** 整图重建完成后调用：待重绘的内容已经全部落地，清空累积状态。 */
+  clearDirtyWindow(): void {
+    this.dirty = false;
+    this.dirtyAll = false;
+    this.hasWindow = false;
+    this.dirtyMinX = this.dirtyMinZ = this.dirtyMaxX = this.dirtyMaxZ = 0;
+    // 与备用缓冲**交换**而不是清空交出去的那份：消费方（渲染端）拿到的清单要活到下一次
+    // take 为止，同帧内可能还被读两遍（先重绘颜色、再按 geom 重算法线）。
+    const pa = this.paintAlt;
+    const ga = this.geomAlt;
+    this.paintAlt = this.paintCells;
+    this.geomAlt = this.geomCells;
+    this.paintCells = pa;
+    this.geomCells = ga;
+    this.paintCells.length = 0;
+    this.geomCells.length = 0;
+    this.epoch++;
+    if (this.epoch > 0xfffffffe) {
+      this.epoch = 1;
+      this.paintMark.fill(0);
+      this.geomMark.fill(0);
+    }
   }
 
   setSample(ix: number, iz: number, v: number): void {
@@ -946,7 +1070,7 @@ export class World {
         this.lava[i] = 3.6;
         this.scorch[i] = Math.max(this.scorch[i]!, 1.1);
         this.lastRiverCells.push({ x, z, ang });
-        this.markSample(clamp(Math.round(x / STEP), 0, SAMPLES - 1), clamp(Math.round(z / STEP), 0, SAMPLES - 1));
+        this.markPaint(clamp(Math.round(x / STEP), 0, SAMPLES - 1), clamp(Math.round(z / STEP), 0, SAMPLES - 1));
         tipX = x;
         tipZ = z;
         if (s >= 6 && s === reach) splash.push({ x, z });
@@ -1001,7 +1125,7 @@ export class World {
         // v0.18 播浆必留焦土（与 growRivers 一致）：seedLava 是地震等法术铺浆的唯一入口，
         // 若不在此写 scorch，干涸后地面不会留下灰褐焦土。
         this.scorch[i] = Math.max(this.scorch[i]!, 1.1);
-        this.markSample(ix, iz);
+        this.markPaint(ix, iz);
       }
     }
   }
@@ -1072,14 +1196,21 @@ export class World {
    * 只在火山活动期由 VolcanoSpell 调用（地震裂缝是沟内静态浆，不参与流动）。
    */
   flowLava(dt: number): void {
-    const add = new Float32Array(this.lava.length);
+    // 复用 scratch 缓冲：火山活动期这里是每帧一次，旧写法每帧 new 一张 83521 的
+    // Float32Array（334KB/帧 ≈ 20MB/s 垃圾），GC  major pause 本身就是掉帧来源。
+    let add = this.lavaScratch;
+    if (!add) add = this.lavaScratch = new Float32Array(this.lava.length);
+    else add.fill(0);
     for (let iz = 1; iz < SAMPLES - 1; iz++) {
       for (let ix = 1; ix < SAMPLES - 1; ix++) {
         const i = this.idx(ix, iz);
         const amt = this.lava[i]!;
         if (amt < LAVA_FLOW_MIN) continue; // 薄浆停滞：形成参差的凝固边缘
         const h = this.h[i]!;
-        this.scorch[i] = Math.max(this.scorch[i]!, 1.15);
+        if (this.scorch[i]! < 1.15) {
+          this.scorch[i] = 1.15;
+          this.markPaint(ix, iz);
+        }
         // 候选下坡邻居：高差平方做权重 → 陡坡优先但带随机，分叉不规则。
         let total = 0;
         const cand: number[] = [];
@@ -1127,7 +1258,7 @@ export class World {
     for (let i = 0; i < add.length; i++) {
       if (add[i] === 0) continue;
       this.lava[i] = Math.max(0, this.lava[i]! + add[i]!);
-      this.markSample(i % SAMPLES, (i / SAMPLES) | 0);
+      this.markPaintCell(i);
     }
   }
 
@@ -1146,29 +1277,33 @@ export class World {
         // 中心满量、边缘 60%：喷口聚集、口缘散落；厚度封顶 LAVA_MAX_DEPTH（超出蒸发）。
         const f = d < r * 0.5 ? 1 : 0.6;
         this.lava[i] = Math.min(LAVA_MAX_DEPTH, this.lava[i]! + amount * f);
-        this.markSample(ix, iz);
+        this.markPaint(ix, iz);
       }
     }
   }
 
   tickFx(dt: number): void {
     for (let i = 0; i < this.lava.length; i++) {
+      let touched = false;
       if (this.lava[i]! > 0) {
         // v0.18b 冷却 1.0→1.4/s：火山物理溢流会在洼地积成厚池，冷却太慢会让岩浆池烧一分多钟；
         // quake 的 seed 寿命 6~10 → 干涸 4~7s，仍落在"5~10 秒"要求区间。
         this.lava[i] = Math.max(0, this.lava[i]! - dt * 1.4);
-        if (this.lava[i] === 0) this.dirty = true;
+        touched = true;
       }
       if (this.scorch[i]! > 0) {
         // v0.18 焦土衰减 0.15→0.04/s：焦土是"岩浆干涸后的地面痕迹"，必须比岩浆本身活得久
         // （旧速率 1.1 强度 7 秒就褪光，岩浆未干焦土先消失，观感不对）。
         this.scorch[i] = Math.max(0, this.scorch[i]! - dt * 0.04);
-        if (this.scorch[i] === 0) this.dirty = true;
+        touched = true;
       }
       if (this.swamp[i]! > 0) {
         this.swamp[i] = Math.max(0, this.swamp[i]! - dt);
-        if (this.swamp[i] === 0) this.dirty = true;
+        touched = true;
       }
+      // 颜色变了就必须重画这一格（旧实现只在"恰好衰减到 0"时才置脏，
+      // 于是岩浆/焦土褪色的整个过程根本没人重绘，全靠包围盒撑爆顺带全图重建掩盖）。
+      if (touched) this.markPaintCell(i);
     }
   }
 
