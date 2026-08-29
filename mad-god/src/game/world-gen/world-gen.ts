@@ -43,6 +43,25 @@ const SEA_H = 0.04;
  */
 const LAND_BASE = 0.4;
 
+/**
+ * v0.25 域扭曲振幅（格）：采样坐标被低频位移场推开的最大距离。
+ * 取 6 格 ≈ 世界边长的 8%——足够让海岸线、山脊走向弯折成有机形状，
+ * 又不会把模板的宏观海陆格局（landFactor 的概率场）搅掉。
+ */
+const WARP_AMP = 6;
+/**
+ * v0.25 起伏幂曲线的指数：>1 意味着"低地压得更平、高地拉得更高"。
+ * 这是"一片平原"变成"平原 + 明显高山"所必需的非线性——线性缩放无论乘多大，
+ * 平原和山会一起涨，相对坡度不变，观感仍是一个丘。
+ * 具体值拿实测定的（scripts/probe-templates.ts，40 个 seed 按模板平均）：
+ * SPAN=6.5 下 POW=2.2 太"胖"——连 archipelago 都长出 21.8% 雪盖、全图陆地均值冲到 2.87，
+ * 可建房的平地被吃掉太多；POW=3.2 把中间档压下去、只留强山脊冲高，
+ * 实测均值 2.2 上下、雪盖 3~12%、岩带 17~30%，平原和雪峰同时存在，才是要的对比度。
+ */
+const RELIEF_POW = 3.2;
+/** v0.25 起伏满量程：shaped=1 时相对 LAND_BASE 的高差，配合 MAX_H=8 留足余量。 */
+const RELIEF_SPAN = 6.5;
+
 /** 单方出生点：世界坐标（格）、朝向地图中心的 yaw、平台高度 h。 */
 export interface GenStart {
   x: number;
@@ -87,9 +106,24 @@ export class WorldGen {
   }
 
   /**
-   * v0.24 高度场：模板陆海格局（landFactor）× fBm 宏观起伏 + 山脊带，clamp 到 [0, MAX_H]。
-   * fbm 归一化到 [0,1] 后随 land 衰减（近岸更低缓）；ridge 分量额外乘 land²——
-   * 山脊只出现在稳定大陆内部而非沿海，避免海岸线被山脊切碎。
+   * v0.25 高度场：域扭曲后的「内陆度 ×（缓丘 + 幂曲线起伏）」，clamp 到 [0, MAX_H]。
+   *
+   * 三处相对 v0.24 的改动，逐条对应"只是生成一个平原"的病因：
+   * 1) **域扭曲**：landFactor / fbm / ridge 一律在位移场偏移后的坐标上采样。
+   *    v0.24 直采 (x,z)，等值线贴着噪声格点对齐，海岸线是规整的圆角多边形、
+   *    山脊是横平竖直的带；扭曲后同一张场的走势自然弯折（成熟引擎的标准做法）。
+   *    位移场只由低频噪声给出（见 noise.warp），不引入新的高频细节——
+   *    这一点对本项目是硬要求：高频才是 smoothField/clampSlope 压不平的东西。
+   * 2) **幂曲线起伏**（RELIEF_POW>1）：把归一化起伏量整体压向两端，
+   *    平原只涨一点点、只有山脊带能吃满量程。线性放大做不到这件事
+   *    （平原和山一起涨，相对坡度不变，观感仍是丘）。
+   * 3) **内陆度 inland**：用 smoothstep 把"离海多远"做成一条 0→1 的权重，
+   *    近岸自然低缓成滩、只有腹地才够得着岩带与雪线——替代 v0.24 那个
+   *    `land *` 的一次乘（land=0.6 就已经给出接近满幅的起伏，山都堆在海岸上）。
+   *
+   * 硬约束不变：陆地最低点仍 ≥LAND_BASE（=WATER+0.20 安全余量，见 LAND_BASE 注释），
+   * 海陆判据仍只看 `land <= 0.35`（扭曲后的值），故 v0.24 的"单连通大陆 + 零绊人缝"
+   * 两条不变量的成立前提没有被这次改动引入新的破坏路径。
    */
   private static fillHeights(
     heights: Float32Array,
@@ -106,7 +140,10 @@ export class WorldGen {
       for (let ix = 0; ix < samples; ix++) {
         const x = ix * step;
         const z = iz * step;
-        const land = tpl.landFactor(x, z, world);
+        // v0.25 位移场：x/z 两个分量各取一条独立噪声流（同流会让扭曲退化成整体平移）
+        const wx = x + noise.warp(x, z, 0) * WARP_AMP;
+        const wz = z + noise.warp(x, z, 1) * WARP_AMP;
+        const land = tpl.landFactor(wx, wz, world);
         let h: number;
         // 陆海分界阈值 0.35：模板 landFactor 是"概率场"——disk 过渡带外半段与卫星岛
         // 高斯尾部都会给出 0.02~0.5 的"准海"值，按小阈值判陆会把大片浅滩铺成陆地
@@ -114,9 +151,30 @@ export class WorldGen {
         if (land <= 0.35) {
           h = SEA_H; // 稳定海洋：统一浅海基准，滩涂抬升交给 world.ts 既有管线
         } else {
-          const fbm = noise.fbm(x, z, 4, 0.09) * 0.5 + 0.5; // [-1,1] → [0,1]
-          const ridge = noise.ridge(x, z, 3, 0.05); // [0,1]，高值即山脊线
-          h = LAND_BASE + land * (0.5 + fbm * 1.3 * (1 - land * 0.3) + ridge * mw * 2.2 * land * rs);
+          const e = (land - 0.35) / 0.65; // 内陆度 0..1（阈值 0.35 → 满陆 1.0）
+          const inland = e * e * (3 - 2 * e); // smoothstep：近岸低缓、腹地才够高
+          // v0.25 频率整体比 v0.24 降一档——这是"坡度爆炸"的对症药，调振幅替代不了它：
+          // 斜率 ≈ 振幅 / 水平尺度，既然要把山峰抬到 6 高、又要让绝大多数陆格的坡度留在
+          // 0.55 这条线以下（sim.ts:222/242 的野人与树木落点判据、world.ts:751 的建筑选地
+          // 判据都卡在它上面），山体就必须宽到"几格"的量级。v0.25 第一版沿用
+          // fbm(5 层 @0.075) + ridge(3 层 @0.05)，最高一层周期不到 1 格，等于往高度场里
+          // 塞逐格抖动——实测 30~53% 的陆格超标，跨山行军时间也跟着爆炸。
+          // 现在缓丘 4 层 @0.055（最高层周期 ~3.6 格）、山脊 3 层 @0.032（基周期 ~31 格），
+          // 山是"大块"而不是"碎褶"。
+          const roll = noise.fbm(wx, wz, 4, 0.055) * 0.5 + 0.5; // [-1,1] → [0,1]，宏观缓丘
+          const ridge = noise.ridge(wx, wz, 3, 0.032); // [0,1]，高值即宽体山脊带
+          // 归一化起伏量：缓丘给底子、山脊给尖峰；ridge 取平方让山峰成"带"而非"面"，
+          // 否则全域普涨成高台，又回到"一整块高原"的单调。
+          // v0.25 山脊振幅：给**所有**模板一个不小的底子，再按 mw*rs 温和加成。
+          // 不这么做的后果实测过：v0.25 第一版让 mw 与 rs 直接相乘，普通模板（mw 0.2~0.4）
+          // 与 highlands（mw1×rs1.35）差到 3~7 倍，于是"要么全图没山、要么 58% 是雪盖"，
+          // 中间档根本没有图。加成后比值 1.5 倍，highlands 仍是mountain图但不再是冰球。
+          const ridgeAmp = 0.62 + 0.55 * Math.min(1, mw * rs);
+          const q = Math.min(1, roll * 0.34 + ridge * ridge * ridgeAmp);
+          const shaped = Math.pow(q, RELIEF_POW) * RELIEF_SPAN;
+          // 内陆度做"下限不为零的乘子"而非直接乘：细长地（半岛）内陆度天然上不去，
+          // 直接乘会把整条半岛压成平原；留 0.25 底让它仍有丘与岩，只是不够到雪线。
+          h = LAND_BASE + (0.25 + 0.75 * inland) * (0.35 + roll * 0.6 + shaped);
         }
         heights[row + ix] = clamp(h, 0, MAX_H);
       }

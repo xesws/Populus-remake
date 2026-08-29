@@ -66,7 +66,14 @@ export class PathSystem implements ISystem {
       if (swamp) spd *= 0.04;
       const sl = sim.world.slopeAt(u.x, u.z);
       // v0.13 坡度惩罚调缓 + 下限提高（地形已平滑）：消除陡坡爬行感。
-      spd *= 1 / (1 + Math.min(sl, 1.5) * 1.4);
+      // v0.25 重标定：v0.13 那条曲线（1/(1+min(sl,1.5)*1.4)）是按"全图都是缓丘"标定的，
+      // 那时陆地坡度几乎不过 0.5；v0.25 把起伏拉开后陆地平均坡度到 0.35~0.68
+      //（实测，见 scripts/probe-slope.ts），旧曲线在 sl=0.35 就要掉 33% 速——
+      // 等于全图爬行，正是 v0.13 辛苦消灭掉的东西又回来了。
+      // 新语义：0.5 以下算"走路感觉不到的丘陵"，不罚；超出部分才线性加罚，
+      // 并留 0.45 的倍率下限（真翻山约半速——山仍是有代价的软障碍，但不是墙）。
+      // 实测锚点：sl=0.8→0.74×、sl=1.5→0.45×（触底）、sl≥2.2→0.45×。
+      spd *= Math.max(0.45, 1 / (1 + Math.max(0, sl - 0.5) * 1.2));
       if (spd < 0.5) spd = 0.5;
       if (u.kind === "preacher" && u.channel > 0) {
         u.y = sim.world.heightAt(u.x, u.z);

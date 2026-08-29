@@ -154,7 +154,14 @@ function testGroupRally(): void {
   console.log("testGroupRally ok");
 }
 
-/** 5-6. Long-range path is not truncated and astar is fast. */
+/**
+ * 5-6. Long-range path is not truncated and astar is fast.
+ * v0.25 断言修正：原来拿"航点数 > 30"当"路径没被截断"的代理指标，但航点数取决于路径
+ * 被拉直简化到什么程度，是个脆弱口径——v0.25 把起伏拉大后，同样 18 格路程的航点数
+ * 正好落到 30，代理指标假报警（实测末点距 dest 0.00 格、折线长 19.06 > 直线 17.95，
+ * 路径本来是完整的）。现在直接断言"截断"这件事：末点必须落在 dest 上，
+ * 且折线总长不短于直线距离——真被截断时这两条都会挂，比数航点数贴语义也不会随地形抖动。
+ */
 function testLongRangeAndPerf(): void {
   const sim = new Sim(new World(19));
   const u = blueWalker(sim);
@@ -162,7 +169,13 @@ function testLongRangeAndPerf(): void {
   const t0 = performance.now();
   const path = astar(sim.world, u.x, u.z, dest.x, dest.z);
   const ms = performance.now() - t0;
-  assert(path.length > 30, `long: full path produced (len=${path.length})`);
+  const last = path.length ? path[path.length - 1]! : null;
+  const straight = dist(u.x, u.z, dest.x, dest.z);
+  assert(!!last && dist(last.x, last.z, dest.x, dest.z) < 0.01, `long: path reaches dest, not truncated (len=${path.length})`);
+  let polyline = 0;
+  for (let i = 1; i < path.length; i++) polyline += dist(path[i]!.x, path[i]!.z, path[i - 1]!.x, path[i - 1]!.z);
+  assert(path.length >= 8, `long: multi-waypoint path (len=${path.length})`);
+  assert(polyline >= straight * 0.95, `long: polyline ${polyline.toFixed(1)} ≥ straight ${straight.toFixed(1)}`);
   assert(ms < 8, `long: astar fast (${ms.toFixed(2)}ms)`);
   sim.sendMove(u, dest.x, dest.z);
   tickFor(sim, 30);

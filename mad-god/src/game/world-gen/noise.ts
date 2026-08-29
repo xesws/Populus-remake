@@ -20,6 +20,20 @@ export interface NoiseKit {
   ridge(x: number, z: number, octaves?: number, freq?: number): number;
   /** 独立流：与主噪声不同相位的第二个噪声场（用于平原选区等，避免与高度场相关）。 */
   secondary(): NoiseKit;
+  /**
+   * v0.25 域扭曲（domain warping）偏移分量，输出约 [-1,1]，调用方乘振幅得到格数位移。
+   *
+   * 为什么需要：噪声按 (x,z) 直采时，等值线贴着噪声格网走，山脚与海岸呈"规整的锯齿"，
+   * 纹理重复且生硬（成熟地图引擎——Civ / Banished / Manor Lords——都先扭曲采样坐标再取值）。
+   * 把采样坐标本身推开 (warp(x,0), warp(x,1))，等值线随位移场弯折，得到有机的蜿蜒走向；
+   * 且 warp 是**低频**场（默认 0.028 ≈ 36 格一个周期，比高度场低两档），
+   * 所以扭曲只改变"特征摆在哪"，不会往高度场里注入新的高频细节——
+   * 这一点对本项目很关键：高频细节才是 smoothField/clampSlope 削不平的成因。
+   *
+   * @param axis 0 = x 方向位移分量，1 = z 方向位移分量（两个分量必须来自互相独立的噪声流，
+   *             否则位移沿对角线方向退化，扭曲会退化成整体平移）。
+   */
+  warp(x: number, z: number, axis: 0 | 1, freq?: number): number;
 }
 
 /** 由 seed 构建一个噪声工具箱（不同 seed 的场彼此独立）。 */
@@ -49,6 +63,14 @@ export function mixSeed(seed: number): number {
 class ValueNoiseKit implements NoiseKit {
   /** 归一化到 [0, 2^32) 的无符号 seed：与 RNG 类（types.ts:346）同风格，保证后续整数 hash 运算精确。 */
   private readonly seed: number;
+
+  /**
+   * v0.25 域扭曲的两条专属噪声流（x / z 位移各一条）。**懒建而非构造期建**：
+   * 它们在构造期建会让 secondary() 出来的子 kit 再建自己的子 kit，无限递归。
+   * 这是只读缓存而非可变状态——建好后不再改，且同 seed 必得同样的流，可复现性不受影响。
+   */
+  private warpX: NoiseKit | null = null;
+  private warpZ: NoiseKit | null = null;
 
   constructor(seed: number) {
     this.seed = seed >>> 0;
@@ -117,5 +139,16 @@ class ValueNoiseKit implements NoiseKit {
     // 独立流：seed 平移 7919（质数，与主 seed 的 32 位乘积不同）——同构但相位无关的第二个噪声场，
     // 用于平原选区等，避免与高度场产生相关性
     return new ValueNoiseKit(this.seed + 7919);
+  }
+
+  /** x 位移分量专属噪声流（与主高度场、与 z 位移流都无关）。 */
+  warp(x: number, z: number, axis: 0 | 1, freq = 0.028): number {
+    // v0.25 自检：同点两次调用相等（两个 warp 流都是纯函数 kit，且只建一次）。
+    if (axis === 0) {
+      this.warpX ??= this.secondary();
+      return this.warpX.fbm(x, z, 2, freq); // 2 层即可：位移场要平滑，不需要高频
+    }
+    this.warpZ ??= this.secondary().secondary();
+    return this.warpZ.fbm(x, z, 2, freq);
   }
 }

@@ -1,5 +1,7 @@
 /**
  * v0.24 地图生成检查（模板化大世界：72 格 + 六地貌 + 种子可复现 + 单连通大陆 + 强制平滑）。
+ * v0.25 阶段 1 追加：地形动态范围（色带多样性 / 高度标准差 / 可建地坡度守护 / 构图耗时）
+ *                  与域扭曲自检（有限有界、同 seed 可复现、x/z 两分量互相独立）。
  *
  * 覆盖本轮重做的全部承诺，逐条对应"没有这套断言就可能悄悄退化"的点：
  *   a) 可复现   —— 同 seed 两次构图必须逐格相同（曾经因为模板参数走 Math.random
@@ -14,14 +16,19 @@
  *                  正是"人物行走卡顿、寻路反复 retry"的机制来源）
  *   f) 寻路完整 —— 随机取点对，astar 必须走到真正的终点而不是返回截断的部分路径
  *   g) 行军达标 —— walker 能在合理时间内走到 7~10 格外，且全程不依赖 ghostT 穿墙兜底
+ *   h) 尺寸     —— 世界 72 格、采样 289、四角必须是海
+ *   i) 动态范围 —— 不是"一片平原"：色带 ≥3 条、高度标准差 ≥0.7、有雪线山峰，
+ *                  同时可建地（坡度 ≤0.55）占比不低于 40%，且构图 ≤800ms
  *
  * 运行：npm run check（本文件在链中）；单独跑 npx tsx src/game/terrain-gen-check.ts
+ * 调参用的分布探针（非断言，不入链）见 scripts/probe-templates.ts / probe-slope.ts。
  */
 import { Sim } from "./sim";
 import { World } from "./world";
 import { MapSmoother } from "./map-smoother";
 import { astar } from "./path";
 import { BLUE, RED, SAMPLES, STEP, WATER, WORLD } from "./types";
+import { makeNoiseKit, mixSeed } from "./world-gen";
 
 function assert(cond: boolean, msg: string): void {
   if (!cond) throw new Error(msg);
@@ -268,6 +275,95 @@ function testWorldSize(): void {
   console.log("testWorldSize ok");
 }
 
+/**
+ * v0.25 阶段 1：地形动态范围（域扭曲 + 幂曲线起伏 + 内陆分带）。
+ * 这一条针对的用户诉求是"地图感觉就只是生成了一个平原"。v0.24 实测：
+ * 6 个模板里 5 个最高只有 2.2~2.4，全图岩带 0%、雪带 0%——不是观感问题，是数值事实。
+ * 所以这里断言的是"丰富度本身"，而不只是"没变坏"：
+ *   • 色带多样性：草/丘/岩/雪 至少 3 条带各占 ≥2%（只有草丘 = 平原，直接挂）；
+ *   • 动态范围：陆地高度标准差 ≥0.7（v0.24 实测 0.30~0.49，一条都过不了）；
+ *   • 但不是把全图抬成高原：均值 ≤4.0、标准差 ≤3.0（否则又单调了）；
+ *   • **可建地守护**：坡度 >0.55 的陆格占比 ≤60%——这条线是 sim.ts:222/242
+ *     （野人、树木落点）与 world.ts:751（建筑选地）的实际判据。山要陡，
+ *     但陡到让游戏摆不下东西就不是丰富、是坏图。
+ *   • 构图耗时 ≤800ms（域扭曲给每格加了两层低频噪声采样，必须盯住）。
+ */
+function testReliefRange(): void {
+  const BANDS: Array<[string, number, number]> = [
+    ["grass", WATER, 1.4],
+    ["hill", 1.4, 2.6],
+    ["rock", 2.6, 4.2],
+    ["snow", 4.2, 99],
+  ];
+  let t0 = performance.now();
+  for (const seed of [1, 7, 11, 19, 23, 42, 88, 99]) {
+    const w = new World(seed);
+    let land = 0;
+    let sum = 0;
+    let steep = 0;
+    let peak = 0;
+    const bandPct: number[] = [];
+    const hs: number[] = [];
+    for (let iz = 0; iz < SAMPLES; iz++) {
+      for (let ix = 0; ix < SAMPLES; ix++) {
+        const h = w.h[iz * SAMPLES + ix]!;
+        if (h <= WATER) continue;
+        land++;
+        sum += h;
+        hs.push(h);
+        if (h > peak) peak = h;
+        if (ix > 0 && iz > 0 && ix < SAMPLES - 1 && iz < SAMPLES - 1) {
+          if (w.slopeAt(ix * STEP, iz * STEP) > 0.55) steep++;
+        }
+      }
+    }
+    const mean = sum / land;
+    const std = Math.sqrt(hs.reduce((a, b) => a + (b - mean) ** 2, 0) / land);
+    for (const [, lo, hi] of BANDS) {
+      bandPct.push((100 * hs.filter((h) => h >= lo && h < hi).length) / land);
+    }
+    const rich = bandPct.filter((p) => p >= 2).length;
+    const id = `seed ${seed}(${w.templateId})`;
+    assert(rich >= 3, `${id} 色带至少 3 条各占 ≥2%（草${bandPct[0]!.toFixed(0)}/丘${bandPct[1]!.toFixed(0)}/岩${bandPct[2]!.toFixed(0)}/雪${bandPct[3]!.toFixed(0)}）`);
+    assert(std >= 0.7, `${id} 陆地高度标准差 ${std.toFixed(2)} ≥0.7（v0.24 平原实测 0.30~0.49）`);
+    assert(std <= 3.0, `${id} 陆地高度标准差 ${std.toFixed(2)} ≤3.0（不能糊成一整块高原）`);
+    assert(mean <= 4.0, `${id} 陆地平均高度 ${mean.toFixed(2)} ≤4.0（同上）`);
+    assert(peak >= 4.2, `${id} 必须有够到雪线的山峰（最高 ${peak.toFixed(2)}）`);
+    assert(steep / land <= 0.6, `${id} 坡度过陡陆格占比 ${((100 * steep) / land).toFixed(0)}% ≤60%（建筑/野人/树木落点判据）`);
+  }
+  const ms = (performance.now() - t0) / 8;
+  assert(ms <= 800, `平均构图耗时 ${ms.toFixed(0)}ms ≤800ms`);
+  console.log(`testReliefRange ok（8 张图平均构图 ${ms.toFixed(0)}ms）`);
+}
+
+/** 域扭曲不产生 NaN/越界，且同 seed 下扭曲场自身可复现（特征全部走 RNG，不许用 Math.random）。 */
+function testWarpSanity(): void {
+  const a = makeNoiseKit(mixSeed(4242));
+  const b = makeNoiseKit(mixSeed(4242));
+  let bad = 0;
+  let same = 0;
+  for (let i = 0; i < 4000; i++) {
+    const x = (i % 71) * 1.1;
+    const z = (i / 71) * 0.9;
+    for (const axis of [0, 1] as const) {
+      const va = a.warp(x, z, axis);
+      const vb = b.warp(x, z, axis);
+      if (!Number.isFinite(va) || va < -1.2 || va > 1.2) bad++;
+      if (va !== vb) same++;
+    }
+  }
+  assert(bad === 0, `warp 输出必须是 [-1,1] 内的有限数（越界 ${bad} 次）`);
+  assert(same === 0, `同 seed 的 warp 场必须逐点相同（不一致 ${same} 次）`);
+  // 两个分量之间不相关：同流会让位移退化成沿对角线的整体平移
+  let corr = 0;
+  for (let i = 0; i < 2000; i++) {
+    const x = i * 0.37;
+    if (a.warp(x, x * 0.5, 0) === a.warp(x, x * 0.5, 1)) corr++;
+  }
+  assert(corr < 20, `x/z 位移分量必须来自独立噪声流（逐点相同 ${corr}/2000）`);
+  console.log("testWarpSanity ok");
+}
+
 function main(): void {
   testReproducible();
   testDiversity();
@@ -277,8 +373,10 @@ function main(): void {
   testPathsComplete();
   testWalksWithoutClipping();
   testWorldSize();
+  testReliefRange();
+  testWarpSanity();
   console.log(
-    "terrain-gen-check ok (v0.24 地图生成：可复现 / 六模板多样性 / 单连通大陆 / 平滑无绊人缝 / 寻路与行军)",
+    "terrain-gen-check ok (v0.24 地图生成：可复现 / 六模板多样性 / 单连通大陆 / 平滑无绊人缝 / 寻路与行军 + v0.25 阶段1：色带多样性与坡度守护 / 域扭曲自检)",
   );
 }
 
