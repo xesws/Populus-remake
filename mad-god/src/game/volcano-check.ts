@@ -30,7 +30,7 @@ function scorchCount(w: World): number {
 }
 
 function castVolcano(sim: Sim): void {
-  sim.teams[BLUE].mana = 200; // 火山 80 费，初始 70 不够
+  sim.fillCharges(BLUE); // v0.26 充能槽填满 // 火山 80 费，初始 70 不够
   const res = sim.volcanoSpell.cast(sim, BLUE, VX, VZ, 0);
   assert(res.ok, "cast 成功");
 }

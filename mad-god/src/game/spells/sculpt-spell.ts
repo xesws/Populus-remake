@@ -23,16 +23,15 @@ export class SculptSpell extends Spell {
     // 按帧计费 cost = max(0.04, perSec * dt)，最小计价 0.04 保证任何一次雕刻都要付出法力。
     const perSec = this.cost;
     const cost = Math.max(0.04, perSec * dt);
-    const t = sim.teams[team];
-    if (!sim.spend(team, cost)) return { ...empty, msg: "法力不足" };
+    if (!sim.spendCharge(team, this.id, cost)) return { ...empty, msg: "法力不足" };
     const dh = sign * SCULPT_DH_PER_SEC * dt;
     const ok = sim.world.sculpt(x, z, SCULPT_RADIUS, dh);
     if (!ok && this.id === "raise" && sim.world.heightAt(x, z) >= 8 - 1e-4) {
-      t.mana += cost;
+      sim.refundCharge(team, this.id, cost);
       return { ...empty, msg: "无法再升高" };
     }
     if (!ok && this.id === "lower" && sim.world.heightAt(x, z) <= 0.02) {
-      t.mana += cost;
+      sim.refundCharge(team, this.id, cost);
       return { ...empty, msg: "已是水面" };
     }
     return { ok: true, bolts: [], shake: 0, msg: "" };

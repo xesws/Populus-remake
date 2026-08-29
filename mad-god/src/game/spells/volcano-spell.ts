@@ -33,9 +33,9 @@ export class VolcanoSpell extends Spell {
   cast(sim: Sim, team: Team, x: number, z: number, _dt?: number): SpellResult {
     const empty: SpellResult = { ok: false, bolts: [], shake: 0, msg: "" };
     if (!inMap(x, z)) return empty;
-    if (!sim.spend(team, this.cost)) return { ...empty, msg: "法力不足" };
+    if (!sim.spendCharge(team, this.id)) return { ...empty, msg: "法力不足" };
     if (!this.beginVolcano(sim, x, z)) {
-      sim.teams[team].mana += this.cost;
+      sim.refundCharge(team, this.id, 1); // 火山还在喷，退还
       return { ...empty, msg: "火山还在喷" };
     }
     return { ok: true, bolts: [], shake: 0.5, msg: "火山喷发" };

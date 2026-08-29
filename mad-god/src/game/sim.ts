@@ -38,6 +38,9 @@ import {
   WATER,
   woodNeedFor,
   WORLD,
+  ChargeSlot,
+  SKILL_CHARGE,
+  Tool,
 } from "./types";
 import { inDoorSlit, inPad, Pad, padsOverlap, PAD_STAND_INFLATE, worldOnPad, World } from "./world";
 import { ForestSeeder } from "./world-gen/forests";
@@ -164,8 +167,8 @@ export class Sim {
     const b = world.startPad(BLUE);
     const r = world.startPad(RED);
     this.teams = [
-      { mana: 70, manaCap: 100, order: "settle", magnetX: b.x, magnetZ: b.z, hasShaman: true, shamanRevive: 0, wanted: [] },
-      { mana: 70, manaCap: 100, order: "settle", magnetX: r.x, magnetZ: r.z, hasShaman: true, shamanRevive: 0, wanted: [] },
+      { manaCap: 100, charges: {}, order: "settle", magnetX: b.x, magnetZ: b.z, hasShaman: true, shamanRevive: 0, wanted: [] },
+      { manaCap: 100, charges: {}, order: "settle", magnetX: r.x, magnetZ: r.z, hasShaman: true, shamanRevive: 0, wanted: [] },
     ];
     this.seed();
   }
@@ -472,11 +475,48 @@ export class Sim {
     return n;
   }
 
-  spend(team: Team, cost: number): boolean {
+  /**
+   * v0.26 技能充能槽访问/消耗（替代旧 spend(team, cost)）：
+   * - 离散槽（神迹）：amount 颗。cur 足够则扣 amount 并让 fill 开始充能，不足返回 false 不扣。
+   * - 连续槽（雕刻）：amount 是能量值，cur ≥ amount 才扣。
+   */
+  chargeState(team: Team, tool: Tool): ChargeSlot {
     const t = this.teams[team];
-    if (t.mana < cost) return false;
-    t.mana -= cost;
+    let c = t.charges[tool];
+    if (!c) {
+      const spec = SKILL_CHARGE[tool];
+      c = spec ? { cur: spec.cur, fill: 0, max: spec.max, recharge: spec.recharge, continuous: spec.continuous } : { cur: 0, fill: 0, max: 0, recharge: 0 };
+      t.charges[tool] = c;
+    }
+    return c;
+  }
+
+  hasCharge(team: Team, tool: Tool): boolean {
+    const c = this.chargeState(team, tool);
+    return c.continuous ? c.cur >= 1e-3 : c.cur >= 1;
+  }
+
+  spendCharge(team: Team, tool: Tool, amount = 1): boolean {
+    const c = this.chargeState(team, tool);
+    if (c.cur < amount) return false;
+    c.cur -= amount;
+    if (!c.continuous) c.fill = 0; // 用掉一颗，重新开始充
     return true;
+  }
+
+  refundCharge(team: Team, tool: Tool, amount: number): void {
+    const c = this.chargeState(team, tool);
+    c.cur = Math.min(c.max, c.cur + amount);
+  }
+
+  /** 测试/导演用：把该队所有技能槽填满（清空充能进度）。 */
+  fillCharges(team: Team): void {
+    for (const tool of Object.keys(SKILL_CHARGE) as Tool[]) {
+      const spec = SKILL_CHARGE[tool]!;
+      const c = this.chargeState(team, tool);
+      c.cur = spec.max;
+      c.fill = 0;
+    }
   }
 
   toast(msg: string): void {
@@ -835,7 +875,7 @@ export class Sim {
     this.tickTrees(dt);
     this.refreshHouses();
     this.markHouseBlocks();
-    this.regenMana(dt);
+    this.regenCharges(dt);
     this.produce(dt);
     this.thinkUnits(dt);
     this.moveUnits(dt);
@@ -868,7 +908,7 @@ export class Sim {
         dwell,
         popB: this.countPop(BLUE),
         popR: this.countPop(1),
-        manaB: +this.teams[BLUE].mana.toFixed(1),
+        chargesB: this.totalCharges(BLUE),
         freezeProd: this.freezeProd,
       };
     });
@@ -882,8 +922,18 @@ export class Sim {
     this.productionSystem.tickTrees(this, dt);
   }
 
-  regenMana(dt: number): void {
-    this.productionSystem.regenMana(this, dt);
+  regenCharges(dt: number): void {
+    this.productionSystem.regenCharges(this, dt);
+  }
+
+  /** 总颗数统计（心跳/调试用）：所有离散槽 cur 之和。 */
+  totalCharges(team: Team): number {
+    let n = 0;
+    for (const tool of Object.keys(SKILL_CHARGE) as Tool[]) {
+      const c = this.chargeState(team, tool);
+      if (!c.continuous) n += c.cur;
+    }
+    return n;
   }
 
   refreshHouses(): void {

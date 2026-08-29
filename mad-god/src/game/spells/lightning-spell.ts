@@ -9,7 +9,7 @@ export class LightningSpell extends Spell {
   cast(sim: Sim, team: Team, x: number, z: number, _dt?: number): SpellResult {
     const empty: SpellResult = { ok: false, bolts: [], shake: 0, msg: "" };
     if (!inMap(x, z)) return empty;
-    if (!sim.spend(team, this.cost)) return { ...empty, msg: "法力不足" };
+    if (!sim.spendCharge(team, this.id)) return { ...empty, msg: "法力不足" };
     this.strikeLightning(sim, x, z);
     return { ok: true, bolts: [], shake: 0.45, msg: "天雷落下" };
   }

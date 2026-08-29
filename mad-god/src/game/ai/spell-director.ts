@@ -4,7 +4,7 @@ import { logger } from "../logger";
 import type { Sim } from "../sim";
 import { canUnlock, cast } from "../spells";
 import type { SpellResult } from "../spells";
-import { BLUE, RED, TOOL_COST, dist2, type Cell, type Team, type Tool } from "../types";
+import { BLUE, RED, dist2, type Cell, type Team, type Tool } from "../types";
 import type { AIProfile } from "./ai-profile";
 import type { ISpellDirector } from "./types";
 
@@ -43,8 +43,8 @@ export class SpellDirector implements ISpellDirector {
     // 密集度：靶心 4 格半径内的敌方建筑数（火山要求 ≥2 才值得砸）
     const density = foeHouses.filter((h) => dist2(h.x, h.z, focus.x, focus.z) < 16).length;
     const cap = sim.teams[this.team].manaCap;
-    const mana = sim.teams[this.team].mana;
-    if (canUnlock("armageddon", cap) && mana >= TOOL_COST.armageddon) {
+    // v0.26 法力槽改为各技能独立充能：施法条件从"法力值够"变成"该技能有颗"。
+    if (canUnlock("armageddon", cap) && sim.hasCharge(this.team, "armageddon")) {
       const res = cast(sim, this.team, "armageddon", focus.x, focus.z);
       this.logCast("armageddon", focus.x, focus.z, res);
       if (res.ok) {
@@ -52,7 +52,7 @@ export class SpellDirector implements ISpellDirector {
         return;
       }
     }
-    if (canUnlock("volcano", cap) && mana >= TOOL_COST.volcano && density >= 2) {
+    if (canUnlock("volcano", cap) && sim.hasCharge(this.team, "volcano") && density >= 2) {
       const res = cast(sim, this.team, "volcano", focus.x, focus.z);
       this.logCast("volcano", focus.x, focus.z, res);
       if (res.ok) this.spellCd = 12;

@@ -39,9 +39,9 @@ export class TornadoSpell extends Spell {
     const empty: SpellResult = { ok: false, bolts: [], shake: 0, msg: "" };
     if (!inMap(x, z)) return empty;
     if (sim.world.heightAt(x, z) <= 0.20) return { ...empty, msg: "水上不起龙卷风" };
-    if (!sim.spend(team, this.cost)) return { ...empty, msg: "法力不足" };
+    if (!sim.spendCharge(team, this.id)) return { ...empty, msg: "法力不足" };
     if (!this.beginTornado(sim, x, z)) {
-      sim.teams[team].mana += this.cost;
+      sim.refundCharge(team, this.id, 1); // 龙卷风还在刮，退还
       return { ...empty, msg: "龙卷风还在刮" };
     }
     return { ok: true, bolts: [], shake: 0.2, msg: "龙卷风升起" };

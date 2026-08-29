@@ -19,28 +19,30 @@ function castOneSecond(sim: Sim, tool: "raise" | "lower", x: number, z: number):
   for (let i = 0; i < 20; i++) cast(sim, BLUE, tool, x, z, 0.05);
 }
 
-// a) 费用：cast→spend 链路必须真扣费；mana 不足时拒绝施法且不动地形
+// a) 费用：cast→spendCharge 链路必须真扣雕刻能量；能量不足时拒绝施法且不动地形
 function testManaCost(): void {
   const sim = new Sim(new World(42));
   const w = sim.world;
-  sim.teams[BLUE].mana = 50;
+  sim.fillCharges(BLUE);
 
   // 选蓝方出生平台中心：平地、高度约 1.3，抬 1 秒不会撞 8 格上限
   const s = w.startPad(BLUE);
   const x = s.x;
   const z = s.z;
   const h0 = w.heightAt(x, z);
+  const e0 = sim.chargeState(BLUE, "raise").cur;
 
   castOneSecond(sim, "raise", x, z);
 
-  assert(sim.teams[BLUE].mana < 50, `cast 1 秒后 mana 必须减少（剩 ${sim.teams[BLUE].mana.toFixed(3)}）`);
-  assert(w.heightAt(x, z) > h0, "扣费成功的同时地形确实抬升（spend 在 sculpt 之前）");
+  assert(sim.chargeState(BLUE, "raise").cur < e0, `cast 1 秒后雕刻能量必须减少（剩 ${sim.chargeState(BLUE, "raise").cur.toFixed(3)}）`);
+  assert(w.heightAt(x, z) > h0, "扣费成功的同时地形确实抬升（spendCharge 在 sculpt 之前）");
 
-  // mana 压到 0.03：低于最小计价 0.04，spend 必拒，且不得触碰地形
-  sim.teams[BLUE].mana = 0.03;
+  // 能量压到 0.01：低于最小计价 0.04，spendCharge 必拒，且不得触碰地形
+  const c = sim.chargeState(BLUE, "raise");
+  c.cur = 0.01;
   const h1 = w.heightAt(x, z);
   const r = cast(sim, BLUE, "raise", x, z, 0.05);
-  assert(!r.ok, "mana=0.03 时 cast 必须返回 ok:false");
+  assert(!r.ok, "能量=0.01 时 cast 必须返回 ok:false");
   assert(r.msg.includes("法力"), `拒绝信息须含『法力』（got "${r.msg}"）`);
   assert(w.heightAt(x, z) === h1, "拒绝施法时世界高度不变（未雕刻）");
 
@@ -51,7 +53,7 @@ function testManaCost(): void {
 function testSculptRadius(): void {
   const sim = new Sim(new World(42));
   const w = sim.world;
-  sim.teams[BLUE].mana = 500;
+  sim.fillCharges(BLUE);
 
   // 世界中心附近整平一块 12×12 场地（目标高 1.0），排除程序地形的起伏干扰
   const cx = 26;

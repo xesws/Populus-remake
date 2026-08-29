@@ -4,8 +4,6 @@ import { BLUE, BuildingKind, RED, SIZE, Tool, TrainKind, WATER } from "./types";
 import { World } from "./world";
 
 export class HUD {
-  manaFill = document.getElementById("mana-fill") as HTMLElement;
-  manaText = document.getElementById("mana-text") as HTMLElement;
   popB = document.getElementById("pop-blue") as HTMLElement;
   popR = document.getElementById("pop-red") as HTMLElement;
   housesB = document.getElementById("houses-blue") as HTMLElement;
@@ -79,9 +77,27 @@ export class HUD {
 
   sync(sim: Sim, tool: Tool, paused: boolean, dt: number): void {
     const t = sim.teams[BLUE];
-    const pct = t.manaCap ? (t.mana / t.manaCap) * 100 : 0;
-    this.manaFill.style.width = `${pct}%`;
-    this.manaText.textContent = `${t.mana | 0} / ${t.manaCap | 0}`;
+    // v0.26 总法力槽已取消：每个技能按钮显示各自充能（颗数 + 进度条）。
+    document.querySelectorAll<HTMLButtonElement>("[data-tool]").forEach((b) => {
+      const k = b.dataset.tool as Tool;
+      const c = sim.chargeState(BLUE, k);
+      const badge = b.querySelector<HTMLElement>(".charge");
+      const fill = b.querySelector<HTMLElement>(".charge-fill");
+      if (badge) {
+        const n = c.continuous ? Math.floor(c.cur) : c.cur;
+        badge.textContent = c.max > 0 ? String(n) : "";
+        badge.classList.toggle("zero", n <= 0);
+        badge.title = c.continuous
+          ? `雕刻能量 ${c.cur.toFixed(1)}/${c.max}（回满 ${c.recharge}s）`
+          : `${c.cur}/${c.max} 颗，${c.recharge}s 回一颗`;
+      }
+      if (fill) {
+        const p = c.continuous
+          ? c.max > 0 ? c.cur / c.max : 0
+          : c.recharge > 0 ? Math.min(1, c.fill / c.recharge) : 0;
+        fill.style.transform = `scaleX(${p.toFixed(3)})`;
+      }
+    });
     // v0.15：人口上限已移除（感化加人不受限，上限只会拦死出生），只显示子民数。
     this.popB.textContent = String(sim.countPop(BLUE));
     this.popR.textContent = String(sim.countPop(RED));
@@ -110,7 +126,8 @@ export class HUD {
 
     document.querySelectorAll<HTMLButtonElement>("[data-tool]").forEach((b) => {
       const k = b.dataset.tool as Tool;
-      b.disabled = sim.armageddon || !canUnlock(k, t.manaCap);
+      // v0.26 没颗/没能量就禁用（充能徽标同时置灰）。
+      b.disabled = sim.armageddon || !canUnlock(k, t.manaCap) || !sim.hasCharge(BLUE, k);
     });
 
     const cmd = document.getElementById("sel-commands");

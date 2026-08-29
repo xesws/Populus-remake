@@ -9,9 +9,9 @@ export class QuakeSpell extends Spell {
   cast(sim: Sim, team: Team, x: number, z: number, _dt?: number): SpellResult {
     const empty: SpellResult = { ok: false, bolts: [], shake: 0, msg: "" };
     if (!inMap(x, z)) return empty;
-    if (!sim.spend(team, this.cost)) return { ...empty, msg: "法力不足" };
+    if (!sim.spendCharge(team, this.id)) return { ...empty, msg: "法力不足" };
     if (!this.beginQuake(sim, x, z)) {
-      sim.teams[team].mana += this.cost;
+      sim.refundCharge(team, this.id, 1); // 施放失败退还这一颗
       return { ...empty, msg: "大地震还在裂" };
     }
     return { ok: true, bolts: [], shake: 0.4, msg: "大地震动" };

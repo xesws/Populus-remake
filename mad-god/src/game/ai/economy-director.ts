@@ -166,7 +166,8 @@ export class EconomyDirector implements IEconomyDirector {
   // 法力 > 容量 55% 时按 profile.expandDrive 概率执行；四个方法自旧 GodAI 原样迁移。
   private expand(sim: Sim): void {
     const t = sim.teams[this.team];
-    if (t.mana <= t.manaCap * 0.55) return;
+    // v0.26 法力槽改为技能独立充能：扩张时机改为"雕刻能量过半"（无全局法力可看）。
+    if (sim.chargeState(this.team, "raise").cur < 15) return;
     if (Math.random() >= this.profile.expandDrive) return;
     const foe: Team = this.team === RED ? BLUE : RED;
     const mine = sim.buildings.filter((b) => b.team === this.team && b.hp > 0);
@@ -174,7 +175,7 @@ export class EconomyDirector implements IEconomyDirector {
     this.improveSettlements(sim, mine);
     this.expandFrontier(sim, mine, foeHouses);
     logger.throttled("ai-economy:expand", 2000, LogLevel.Info, "ai-economy", "扩张平地执行", {
-      mana: +t.mana.toFixed(1),
+      raiseEnergy: +sim.chargeState(this.team, "raise").cur.toFixed(1),
       cap: +t.manaCap.toFixed(1),
       drive: this.profile.expandDrive,
     });
@@ -232,7 +233,7 @@ export class EconomyDirector implements IEconomyDirector {
         if (flattenToward(sim, this.team, x, z, 1.8)) edits++;
       }
     }
-    if (sim.teams[this.team].mana > 30 && mine.length < 8) {
+    if (sim.hasCharge(this.team, "raise") && mine.length < 8) {
       const site = this.pickNewPlot(sim.world, from, dest);
       if (site) this.flattenPatch(sim, site.x, site.z, 1.4);
     }

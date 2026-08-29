@@ -142,7 +142,7 @@ function testVolcanoNeverFullRebuilds(): void {
   const mesh = new TerrainMesh(w);
   mesh.rebuild();
   w.clearDirtyWindow();
-  sim.teams[BLUE].mana = 300;
+  sim.fillCharges(BLUE);
   sim.teams[BLUE].manaCap = 300;
   const s = w.startPad(BLUE);
   const toCx = 36 - s.x;

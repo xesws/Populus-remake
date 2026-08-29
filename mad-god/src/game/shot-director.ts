@@ -130,7 +130,7 @@ export class ShotDirector {
       this.sim.review = true;
       const t = this.sim.teams[0];
       t.manaCap = Math.max(t.manaCap, 200);
-      t.mana = Math.max(t.mana, 999);
+      this.sim.fillCharges(BLUE); // v0.26 充能槽填满（总法力槽已取消）
     }
     if (location.search.includes("shot=fight4")) this.applyFightSetup(3);
     else if (location.search.includes("shot=fight3")) this.applyFightSetup(2);
@@ -279,7 +279,7 @@ export class ShotDirector {
     this.sim.review = true;
     const t = this.sim.teams[BLUE];
     t.manaCap = Math.max(t.manaCap, 200);
-    t.mana = Math.max(t.mana, 200);
+    this.sim.fillCharges(BLUE); // v0.26 充能槽填满（总法力槽已取消）
     this.host.clearPlace();
     const s = this.world.startPad(BLUE);
     const toCx = WORLD * 0.5 - s.x;
@@ -633,7 +633,7 @@ export class ShotDirector {
     this.sim.review = true;
     const t = this.sim.teams[BLUE];
     t.manaCap = Math.max(t.manaCap, 200);
-    t.mana = Math.max(t.mana, 240);
+    this.sim.fillCharges(BLUE); // v0.26 充能槽填满（总法力槽已取消）
     this.host.clearPlace();
     this.sim.units = this.sim.units.filter((u) => u.kind !== "wildman");
     for (const u of this.sim.units) {
@@ -736,7 +736,7 @@ export class ShotDirector {
     this.sim.review = true;
     const t = this.sim.teams[BLUE];
     t.manaCap = Math.max(t.manaCap, 200);
-    t.mana = Math.max(t.mana, 240);
+    this.sim.fillCharges(BLUE); // v0.26 充能槽填满（总法力槽已取消）
     this.host.clearPlace();
     const s = this.world.startPad(BLUE);
     const toCx = WORLD * 0.5 - s.x;
@@ -948,7 +948,7 @@ export class ShotDirector {
     this.sim.review = true;
     const t = this.sim.teams[BLUE];
     t.manaCap = Math.max(t.manaCap, 200);
-    t.mana = Math.max(t.mana, 240);
+    this.sim.fillCharges(BLUE); // v0.26 充能槽填满（总法力槽已取消）
     this.host.clearPlace();
     this.pathWalkerArmed = false;
     this.shotHutX = 0;
@@ -1292,7 +1292,7 @@ export class ShotDirector {
     this.sim.review = true;
     const t = this.sim.teams[BLUE];
     t.manaCap = Math.max(t.manaCap, 200);
-    t.mana = Math.max(t.mana, 240);
+    this.sim.fillCharges(BLUE); // v0.26 充能槽填满（总法力槽已取消）
     this.host.clearPlace();
     const s = this.world.startPad(BLUE);
     const toCx = WORLD * 0.5 - s.x;
@@ -1484,7 +1484,7 @@ export class ShotDirector {
     this.sim.review = true;
     const t = this.sim.teams[BLUE];
     t.manaCap = Math.max(t.manaCap, 200);
-    t.mana = Math.max(t.mana, 240);
+    this.sim.fillCharges(BLUE); // v0.26 充能槽填满（总法力槽已取消）
     this.host.clearPlace();
     const s = this.world.startPad(BLUE);
     const toCx = WORLD * 0.5 - s.x;
@@ -1637,7 +1637,7 @@ export class ShotDirector {
     this.sim.review = true;
     const t = this.sim.teams[BLUE];
     t.manaCap = Math.max(t.manaCap, 200);
-    t.mana = Math.max(t.mana, 240);
+    this.sim.fillCharges(BLUE); // v0.26 充能槽填满（总法力槽已取消）
     this.host.clearPlace();
     const s = this.world.startPad(BLUE);
     const toCx = WORLD * 0.5 - s.x;
@@ -1783,7 +1783,7 @@ export class ShotDirector {
     this.sim.review = true;
     const t = this.sim.teams[BLUE];
     t.manaCap = Math.max(t.manaCap, 200);
-    t.mana = Math.max(t.mana, 240);
+    this.sim.fillCharges(BLUE); // v0.26 充能槽填满（总法力槽已取消）
     this.host.clearPlace();
     const s = this.world.startPad(BLUE);
     const toCx = WORLD * 0.5 - s.x;
@@ -1886,7 +1886,7 @@ export class ShotDirector {
     this.sim.review = true;
     const t = this.sim.teams[BLUE];
     t.manaCap = Math.max(t.manaCap, 200);
-    t.mana = Math.max(t.mana, 240);
+    this.sim.fillCharges(BLUE); // v0.26 充能槽填满（总法力槽已取消）
     this.host.clearPlace();
     const s = this.world.startPad(BLUE);
     const toCx = WORLD * 0.5 - s.x;
@@ -1950,7 +1950,7 @@ export class ShotDirector {
     this.sim.review = true;
     const t = this.sim.teams[BLUE];
     t.manaCap = Math.max(t.manaCap, 200);
-    t.mana = Math.max(t.mana, 240);
+    this.sim.fillCharges(BLUE); // v0.26 充能槽填满（总法力槽已取消）
     this.host.clearPlace();
     const s = this.world.startPad(BLUE);
     const toCx = WORLD * 0.5 - s.x;

@@ -139,6 +139,13 @@ export const AGRO_LEASH = 13;
 
 // v0.9/v0.12 火球参数：弹速、暴击击飞（落地即死）与默认击退倒地。
 export const FIREBALL_SPEED = 4;
+// v0.26 火球法术：立即命中，直接伤害 + 着火持续伤害（burnT/burnDps 独立于 fireT 视觉）。
+export const FIREBALL_DMG = 8;
+export const FIREBALL_BURN_T = 5;
+export const FIREBALL_BURN_DPS = 1.2;
+// v0.26 转化法术：施法点须距己方存活大祭司 CONVERT_CAST_RANGE 内，圈内 CONVERT_RADIUS 生效。
+export const CONVERT_CAST_RANGE = 4;
+export const CONVERT_RADIUS = 2.5;
 export const FIRE_CRIT_CHANCE = 0.2; // 暴击：像闪电一样真正打飞，摔下来直接死亡
 export const FIRE_KNOCK_DIST = 0.5; // 默认命中：随机方向击退半格并倒地
 export const FIRE_DOWN_TIME = 0.9; // 倒地时长，站起瞬间才结算伤害
@@ -185,7 +192,9 @@ export type Tool =
   | "volcano"
   | "tornado"
   | "blast"
-  | "armageddon";
+  | "armageddon"
+  | "fireball"
+  | "convert";
 
 export const TOOL_COST: Record<Tool, number> = {
   select: 0,
@@ -199,6 +208,8 @@ export const TOOL_COST: Record<Tool, number> = {
   tornado: 55,
   blast: 28,
   armageddon: 100,
+  fireball: 16,
+  convert: 40,
 };
 
 export const UNLOCK_CAP: Record<Tool, number> = {
@@ -212,7 +223,46 @@ export const UNLOCK_CAP: Record<Tool, number> = {
   tornado: 0,
   blast: 0,
   armageddon: 200,
+  fireball: 0,
+  convert: 0,
 };
+
+/**
+ * v0.26 技能充能槽（《王者荣耀》充能技 / 提莫蘑菇式）：
+ * - 离散技能（神迹）：`cur` 是当前可用颗数，用掉 1 颗后 `fill` 从 0 起充，
+ *   每 `recharge` 秒 +1 颗，封顶 `max`。基础技回得快攒得多、大招回得慢攒得少。
+ * - 连续技能（雕刻 raise/lower）：`cur` 是能量值，`recharge` 秒回满整槽，
+ *   按住施放按帧扣能量（保持旧法力 12/9 每秒的节奏）。
+ * - `manaCap` 已降级为"神迹解锁进度"（仍由房子+人口增长，canUnlock/UNLOCK_CAP 语义不变），
+ *   不再作为资源；`TeamState.mana` 已删除。
+ */
+export interface ChargeSlot {
+  cur: number;
+  /** 充能进度（秒）。离散槽：满 recharge 秒 +1 颗；连续槽：满 recharge 秒回满整槽。 */
+  fill: number;
+  max: number;
+  recharge: number;
+  continuous?: boolean;
+}
+
+export const SKILL_CHARGE: Partial<Record<Tool, ChargeSlot>> = {
+  // 大招：45s 一颗，上限 2 颗；末日终局技 60s 一颗上限 1。
+  quake: { cur: 1, fill: 0, max: 2, recharge: 45 },
+  volcano: { cur: 1, fill: 0, max: 2, recharge: 45 },
+  tornado: { cur: 1, fill: 0, max: 2, recharge: 45 },
+  armageddon: { cur: 0, fill: 0, max: 1, recharge: 60 },
+  // 基础：12s 一颗，上限 5 颗。
+  lightning: { cur: 3, fill: 0, max: 5, recharge: 12 },
+  blast: { cur: 3, fill: 0, max: 5, recharge: 12 },
+  fireball: { cur: 3, fill: 0, max: 5, recharge: 12 },
+  // 中间档。
+  swamp: { cur: 2, fill: 0, max: 4, recharge: 18 },
+  convert: { cur: 1, fill: 0, max: 2, recharge: 30 },
+  // 雕刻：独立小能量槽（30 点，12s 回满 ≈ 2.5/s），按住每秒扣 12/9。
+  raise: { cur: 30, fill: 0, max: 30, recharge: 12, continuous: true },
+  lower: { cur: 30, fill: 0, max: 30, recharge: 12, continuous: true },
+};
+
 
 export interface Waypoint {
   x: number;
@@ -258,8 +308,10 @@ export interface FxBolt {
 }
 
 export interface TeamState {
-  mana: number;
+  /** v0.26 已删除 mana（总法力槽取消）；manaCap 仅作为神迹解锁进度保留。 */
   manaCap: number;
+  /** 各技能独立充能槽（懒初始化，见 Sim.chargeState）。 */
+  charges: Partial<Record<Tool, ChargeSlot>>;
   order: Order;
   magnetX: number;
   magnetZ: number;

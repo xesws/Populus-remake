@@ -8,7 +8,9 @@ import {
   isCampKind,
   isTribe,
   padSize,
+  SKILL_CHARGE,
   Team,
+  Tool,
   Unit,
   Building,
   WATER,
@@ -23,7 +25,7 @@ export class ProductionSystem implements ISystem {
     this.tickTrees(sim, dt);
     this.refreshHouses(sim);
     sim.markHouseBlocks();
-    this.regenMana(sim, dt);
+    this.regenCharges(sim, dt);
     this.produce(sim, dt);
   }
 
@@ -58,21 +60,35 @@ export class ProductionSystem implements ISystem {
     }
   }
 
-  regenMana(sim: Sim, dt: number): void {
+  /**
+   * v0.26 充能恢复（替代旧 regenMana）：
+   * - `manaCap` 仍由房子+人口增长，但只当"神迹解锁进度"（canUnlock 用），不再是资源。
+   * - 每个技能槽独立充能：离散槽攒颗（fill 满 recharge 秒 +1 颗，封顶 max）；
+   *   连续槽（雕刻）cur 向 max 匀速回满。
+   */
+  regenCharges(sim: Sim, dt: number): void {
     for (const team of [BLUE, 1] as Team[]) {
       const t = sim.teams[team];
       let cap = 80;
-      let regen = 1.2;
       for (const b of sim.buildings) {
         if (b.team !== team || b.kind !== "hut" || b.level < 1) continue;
         cap += b.level * 18;
-        regen += b.level * 0.85;
       }
       const pop = sim.countPop(team);
       cap += Math.min(80, pop * 2);
-      regen += pop * 0.1;
       t.manaCap = cap;
-      t.mana = clamp(t.mana + regen * dt, 0, t.manaCap);
+      for (const tool of Object.keys(SKILL_CHARGE) as Tool[]) {
+        const c = sim.chargeState(team, tool);
+        if (c.continuous) {
+          if (c.cur < c.max) c.cur = Math.min(c.max, c.cur + (c.max / c.recharge) * dt);
+        } else if (c.cur < c.max) {
+          c.fill += dt;
+          while (c.fill >= c.recharge) {
+            c.fill -= c.recharge;
+            c.cur = Math.min(c.max, c.cur + 1);
+          }
+        }
+      }
     }
   }
 

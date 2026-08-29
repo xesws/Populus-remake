@@ -68,12 +68,13 @@ function findCoast(world: World): { x: number; z: number; dx: number; dz: number
 // (a) 初始方向随机（不再瞄向最近建筑）
 function testInitialDirectionRandom(): void {
   const sim = new Sim(new World(42));
-  sim.teams[BLUE].mana = 10000;
+  sim.fillCharges(BLUE); // v0.26 充能槽填满
   const castPt = findInland(sim.world);
   const headings: number[] = [];
   const N = 20;
   for (let i = 0; i < N; i++) {
     sim.tornado = null;
+    sim.fillCharges(BLUE); // v0.26 每轮填满：槽上限 2 颗，方向随机性测试要连放 20 次
     const res = sim.tornadoSpell.cast(sim, BLUE, castPt.x, castPt.z);
     assert(res.ok, `cast #${i} ok`);
     const tw = sim.tornado!;
@@ -107,7 +108,7 @@ function testInitialDirectionRandom(): void {
 // (b) 甩飞替代"卷高即死"
 function testUnitFlungNotInstaKilled(): void {
   const sim = new Sim(new World(42));
-  sim.teams[BLUE].mana = 10000;
+  sim.fillCharges(BLUE); // v0.26 充能槽填满
   const castPt = findInland(sim.world);
   const res = sim.tornadoSpell.cast(sim, BLUE, castPt.x, castPt.z);
   assert(res.ok, "cast ok");
