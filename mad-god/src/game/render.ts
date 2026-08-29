@@ -11,6 +11,18 @@ import { TerrainMesh } from "./render-parts/terrain-mesh";
 const RT_W = 800;
 const RT_H = 600;
 
+// v0.25c 相机轨道参数（input.ts 与 camera-check.ts 共用，避免两处硬编码漂移）。
+// 相机高度 = dist * sin(pitch)：调高视角 = 放宽这两个上限。
+/** 纯函数：缩放后的 dist（夹在 [CAM_DIST_MIN, CAM_DIST_MAX]），headless 检查可直接测。 */
+export function zoomDist(cur: number, delta: number): number {
+  return Math.max(CAM_DIST_MIN, Math.min(CAM_DIST_MAX, cur + delta));
+}
+
+export const CAM_PITCH_MIN = 0.28; // 中键/键盘俯仰的下限（防止钻到地平线以下）
+export const CAM_PITCH_MAX = 1.32; // 原 1.2（内联在 input.ts），放宽约 7° → 接近正俯视
+export const CAM_DIST_MIN = 8; // 滚轮最近（不变）
+export const CAM_DIST_MAX = 60; // 原 42，滚轮可拉高约 1.4 倍
+
 export class View {
   renderer: THREE.WebGLRenderer;
   scene = new THREE.Scene();
@@ -422,6 +434,11 @@ export class View {
     const hit = new THREE.Vector3();
     if (ray.ray.intersectPlane(plane, hit)) return { x: hit.x, z: hit.z };
     return null;
+  }
+
+  /** v0.25c 滚轮缩放（正 = 拉远/调高）：滚轮 handler 与测试都走这里。 */
+  zoomBy(delta: number): void {
+    this.dist = zoomDist(this.dist, delta);
   }
 
   pan(dx: number, dz: number, dt = 1 / 60): void {

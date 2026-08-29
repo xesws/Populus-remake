@@ -1,4 +1,4 @@
-import { View } from "./render";
+import { CAM_PITCH_MAX, CAM_PITCH_MIN, View } from "./render";
 import { Tool, TrainKind } from "./types";
 
 const BOX_PX = 8;
@@ -83,7 +83,10 @@ export function bindInput(canvas: HTMLCanvasElement, view: View, state: InputSta
   canvas.addEventListener("contextmenu", (e) => e.preventDefault());
 
   window.addEventListener("keydown", (e) => {
-    if (e.code === "ArrowLeft" || e.code === "ArrowRight" || e.code === "ArrowUp" || e.code === "ArrowDown") {
+    if (
+      e.code === "ArrowLeft" || e.code === "ArrowRight" || e.code === "ArrowUp" || e.code === "ArrowDown" ||
+      e.code === "KeyW" || e.code === "KeyA" || e.code === "KeyS" || e.code === "KeyD"
+    ) {
       e.preventDefault();
       state.keys.add(e.code);
     }
@@ -145,7 +148,7 @@ export function bindInput(canvas: HTMLCanvasElement, view: View, state: InputSta
     state.lastY = e.clientY;
     if (state.rotating || e.buttons & 4) {
       view.yaw -= dx * 0.008;
-      view.pitch = Math.max(0.28, Math.min(1.2, view.pitch + dy * 0.006));
+      view.pitch = Math.max(CAM_PITCH_MIN, Math.min(CAM_PITCH_MAX, view.pitch + dy * 0.006));
     }
     if (state.dragging && !state.hitUnit && !placingNow(state, handlers)) {
       const moved = Math.hypot(e.clientX - state.downX, e.clientY - state.downY);
@@ -217,7 +220,7 @@ export function bindInput(canvas: HTMLCanvasElement, view: View, state: InputSta
       const onCanvas = e.target === canvas || (e.target instanceof Node && canvas.contains(e.target));
       if (!onCanvas) return;
       e.preventDefault();
-      view.dist = Math.max(8, Math.min(42, view.dist + e.deltaY * 0.02));
+      view.zoomBy(e.deltaY * 0.02);
     },
     { passive: false, capture: true },
   );
@@ -246,6 +249,11 @@ export function ndcCell(
   return view.pickCell(x, y);
 }
 
+/**
+ * v0.25c 每帧相机输入：方向键平移（旧）+ WASD 旋转（新）。
+ * W/S = 俯仰角 rotate（朝上看/朝下看），A/D = 水平 rotate（视角左转/右转，相机绕目标
+ * 逆/顺时针）。速率与中键拖动同一数量级、按 dt 缩放，与帧率无关。
+ */
 export function tickCamera(view: View, keys: Set<string>, dt: number): void {
   let dx = 0;
   let dz = 0;
@@ -254,4 +262,10 @@ export function tickCamera(view: View, keys: Set<string>, dt: number): void {
   if (keys.has("ArrowUp")) dz -= 1;
   if (keys.has("ArrowDown")) dz += 1;
   if (dx || dz) view.pan(dx, dz, dt);
+  const PITCH_SPEED = 0.9; // rad/s
+  const YAW_SPEED = 1.1; // rad/s
+  if (keys.has("KeyW")) view.pitch = Math.min(CAM_PITCH_MAX, view.pitch + PITCH_SPEED * dt);
+  if (keys.has("KeyS")) view.pitch = Math.max(CAM_PITCH_MIN, view.pitch - PITCH_SPEED * dt);
+  if (keys.has("KeyA")) view.yaw += YAW_SPEED * dt;
+  if (keys.has("KeyD")) view.yaw -= YAW_SPEED * dt;
 }
