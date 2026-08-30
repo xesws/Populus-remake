@@ -9,6 +9,7 @@ import {
   isTribe,
   padSize,
   SKILL_CHARGE,
+  chargePopMult,
   Team,
   Tool,
   Unit,
@@ -77,12 +78,14 @@ export class ProductionSystem implements ISystem {
       const pop = sim.countPop(team);
       cap += Math.min(80, pop * 2);
       t.manaCap = cap;
+      // v0.26d 人口越多充能越快（<50 ×1.0，≥50 ×1.3，≥100 ×1.6，≥150 ×1.9，≥200 ×2.3…）。
+      const mult = chargePopMult(pop);
       for (const tool of Object.keys(SKILL_CHARGE) as Tool[]) {
         const c = sim.chargeState(team, tool);
         if (c.continuous) {
-          if (c.cur < c.max) c.cur = Math.min(c.max, c.cur + (c.max / c.recharge) * dt);
+          if (c.cur < c.max) c.cur = Math.min(c.max, c.cur + (c.max / c.recharge) * dt * mult);
         } else if (c.cur < c.max) {
-          c.fill += dt;
+          c.fill += dt * mult;
           while (c.fill >= c.recharge) {
             c.fill -= c.recharge;
             c.cur = Math.min(c.max, c.cur + 1);

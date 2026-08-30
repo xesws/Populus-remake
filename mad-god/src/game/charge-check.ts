@@ -13,7 +13,7 @@
 // @ts-expect-error node:fs 只在 tsx 检查脚本里用（不进浏览器 bundle），项目无 @types/node
 import { readFileSync } from "node:fs";
 import { Sim } from "./sim";
-import { BLUE } from "./types";
+import { BLUE, chargePopMult } from "./types";
 import { World } from "./world";
 
 function assert(cond: boolean, msg: string): void {
@@ -68,18 +68,18 @@ function testContinuousCharge(): void {
 function testSlotsIndependent(): void {
   const sim = new Sim(new World(42));
   const l = sim.chargeState(BLUE, "lightning");
-  const v = sim.chargeState(BLUE, "volcano");
+  const sw = sim.chargeState(BLUE, "swamp");
   sim.fillCharges(BLUE);
-  sim.spendCharge(BLUE, "volcano", 1);
+  sim.spendCharge(BLUE, "swamp", 1);
   l.cur = 0;
   l.fill = 0;
-  // 充 12 秒：闪电回 1 颗；火山（recharge 45）只走了 12/45 进度，仍差 1 颗
+  // 充 12 秒（基础速度）：闪电回 1 颗；沼泽（recharge 18s）只走了 12/18 进度，仍差 1 颗
   sim.regenCharges(12);
   assert(l.cur === 1, `闪电 12s 回 1 颗（got ${l.cur}）`);
-  assert(v.cur === v.max - 1, `火山 12s 不足以回满一颗（got ${v.cur}/${v.max}）`);
-  sim.regenCharges(33);
-  assert(v.cur === v.max, `火山 45s 后回满（got ${v.cur}/${v.max}）`);
-  console.log("  ✓ 多槽独立：闪电 12s/颗 与火山 45s/颗 互不干扰");
+  assert(sw.cur === sw.max - 1, `沼泽 12s 不足以回满一颗（got ${sw.cur}/${sw.max}）`);
+  sim.regenCharges(6);
+  assert(sw.cur === sw.max, `沼泽 18s 后回满（got ${sw.cur}/${sw.max}）`);
+  console.log("  ✓ 多槽独立：闪电 12s/颗 与沼泽 18s/颗 互不干扰");
 }
 
 /**
@@ -100,6 +100,53 @@ function testUiChargeBadges(): void {
   console.log("  ✓ UI：11 个技能按钮全部带颗数徽标 + 充能进度条");
 }
 
+/** v0.26d 开局平衡：除转化 1 颗外全部 0 颗；雕刻工具保持满能量。 */
+function testInitialZero(): void {
+  const sim = new Sim(new World(42));
+  const zero = ["lightning", "blast", "fireball", "swamp", "quake", "volcano", "tornado", "armageddon"] as const;
+  for (const tool of zero) {
+    assert(sim.chargeState(BLUE, tool).cur === 0, `${tool} 开局应为 0 颗`);
+  }
+  assert(sim.chargeState(BLUE, "convert").cur === 1, "转化开局保留 1 颗（用户拍板的唯一例外）");
+  assert(sim.chargeState(BLUE, "raise").cur === 30, "雕刻是地形工具，开局满能量 30");
+  console.log("  ✓ 开局：8 个法术 0 颗，转化 1 颗，雕刻满能量");
+}
+
+/** v0.26d 人口档位：<50 ×1.0；≥50 ×1.3；≥100 ×1.6；≥150 ×1.9；≥200 ×2.3；≥250 每 +50 再 +0.5。 */
+function testPopChargeMult(): void {
+  assert(chargePopMult(10) === 1, "10 人 ×1.0");
+  assert(chargePopMult(50) === 1.3, "50 人 ×1.3");
+  assert(chargePopMult(99) === 1.3, "99 人仍 ×1.3");
+  assert(chargePopMult(100) === 1.6, "100 人 ×1.6");
+  assert(chargePopMult(150) === 1.9, "150 人 ×1.9");
+  assert(chargePopMult(200) === 2.3, "200 人 ×2.3");
+  assert(chargePopMult(250) === 2.8, "250 人 ×2.8（之后每 +50 再 +0.5）");
+  console.log("  ✓ 人口档位：×1/1.3/1.6/1.9/2.3/2.8 于 50 人一档");
+}
+
+/** v0.26d 大招节奏：少人时火山 240s 一颗；人口 100（×1.6）时 150s 一颗。 */
+function testUltRechargeSlow(): void {
+  const sim = new Sim(new World(42));
+  const pop0 = sim.countPop(BLUE);
+  assert(pop0 < 50, `测试前提：开局人口 <50（got ${pop0}）`);
+  const v = sim.chargeState(BLUE, "volcano");
+  sim.regenCharges(239);
+  assert(v.cur === 0, `239s（基础速度）火山仍 0 颗（got ${v.cur}）`);
+  sim.regenCharges(1);
+  assert(v.cur === 1, "240s 恰好回满第 1 颗（4 分钟口径）");
+  // 人口拉到 ≥100（独立 Sim，避免前半段 240s 已把 tornado 充满）：tornado（200s 档）应 125s 回一颗
+  const sim2 = new Sim(new World(42));
+  const spot = sim2.world.startPad(BLUE);
+  for (let i = 0; i < 100; i++) sim2.addUnit(BLUE, "walker", spot.x, spot.z);
+  assert(sim2.countPop(BLUE) >= 100, `测试前提：人口 ≥100（got ${sim2.countPop(BLUE)}）`);
+  const t = sim2.chargeState(BLUE, "tornado");
+  sim2.regenCharges(124);
+  assert(t.cur === 0, `124s（×1.6）龙卷风仍 0 颗（got ${t.cur}）`);
+  sim2.regenCharges(1);
+  assert(t.cur === 1, "125s（200/1.6）恰好回满第 1 颗——人口显著提速");
+  console.log("  ✓ 大招节奏：火山 240s/颗（人少）；龙卷风在 100 人时 125s/颗");
+}
+
 function main(): void {
   console.log("v0.26 充能槽机制检查");
   testDiscreteCharge();
@@ -107,6 +154,9 @@ function main(): void {
   testContinuousCharge();
   testSlotsIndependent();
   testUiChargeBadges();
+  testInitialZero();
+  testPopChargeMult();
+  testUltRechargeSlow();
   console.log("PASS: 离散/连续槽、原子扣费、多槽独立、封顶");
 }
 

@@ -96,6 +96,7 @@ function testQuakeCrackCoverage(): void {
   const spot = landSpot(sim);
   const x = spot.x;
   const z = spot.z;
+  sim.fillCharges(BLUE); // v0.26d 开局 0 颗，测试前填满
   const r = sim.quakeSpell.cast(sim, BLUE, x, z);
   assert(r.ok, "quake cast ok");
   const q = sim.quake!;
@@ -121,6 +122,7 @@ function testQuakeLavaEruptsAndDries(): void {
   const spot = landSpot(sim);
   const x = spot.x;
   const z = spot.z;
+  sim.fillCharges(BLUE); // v0.26d 开局 0 颗，测试前填满
   assert(sim.quakeSpell.cast(sim, BLUE, x, z).ok, "quake cast ok");
   const q = sim.quake!;
 
@@ -166,6 +168,7 @@ function testQuakeLavaBurnsUnit(): void {
   const spot = landSpot(sim);
   const x = spot.x;
   const z = spot.z;
+  sim.fillCharges(BLUE); // v0.26d 开局 0 颗，测试前填满
   assert(sim.quakeSpell.cast(sim, BLUE, x, z).ok, "quake cast ok");
   // quake 结束后对象会被清空，先存副本（含 lens：尖端采样需要各缝长度）。
   const q0 = { x, z, angs: sim.quake!.angs.slice(), lens: sim.quake!.lens.slice() };
@@ -211,6 +214,7 @@ function testQuakeCrackHitsHouse(): void {
   const spot = landSpot(sim);
   const x = spot.x;
   const z = spot.z;
+  sim.fillCharges(BLUE); // v0.26d 开局 0 颗，测试前填满
   assert(sim.quakeSpell.cast(sim, BLUE, x, z).ok, "quake cast ok");
   const q0 = { x, z, angs: sim.quake!.angs.slice(), lens: sim.quake!.lens.slice() };
 
@@ -247,6 +251,7 @@ function testQuakeLavaBurnsTree(): void {
   const spot = landSpot(sim);
   const x = spot.x;
   const z = spot.z;
+  sim.fillCharges(BLUE); // v0.26d 开局 0 颗，测试前填满
   assert(sim.quakeSpell.cast(sim, BLUE, x, z).ok, "quake cast ok");
   const q0 = { x, z, angs: sim.quake!.angs.slice(), lens: sim.quake!.lens.slice() };
 

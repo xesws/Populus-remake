@@ -246,22 +246,37 @@ export interface ChargeSlot {
 }
 
 export const SKILL_CHARGE: Partial<Record<Tool, ChargeSlot>> = {
-  // 大招：45s 一颗，上限 2 颗；末日终局技 60s 一颗上限 1。
-  quake: { cur: 1, fill: 0, max: 2, recharge: 45 },
-  volcano: { cur: 1, fill: 0, max: 2, recharge: 45 },
-  tornado: { cur: 1, fill: 0, max: 2, recharge: 45 },
-  armageddon: { cur: 0, fill: 0, max: 1, recharge: 60 },
-  // 基础：12s 一颗，上限 5 颗。
-  lightning: { cur: 3, fill: 0, max: 5, recharge: 12 },
-  blast: { cur: 3, fill: 0, max: 5, recharge: 12 },
-  fireball: { cur: 3, fill: 0, max: 5, recharge: 12 },
-  // 中间档。
-  swamp: { cur: 2, fill: 0, max: 4, recharge: 18 },
+  // v0.26d 平衡：开局除转化外全部 0 颗（大招不能开局就甩）；
+  // 大招充能按"人口 <50 的基础速度"定档——火山 240s（4 分钟）、地震/龙卷风 200s、
+  // 末日 300s；人口越多充得越快（chargePopMult，见下）。
+  quake: { cur: 0, fill: 0, max: 2, recharge: 200 },
+  volcano: { cur: 0, fill: 0, max: 2, recharge: 240 },
+  tornado: { cur: 0, fill: 0, max: 2, recharge: 200 },
+  armageddon: { cur: 0, fill: 0, max: 1, recharge: 300 },
+  // 基础：12s 一颗，上限 5 颗（开局同样 0 颗，很快回第一颗）。
+  lightning: { cur: 0, fill: 0, max: 5, recharge: 12 },
+  blast: { cur: 0, fill: 0, max: 5, recharge: 12 },
+  fireball: { cur: 0, fill: 0, max: 5, recharge: 12 },
+  // 中间档。转化是唯一开局带 1 颗的法术（用户拍板）。
+  swamp: { cur: 0, fill: 0, max: 4, recharge: 18 },
   convert: { cur: 1, fill: 0, max: 2, recharge: 30 },
   // 雕刻：独立小能量槽（30 点，12s 回满 ≈ 2.5/s），按住每秒扣 12/9。
+  // 地形工具不是魔法（用户拍板）：开局满能量可用。
   raise: { cur: 30, fill: 0, max: 30, recharge: 12, continuous: true },
   lower: { cur: 30, fill: 0, max: 30, recharge: 12, continuous: true },
 };
+
+/**
+ * v0.26d 充能速度的人口档位（每队各自按 countPop 算）：
+ * <50 人 ×1.0；≥50 ×1.3；≥100 ×1.6；≥150 ×1.9；≥200 ×2.3；
+ * ≥250 起每加 50 人再 +0.5（×2.8、×3.3…）。例：火山 10 人 240s/颗，
+ * 100 人 150s/颗，200 人约 104s/颗。
+ */
+export const POP_CHARGE_TIERS: readonly number[] = [1, 1.3, 1.6, 1.9, 2.3];
+export function chargePopMult(pop: number): number {
+  const tier = Math.floor(pop / 50);
+  return tier < POP_CHARGE_TIERS.length ? POP_CHARGE_TIERS[tier]! : 2.3 + (tier - 4) * 0.5;
+}
 
 
 export interface Waypoint {
