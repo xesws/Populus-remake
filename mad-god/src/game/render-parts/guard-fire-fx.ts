@@ -1,7 +1,7 @@
 // v0.19 守卫篝火 fx：柴堆 + 跳动火焰锥 + 呼吸光点，按 sim.guardFires 同步显示（每队至多一处）。
 // 沿用 v0.18 fx 模块模式：独立模块、render.ts 只做挂载，不侵入渲染主类。
 import * as THREE from "three";
-import type { Sim } from "../sim";
+import type { SimClient } from "../client/sim-client";
 
 export class GuardFireFX {
   group = new THREE.Group();
@@ -11,7 +11,7 @@ export class GuardFireFX {
   private glow: THREE.Mesh | null = null;
   private t = 0;
 
-  sync(sim: Sim, dt: number): void {
+  sync(sim: SimClient, dt: number): void {
     if (!this.built) this.build();
     this.t += dt;
     const fires = sim.guardFires;

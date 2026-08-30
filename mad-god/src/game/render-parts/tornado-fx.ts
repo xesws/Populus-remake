@@ -1,5 +1,5 @@
 import * as THREE from "three";
-import type { Sim } from "../sim";
+import type { SimClient } from "../client/sim-client";
 
 /**
  * v0.18 龙卷风渲染（Agent T）——细雾气条建模：
@@ -19,7 +19,7 @@ export class TornadoFX {
   private spin = 0;
   private t = 0;
 
-  sync(sim: Sim, dt: number): void {
+  sync(sim: SimClient, dt: number): void {
     const tw = sim.tornado;
     if (!tw) {
       this.group.visible = false;

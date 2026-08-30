@@ -1,5 +1,5 @@
 import { canUnlock } from "./spells";
-import { Sim } from "./sim";
+import type { SimClient } from "./client/sim-client";
 import { BLUE, BuildingKind, POP_CAP, RED, SIZE, Tool, TrainKind, WATER } from "./types";
 import { World } from "./world";
 
@@ -75,7 +75,7 @@ export class HUD {
     });
   }
 
-  sync(sim: Sim, tool: Tool, paused: boolean, dt: number): void {
+  sync(sim: SimClient, tool: Tool, paused: boolean, dt: number): void {
     const t = sim.teams[BLUE];
     // v0.26 总法力槽已取消：每个技能按钮显示各自充能（颗数 + 进度条）。
     document.querySelectorAll<HTMLButtonElement>("[data-tool]").forEach((b) => {
@@ -151,7 +151,7 @@ export class HUD {
     this.drawMini(sim.world, sim);
   }
 
-  drawMini(world: World, sim: Sim): void {
+  drawMini(world: World, sim: SimClient): void {
     const c = this.ctx;
     const w = this.mini.width;
     const cell = w / SIZE;

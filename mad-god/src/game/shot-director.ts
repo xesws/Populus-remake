@@ -1,4 +1,4 @@
-import { Sim } from "./sim";
+import type { SimClient } from "./client/sim-client";
 import { BLUE, BuildingKind, houseHp, isCampKind, RED, Tree, WORLD } from "./types";
 import { inPad, worldOnPad, World } from "./world";
 import { View } from "./render";
@@ -6,7 +6,7 @@ import { HUD } from "./ui";
 
 export interface ShotDirectorHost {
   world: World;
-  sim: Sim;
+  sim: SimClient;
   view: View;
   hud: HUD;
   paused: boolean;
@@ -37,7 +37,7 @@ export class ShotDirector {
     this.host = host;
   }
 
-  get sim(): Sim {
+  get sim(): SimClient {
     return this.host.sim;
   }
 

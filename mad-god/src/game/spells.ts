@@ -1,4 +1,5 @@
 import { Sim } from "./sim";
+import type { SimClient } from "./client/sim-client";
 import { inMap, Team, Tool } from "./types";
 import {
   Spell,
@@ -50,7 +51,10 @@ export function canUnlock(tool: Tool, cap: number): boolean {
   return false;
 }
 
-export function cast(sim: Sim, team: Team, tool: Tool, x: number, z: number, dt = 0.2): SpellResult {
+// v0.29b 参数放宽为 SimClient：主线程（game.ts）只持有接口；内部仍要把 sim 递给
+// Spell.cast(sim: Sim)——法术实现属 sim 侧（v0.29c 随 Sim 进 Worker），本地模式下
+// SimClient 即真 Sim，此断言恒真。
+export function cast(sim: SimClient, team: Team, tool: Tool, x: number, z: number, dt = 0.2): SpellResult {
   const empty: SpellResult = { ok: false, bolts: [], shake: 0, msg: "" };
   const t = sim.teams[team];
   if (tool === "select") return empty;
@@ -59,11 +63,11 @@ export function cast(sim: Sim, team: Team, tool: Tool, x: number, z: number, dt 
   if (!spell) return empty;
   if (!spell.canUnlock(t.manaCap)) return { ...empty, msg: "法力上限未及，神迹尚未解锁" };
 
-  return spell.cast(sim, team, x, z, dt);
+  return spell.cast(sim as Sim, team, x, z, dt);
 }
 
 export function flattenToward(
-  sim: Sim,
+  sim: SimClient,
   team: Team,
   x: number,
   z: number,

@@ -1,4 +1,5 @@
 import { AIDirector, AIProfile } from "./ai";
+import { SimClient } from "./client/sim-client";
 import { bindInput, InputState, maybeStartSculpt, ndcCell, tickCamera } from "./input";
 import { View } from "./render";
 import { Sim } from "./sim";
@@ -14,7 +15,8 @@ const SIM_DT = 1 / 60;
 
 export class Game {
   world: World;
-  sim: Sim;
+  // v0.29b 主线程只依赖 SimClient 接口；本地模式赋真 Sim（结构化满足），v0.29c 换 Worker 镜像客户端。
+  sim: SimClient;
   view: View;
   hud: HUD;
   aiDirector: AIDirector;
@@ -70,7 +72,8 @@ export class Game {
     this.aiProfile =
       level === "easy" ? AIProfile.easy() : level === "hard" ? AIProfile.hard() : AIProfile.normal();
     this.aiDirector = new AIDirector([[RED, this.aiProfile]]);
-    this.aiDirector.attach(this.sim);
+    // v0.29b ai/ 本阶段未接口化：AIDirector 仍要求真 Sim；本地模式 this.sim 即真 Sim，恒真断言。
+    this.aiDirector.attach(this.sim as Sim);
     this.shotDirector = new ShotDirector(this);
     this.view.look.set(30, 0, 44); // v0.24 大地图（72 格）视角：中心偏南俯瞰双方出生带
     this.bind();
@@ -451,7 +454,7 @@ export class Game {
     this.view.rebuildTerrain();
     this.view.look.set(30, 0, 44); // v0.24 大地图（72 格）视角：中心偏南俯瞰双方出生带
     this.aiDirector = new AIDirector([[RED, this.aiProfile]]);
-    this.aiDirector.attach(this.sim);
+    this.aiDirector.attach(this.sim as Sim); // v0.29b 同构造函数：ai/ 未接口化，见上
     this.shotDirector.reset();
     this.ended = false;
     this.paused = false;
@@ -560,7 +563,7 @@ export class Game {
       let steps = 0;
       while (this.simAcc >= SIM_DT && steps < 3) {
         this.sim.tick(SIM_DT);
-        if (!this.shotDirector.isShotActive()) this.aiDirector.update(this.sim, SIM_DT);
+        if (!this.shotDirector.isShotActive()) this.aiDirector.update(this.sim as Sim, SIM_DT);
         this.simAcc -= SIM_DT;
         steps++;
       }

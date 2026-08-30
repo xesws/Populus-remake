@@ -1,5 +1,5 @@
 import * as THREE from "three";
-import type { Sim } from "../sim";
+import type { SimClient } from "../client/sim-client";
 import type { World } from "../world";
 import { SAMPLES, STEP } from "../types";
 
@@ -71,7 +71,7 @@ export class LavaFX {
     }
   }
 
-  sync(sim: Sim, dt: number): void {
+  sync(sim: SimClient, dt: number): void {
     const w = sim.world;
     this.tickParticles(w, dt);
     const v = sim.volcano;

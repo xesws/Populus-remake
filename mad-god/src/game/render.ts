@@ -1,5 +1,5 @@
 import * as THREE from "three";
-import { Sim } from "./sim";
+import type { SimClient } from "./client/sim-client";
 import { BLUE, clamp, FIRE_DOWN_TIME, FxBolt, houseMaxPop, isCampKind, SAMPLES, STEP, Team, TRAIN_TIME, WATER, WORLD } from "./types";
 import { World } from "./world";
 import { TornadoFX } from "./render-parts/tornado-fx";
@@ -416,7 +416,7 @@ export class View {
     this.previewKind = "";
   }
 
-  syncSelect(sim: Sim): void {
+  syncSelect(sim: SimClient): void {
     const selected = sim.units.filter((u) => u.selected && u.team === 0 && u.homeId === 0);
     while (this.selectRings.length < selected.length) this.selectRings.push(this.makeSelectRing());
     this.selectRing.visible = false;
@@ -464,7 +464,7 @@ export class View {
     this.look.set(x, this.world.heightAt(x, z), z);
   }
 
-  sync(sim: Sim, bolts: FxBolt[], dt: number, freezeFx = false): void {
+  sync(sim: SimClient, bolts: FxBolt[], dt: number, freezeFx = false): void {
     this.t += dt;
     this.shake = Math.max(0, this.shake - dt * 1.8);
     if (sim.fxQuake) {
@@ -629,7 +629,7 @@ export class View {
     return g;
   }
 
-  syncUnits(sim: Sim): void {
+  syncUnits(sim: SimClient): void {
     const live = new Set<number>();
     for (const u of sim.units) {
       // v0.27h 茅屋住户画在屋顶；v0.28e 塔顶驻军同理——sim.arrangeDwellers/tickEnter
@@ -899,7 +899,7 @@ export class View {
     return g;
   }
 
-  syncTrainBars(sim: Sim): void {
+  syncTrainBars(sim: SimClient): void {
     const live = new Set<number>();
     for (const b of sim.buildings) {
       if (!isCampKind(b.kind) || b.team !== BLUE || b.hp <= 0 || b.level < 1) continue;
@@ -963,7 +963,7 @@ export class View {
   }
 
   /** v0.11 房屋生产进度条：蓝方有人住且未满员的茅屋头顶显示 b.prod [0,1) 生产进度。 */
-  syncProdBars(sim: Sim): void {
+  syncProdBars(sim: SimClient): void {
     const live = new Set<number>();
     for (const b of sim.buildings) {
       if (b.kind !== "hut" || b.team !== BLUE || b.hp <= 0 || b.level < 1) continue;
@@ -1014,7 +1014,7 @@ export class View {
     return g;
   }
 
-  syncRoofIcons(sim: Sim): void {
+  syncRoofIcons(sim: SimClient): void {
     const live = new Set<number>();
     for (const b of sim.buildings) {
       if (b.kind !== "hut" || b.hp <= 0 || b.level < 1) continue;
@@ -1075,7 +1075,7 @@ export class View {
     return g;
   }
 
-  syncDwellPips(sim: Sim): void {
+  syncDwellPips(sim: SimClient): void {
     const live = new Set<number>();
     for (const b of sim.buildings) {
       if (b.kind !== "hut" || b.hp <= 0 || b.level < 1 || b.dwell <= 0) continue;
@@ -1116,7 +1116,7 @@ export class View {
     return { x: -Math.sin(yaw) * dist, z: Math.cos(yaw) * dist };
   }
 
-  syncHouses(sim: Sim): void {
+  syncHouses(sim: SimClient): void {
     const live = new Set<number>();
     for (const b of sim.buildings) {
       live.add(b.id);
@@ -1157,7 +1157,7 @@ export class View {
     }
   }
 
-  syncTrees(sim: Sim): void {
+  syncTrees(sim: SimClient): void {
     const live = new Set<number>();
     for (const t of sim.trees) {
       live.add(t.id);
@@ -1179,7 +1179,7 @@ export class View {
     }
   }
 
-  syncAnkhs(sim: Sim): void {
+  syncAnkhs(sim: SimClient): void {
     while (this.ankhGroup.children.length) this.ankhGroup.remove(this.ankhGroup.children[0]!);
     for (const team of [0, 1] as const) {
       const mx = sim.teams[team].magnetX;
@@ -1196,7 +1196,7 @@ export class View {
     }
   }
 
-  syncShots(sim: Sim): void {
+  syncShots(sim: SimClient): void {
     while (this.shotGroup.children.length) this.shotGroup.remove(this.shotGroup.children[0]!);
     for (const p of sim.shots) {
       const m = new THREE.Mesh(
@@ -1210,7 +1210,7 @@ export class View {
 
 
 
-  syncLavaStreams(sim: Sim): void {
+  syncLavaStreams(sim: SimClient): void {
     const cells = sim.world.lastRiverCells;
     const key = cells.length;
     if (key === this.lavaStreamSig) return;
@@ -1244,7 +1244,7 @@ export class View {
     return n * 1000003 + (acc % 1000003);
   }
 
-  syncSwamp(sim: Sim): void {
+  syncSwamp(sim: SimClient): void {
     const key = this.swampKey(sim.world);
     if (key === this.swampSig) return;
     this.swampSig = key;
@@ -1446,7 +1446,7 @@ export class View {
 
 
   /** v0.27f 天降火球：每帧重建坠落陨石网格——核心亮球 + 半透明光晕 + 上方两节尾焰。 */
-  syncMeteors(sim: Sim): void {
+  syncMeteors(sim: SimClient): void {
     while (this.meteorGroup.children.length) {
       const ch = this.meteorGroup.children[0]!;
       this.meteorGroup.remove(ch);
@@ -1471,7 +1471,7 @@ export class View {
     }
   }
 
-  syncBlast(sim: Sim): void {
+  syncBlast(sim: SimClient): void {
     while (this.blastGroup.children.length) {
       const ch = this.blastGroup.children[0]!;
       this.blastGroup.remove(ch);
@@ -1502,7 +1502,7 @@ export class View {
     }
   }
 
-  syncTornado(sim: Sim, dt: number): void {
+  syncTornado(sim: SimClient, dt: number): void {
     // v0.18 龙卷风渲染委托给雾气条 fx 模块（细长漏斗 + 高速自旋 + 渐隐 + 水龙卷变色）。
     this.tornadoFX.sync(sim, dt);
   }
@@ -1582,7 +1582,7 @@ export class View {
     }
   }
 
-  draw(sim: Sim, bolts: FxBolt[], dt: number, freezeFx = false): void {
+  draw(sim: SimClient, bolts: FxBolt[], dt: number, freezeFx = false): void {
     this.sync(sim, bolts, dt, freezeFx);
     this.renderer.setRenderTarget(this.rt);
     this.renderer.render(this.scene, this.camera);
