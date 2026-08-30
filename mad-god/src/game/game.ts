@@ -505,8 +505,14 @@ export class Game {
           if (foe) this.view.hover(foe.x, foe.z, true, "fight");
           else if (eb && eb.team === RED && eb.hp > 0 && eb.level >= 1) this.view.hover(eb.x, eb.z, true, "fight");
           else this.view.hover(cell.x, cell.z, true, "move");
-        } else {
+        } else if (this.tool !== "select") {
+          // 法术/雕刻工具：光标即落点指示，照常显示。
           this.view.hover(cell.x, cell.z, true, "move");
+        } else {
+          // v0.28g 修复：select 工具下**没有任何选中单位**时不显示光标——
+          // 旧实现这里无条件亮"移动光标"，点空地取消选择后光标仍跟着鼠标跑，
+          // 玩家分不清到底有没有选中人。
+          this.view.hover(0, 0, false);
         }
       } else this.view.hover(0, 0, false);
     }
