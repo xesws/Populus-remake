@@ -1,11 +1,13 @@
 import { AIDirector, AIProfile } from "./ai";
 import { SimClient } from "./client/sim-client";
+import type { WorkerSimClient } from "./client/worker-sim-client";
 import { bindInput, InputState, maybeStartSculpt, ndcCell, tickCamera } from "./input";
 import { View } from "./render";
 import { Sim } from "./sim";
 import { ShotDirector } from "./shot-director";
 import { canUnlock, cast } from "./spells";
 import { BLUE, BuildingKind, FxBolt, inMap, isCampKind, Order, RED, snapYaw, Tool, TrainKind } from "./types";
+import type { AiLevel } from "./worker/protocol";
 import { HUD, showEnd } from "./ui";
 import { World } from "./world";
 import { logger } from "./logger";
@@ -19,9 +21,15 @@ export class Game {
   sim: SimClient;
   view: View;
   hud: HUD;
-  aiDirector: AIDirector;
+  // v0.29c-2 worker 模式不建 AIDirector（AI 在 worker 内由 sim-worker 驱动）；本地模式恒非空。
+  aiDirector: AIDirector | null = null;
   aiProfile: AIProfile;
   shotDirector: ShotDirector;
+  // v0.29c-2 ?worker=1 灰度开关（默认关闭 = 本地模式，行为与 v0.29b 完全一致）。
+  readonly workerMode: boolean;
+  private workerClient: WorkerSimClient | null = null;
+  /** worker 模式：导演镜头 aiHold 的变化沿缓存（true=已通知 worker 暂停 AI）。 */
+  private aiHeld = false;
   tool: Tool = "select";
   placeKind: BuildingKind | null = null;
   placeYaw = 0;
@@ -58,12 +66,22 @@ export class Game {
   simAcc = 0; // v0.29 固定步长累加器
   seed = 0;
 
-  constructor(canvas: HTMLCanvasElement) {
+  constructor(canvas: HTMLCanvasElement, workerClient?: WorkerSimClient) {
     this.canvas = canvas;
     this.seed = 1989 + ((Math.random() * 1000) | 0);
-    this.world = new World(this.seed);
-    this.sim = new Sim(this.world);
-    this.logWorld("开局");
+    if (workerClient) {
+      // v0.29c-2 worker 灰度引导：sim 换镜像客户端，world 用镜像占位（数据未到时全 0，
+      // 收到 world 消息后由 onWorkerWorldReady 重建地形）。本地模式构造路径一行未动。
+      this.workerMode = true;
+      this.workerClient = workerClient;
+      this.world = workerClient.mirror.world;
+      this.sim = workerClient;
+    } else {
+      this.workerMode = false;
+      this.world = new World(this.seed);
+      this.sim = new Sim(this.world);
+      this.logWorld("开局");
+    }
     this.view = new View(canvas, this.world);
     this.hud = new HUD();
     // v0.17 敌方 AI：URL ?ai=easy|normal|hard 选难度（默认 normal）；AIDirector 支持多部落 brain。
@@ -71,9 +89,14 @@ export class Game {
       typeof location !== "undefined" ? new URLSearchParams(location.search).get("ai") ?? "normal" : "normal";
     this.aiProfile =
       level === "easy" ? AIProfile.easy() : level === "hard" ? AIProfile.hard() : AIProfile.normal();
-    this.aiDirector = new AIDirector([[RED, this.aiProfile]]);
-    // v0.29b ai/ 本阶段未接口化：AIDirector 仍要求真 Sim；本地模式 this.sim 即真 Sim，恒真断言。
-    this.aiDirector.attach(this.sim as Sim);
+    if (!this.workerMode) {
+      this.aiDirector = new AIDirector([[RED, this.aiProfile]]);
+      // v0.29b ai/ 本阶段未接口化：AIDirector 仍要求真 Sim；本地模式 this.sim 即真 Sim，恒真断言。
+      this.aiDirector.attach(this.sim as Sim);
+    } else {
+      // v0.29c-2 worker 模式：AI 档位随 init 命令交给 worker（sim-worker 内建 AIDirector）。
+      workerClient!.init(this.seed, level as AiLevel);
+    }
     this.shotDirector = new ShotDirector(this);
     this.view.look.set(30, 0, 44); // v0.24 大地图（72 格）视角：中心偏南俯瞰双方出生带
     this.bind();
@@ -94,6 +117,24 @@ export class Game {
     window.addEventListener("unhandledrejection", (e) => {
       logger.error("js", `unhandled rejection: ${String(e.reason)}`);
     });
+  }
+
+  /**
+   * v0.29c-2 worker 模式：world 全量到达后的视图落地（初次引导与每次重开共用）。
+   * 镜像 world 对象恒定（applyWorld 原地换字段），重点是让 TerrainMesh 整图重建。
+   */
+  onWorkerWorldReady(when: "开局" | "重开"): void {
+    if (!this.workerClient) return;
+    this.view.world = this.workerClient.mirror.world;
+    this.view.rebuildTerrain();
+    this.logWorld(when);
+  }
+
+  /** v0.29c-2 选择集同步：镜像 selected 本地写完后把当前选中 id 发给 worker
+   *（worker 侧 selectedOf 依赖它执行 order/train/assign 等选择集指令）。本地模式 no-op。 */
+  private syncSelection(): void {
+    if (!this.workerClient) return;
+    this.workerClient.setSelection(this.sim.units.filter((u) => u.selected).map((u) => u.id));
   }
 
   bind(): void {
@@ -251,6 +292,12 @@ export class Game {
       this.sim.toast("末日已开，神迹封闭");
       return;
     }
+    if (this.workerClient) {
+      // v0.29c-2 法术点击：改发 cast 命令（r.msg 主线程拿不到——失败/提示由 worker 侧
+      // toast 回传快照 logs），本地不再重复提示。
+      this.workerClient.sendCast(this.tool, x, z);
+      return;
+    }
     const r = cast(this.sim, BLUE, this.tool, x, z);
     if (r.msg) this.sim.toast(r.msg);
   }
@@ -377,6 +424,7 @@ export class Game {
     if (!u) return false;
     for (const o of this.sim.units) o.selected = false;
     u.selected = true;
+    this.syncSelection();
     this.sim.toast(this.pickLabel(u.kind));
     return true;
   }
@@ -400,10 +448,12 @@ export class Game {
     }
     if (n === 1 && last) this.sim.toast(this.pickLabel(last.kind));
     else if (n > 1) this.sim.toast(`选中 ${n} 人`);
+    this.syncSelection();
   }
 
   clearSelect(): void {
     for (const u of this.sim.units) u.selected = false;
+    this.syncSelection();
   }
 
   selectAt(x: number, z: number): void {
@@ -412,20 +462,33 @@ export class Game {
     const occ = this.sim.occupantAt(x, z, 0.9, BLUE);
     if (occ) {
       occ.selected = true;
+      this.syncSelection();
       this.sim.toast(this.pickLabel(occ.kind));
       return;
     }
     const u = this.sim.unitAt(x, z, 0.8);
     if (u && u.team === BLUE) {
       u.selected = true;
+      this.syncSelection();
       this.sim.toast(this.pickLabel(u.kind));
+    } else {
+      this.syncSelection();
     }
   }
 
   start(): void {
     if (this.running) return;
-    this.shotDirector.handleUrlParams();
+    // v0.29c-2 worker 模式禁用导演回放：shot-director 直写 sim 内部（u.path/.job/.think、
+    // placeComplete/addUnit 等作弊流）过不了消息边界——入口处拦下并提示。本地模式不受影响。
+    if (this.workerMode) {
+      if (typeof location !== "undefined" && location.search.includes("shot=")) {
+        this.sim.toast("导演回放仅本地模式（?worker=1 不支持 ?shot=）");
+      }
+    } else {
+      this.shotDirector.handleUrlParams();
+    }
     this.running = true;
+    this.workerClient?.sendStart(); // worker 自驱循环开跑（本地模式无客户端，no-op）
     logger.info("session", "对局开始", { seed: this.seed });
     this.last = performance.now();
     requestAnimationFrame((t) => this.frame(t));
@@ -445,6 +508,35 @@ export class Game {
   }
 
   restart(): void {
+    if (this.workerClient) {
+      // v0.29c-2 worker 模式重开：命令 worker 重建对局（新 world 到达后重建视图），
+      // 不再跑本地 new World/Sim/AIDirector 与 applyReviewCheats（导演流已禁用）。
+      // 消息序 FIFO：restart → world 回发 → start，worker 侧顺序处理，无竞态。
+      this.seed = 1989 + ((Math.random() * 9999) | 0);
+      this.workerClient.requestRestart(this.seed);
+      void this.workerClient.worldReady().then(() => this.onWorkerWorldReady("重开"));
+      this.view.resetFx();
+      this.ended = false;
+      this.paused = false;
+      this.workerClient.sendStart();
+      this.tool = "select";
+      this.input.tool = "select";
+      this.input.holding = false;
+      this.input.sculpting = false;
+      this.input.rDragging = false;
+      this.pendingMagnet = false;
+      this.placeKind = null;
+      this.placeYaw = 0;
+      this.input.placing = false;
+      this.view.hideGhost();
+      this.hud.setTool(this.tool);
+      this.hud.setBuild(null);
+      this.hud.setOrder("settle");
+      this.bolts = [];
+      document.getElementById("end")!.hidden = true;
+      logger.info("session", "重开对局", { seed: this.seed, mode: "worker" });
+      return;
+    }
     this.seed = 1989 + ((Math.random() * 9999) | 0);
     this.world = new World(this.seed);
     this.sim = new Sim(this.world);
@@ -479,8 +571,14 @@ export class Game {
 
   togglePause(): void {
     this.paused = !this.paused;
+    this.workerClient?.sendPaused(this.paused); // v0.29c-2：worker 侧循环暂停/恢复
     if (this.paused) return;
     this.shotDirector.shotHeld = true;
+    if (this.workerClient) {
+      // v0.29c-2：freezeProd/review 直写改为命令（镜像字段由快照回填，本地写会被覆盖）。
+      this.workerClient.sendSetFlag({ freezeProd: false, review: false });
+      return;
+    }
     this.sim.freezeProd = false;
     this.sim.review = false;
   }
@@ -553,19 +651,35 @@ export class Game {
         const hx = cell?.x ?? this.input.holdX;
         const hz = cell?.z ?? this.input.holdZ;
         if (inMap(hx, hz)) {
-          const r = cast(this.sim, BLUE, this.tool, hx, hz, dt);
-          if (r.msg && r.msg !== "") this.sim.toast(r.msg);
+          if (this.workerClient) {
+            // v0.29c-2 雕塑按住施法：每帧发一条 cast（dt=真实帧长），worker 直调 spells.cast；
+            // r.msg 本地拿不到——提示由 worker 侧 toast 回传快照 logs。
+            this.workerClient.sendCast(this.tool, hx, hz, dt);
+          } else {
+            const r = cast(this.sim, BLUE, this.tool, hx, hz, dt);
+            if (r.msg && r.msg !== "") this.sim.toast(r.msg);
+          }
         }
       }
-      // v0.29 固定步长：sim.tick / aiDirector.update 按 1/60s 子步推进，每帧最多 3 步；
-      // 超出 3 步的余量直接丢弃（simAcc 封顶），防止低帧率下积压螺旋。
-      this.simAcc = Math.min(this.simAcc + dt, SIM_DT * 3);
-      let steps = 0;
-      while (this.simAcc >= SIM_DT && steps < 3) {
-        this.sim.tick(SIM_DT);
-        if (!this.shotDirector.isShotActive()) this.aiDirector.update(this.sim as Sim, SIM_DT);
-        this.simAcc -= SIM_DT;
-        steps++;
+      if (this.workerClient) {
+        // v0.29c-2 worker 自驱：主线程不跑 sim.tick 子步循环与 aiDirector；
+        // 导演镜头沿变化沿同步 aiHold（true=worker 暂停 AI；导演已禁用故恒 false，留作 C3 接口）。
+        const held = this.shotDirector.isShotActive();
+        if (held !== this.aiHeld) {
+          this.aiHeld = held;
+          this.workerClient.sendAiHold(held);
+        }
+      } else {
+        // v0.29 固定步长：sim.tick / aiDirector.update 按 1/60s 子步推进，每帧最多 3 步；
+        // 超出 3 步的余量直接丢弃（simAcc 封顶），防止低帧率下积压螺旋。
+        this.simAcc = Math.min(this.simAcc + dt, SIM_DT * 3);
+        let steps = 0;
+        while (this.simAcc >= SIM_DT && steps < 3) {
+          this.sim.tick(SIM_DT);
+          if (!this.shotDirector.isShotActive()) this.aiDirector!.update(this.sim as Sim, SIM_DT);
+          this.simAcc -= SIM_DT;
+          steps++;
+        }
       }
       for (const b of this.bolts) b.life -= dt;
       this.bolts = this.bolts.filter((b) => b.life > 0);

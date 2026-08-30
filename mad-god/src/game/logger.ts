@@ -198,7 +198,10 @@ export class Logger {
   }
 }
 
-export const logger = new Logger(typeof window !== "undefined" ? new HttpSink() : new MemorySink());
+// v0.29c-2 上报通道判定从「有无 window」改为「有无 fetch」：Sim Worker 里没有 window
+// 但有 fetch——worker 模式下 sim 侧日志也照常 POST /log 落到 logs/game.log（排查问题的
+// 主通道，不能断）。Node/测试环境两者皆无 → MemorySink（断言仍走内存收集，逻辑不变）。
+export const logger = new Logger(typeof fetch !== "undefined" ? new HttpSink() : new MemorySink());
 
 // 页面卸载前尽力把缓冲冲出去（keepalive fetch 允许在卸载后完成）。
 if (typeof window !== "undefined") {
