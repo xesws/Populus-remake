@@ -79,7 +79,8 @@ export class ProductionSystem implements ISystem {
       cap += Math.min(80, pop * 2);
       t.manaCap = cap;
       // v0.26d 人口越多充能越快（<50 ×1.0，≥50 ×1.3，≥100 ×1.6，≥150 ×1.9，≥200 ×2.3…）。
-      const mult = chargePopMult(pop);
+      // v0.27-1 队伍系数（敌方削弱 Wrapper）：红方充能整体 ×0.75。
+      const mult = chargePopMult(pop) * sim.rates.of(team).charge;
       for (const tool of Object.keys(SKILL_CHARGE) as Tool[]) {
         const c = sim.chargeState(team, tool);
         if (c.continuous) {
@@ -119,7 +120,8 @@ export class ProductionSystem implements ISystem {
       if (b.dwell <= 0) continue;
       // v0.11 速率 = 基础(等级) × (1 + 0.12 × (dwell − 1))：进驻村民越多生产越快。
       // v0.11c 新生儿走出屋子成为自由村民；v0.15 出生不再受全局人口上限约束（无限生产）。
-      const rate = houseBaseRate(b.level) * (1 + HOUSE_DWELL_BONUS * (b.dwell - 1));
+      // v0.27-1 队伍系数（敌方削弱 Wrapper）：同配置红方 = 蓝方 ×0.75。
+      const rate = houseBaseRate(b.level) * (1 + HOUSE_DWELL_BONUS * (b.dwell - 1)) * sim.rates.of(b.team).prod;
       b.prod += rate * dt;
       if (b.prod >= 1) {
         const spot = sim.hutDoor(b);

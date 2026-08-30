@@ -139,7 +139,8 @@ export class TrainingSystem implements ISystem {
     u.y = sim.world.heightAt(u.x, u.z);
     u.yaw = Math.atan2(camp.x - u.x, camp.z - u.z);
     if (slot === 0) {
-      u.channel += dt;
+      // v0.27-1 队伍系数（敌方削弱 Wrapper）：红方训兵整体慢 25%。
+      u.channel += dt * sim.rates.of(u.team as Team).train;
       if (u.channel >= TRAIN_TIME) this.finishTrain(sim, u, camp);
     } else {
       u.channel = 0;

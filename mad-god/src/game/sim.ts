@@ -63,6 +63,7 @@ import {
 } from "./spells";
 import { LogLevel, logger } from "./logger";
 import type { TeamHurtHook } from "./ai/types";
+import { RateBook } from "./team-rates";
 
 let NEXT = 1;
 function nid(): number {
@@ -78,6 +79,8 @@ export class Sim {
   ankhs: Ankh[] = [];
   teams: [TeamState, TeamState];
   winner: Team | -1 | null = null;
+  /** v0.27-1 队伍级仿真速率（敌方削弱 Wrapper）：produce/charge/train 三处统一取系数。 */
+  rates = new RateBook();
   time = 0;
   logs: string[] = [];
   toastGen = 0;
