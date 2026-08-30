@@ -88,6 +88,10 @@ export class View {
   convertRange = new ConvertRangeFX();
   guardFireFX = new GuardFireFX();
   blastGroup = new THREE.Group();
+  /** v0.27f 天降火球：坠落的发光陨石（核心 + 光晕 + 尾焰），撞击冲击波复用 blast 环。 */
+  meteorGroup = new THREE.Group();
+  meteorCoreMat = new THREE.MeshBasicMaterial({ color: 0xffd27a });
+  meteorGlowMat = new THREE.MeshBasicMaterial({ color: 0xff7a18, transparent: true, opacity: 0.42 });
   blastRingMat = new THREE.MeshBasicMaterial({ color: 0xf4f0dc, transparent: true, opacity: 0.85, side: THREE.DoubleSide });
   blastDustMat = new THREE.MeshLambertMaterial({ color: 0xddd6c4 });
   lavaDebMat = new THREE.MeshLambertMaterial({ color: 0xff7a18, emissive: 0xff4400 });
@@ -188,6 +192,7 @@ export class View {
       this.convertRange.group,
       this.guardFireFX.group,
       this.blastGroup,
+      this.meteorGroup,
     );
 
     this.selectRingGeo = new THREE.RingGeometry(0.34, 0.44, 12);
@@ -487,6 +492,7 @@ export class View {
     this.lavaFX.sync(sim, dt); // v0.18 岩浆物理粒子（火山喷发 + 顺坡流动）
     this.guardFireFX.sync(sim, dt); // v0.19 守卫篝火
     this.syncBlast(sim);
+    this.syncMeteors(sim); // v0.27f 天降火球
     this.syncAnkhs(sim);
     this.syncShots(sim);
     this.syncBolts(bolts);
@@ -1391,6 +1397,32 @@ export class View {
     this.debris = [];
   }
 
+
+  /** v0.27f 天降火球：每帧重建坠落陨石网格——核心亮球 + 半透明光晕 + 上方两节尾焰。 */
+  syncMeteors(sim: Sim): void {
+    while (this.meteorGroup.children.length) {
+      const ch = this.meteorGroup.children[0]!;
+      this.meteorGroup.remove(ch);
+      if (ch instanceof THREE.Mesh) ch.geometry.dispose();
+    }
+    for (const m of sim.meteors) {
+      const core = new THREE.Mesh(new THREE.SphereGeometry(0.2, 10, 8), this.meteorCoreMat);
+      core.position.set(m.x, m.y, m.z);
+      this.meteorGroup.add(core);
+      const glow = new THREE.Mesh(new THREE.SphereGeometry(0.34, 10, 8), this.meteorGlowMat);
+      glow.position.set(m.x, m.y, m.z);
+      this.meteorGroup.add(glow);
+      for (const [dy, r, op] of [
+        [0.5, 0.13, 0.5],
+        [0.95, 0.08, 0.28],
+      ] as const) {
+        const mat = new THREE.MeshBasicMaterial({ color: 0xff9a3a, transparent: true, opacity: op });
+        const trail = new THREE.Mesh(new THREE.SphereGeometry(r, 8, 6), mat);
+        trail.position.set(m.x, m.y + dy, m.z);
+        this.meteorGroup.add(trail);
+      }
+    }
+  }
 
   syncBlast(sim: Sim): void {
     while (this.blastGroup.children.length) {

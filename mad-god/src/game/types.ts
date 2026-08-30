@@ -147,10 +147,16 @@ export function agroLeash(kind: UnitKind): number {
 
 // v0.9/v0.12 火球参数：弹速、暴击击飞（落地即死）与默认击退倒地。
 export const FIREBALL_SPEED = 4;
-// v0.26 火球法术：立即命中，直接伤害 + 着火持续伤害（burnT/burnDps 独立于 fireT 视觉）。
-export const FIREBALL_DMG = 8;
-export const FIREBALL_BURN_T = 5;
-export const FIREBALL_BURN_DPS = 1.2;
+// v0.27f 火球法术重构为"天降陨石"：施放后火球从高空坠落（约 0.85s 落地），
+// 撞击只造成小直接伤害（FIREBALL_IMPACT_DMG，村民 6 血剩 3，不再瞬间蒸发），
+// 主伤害靠点燃：fireT 视觉火焰 + burnT/burnDps 持续掉血把目标烧死。
+export const FIREBALL_IMPACT_R = 1.7; // 撞击半径（沿用旧法术口径）
+export const METEOR_START_Y = 13;
+export const METEOR_FALL_V = 15;
+export const FIREBALL_IMPACT_DMG = 3;
+export const FIREBALL_BURN_T = 6;
+export const FIREBALL_BURN_DPS = 1.6;
+export const FIREBALL_FIRE_T = 4;
 // v0.26 转化法术：施法点须距己方存活大祭司 CONVERT_CAST_RANGE 内，圈内 CONVERT_RADIUS 生效。
 export const CONVERT_CAST_RANGE = 4;
 export const CONVERT_RADIUS = 2.5;

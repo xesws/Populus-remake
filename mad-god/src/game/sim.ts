@@ -42,6 +42,11 @@ import {
   ChargeSlot,
   SKILL_CHARGE,
   Tool,
+  FIREBALL_IMPACT_DMG,
+  FIREBALL_IMPACT_R,
+  FIREBALL_BURN_DPS,
+  FIREBALL_BURN_T,
+  FIREBALL_FIRE_T,
 } from "./types";
 import { inDoorSlit, inPad, Pad, padsOverlap, PAD_STAND_INFLATE, worldOnPad, World } from "./world";
 import { ForestSeeder } from "./world-gen/forests";
@@ -75,6 +80,11 @@ export class Sim {
   buildings: Building[] = [];
   trees: Tree[] = [];
   shots: Projectile[] = [];
+  /**
+   * v0.27f 天降火球（陨石）：cast 时入列，tickMeteors 下落、落地结算 AoE 点燃。
+   * 跨帧状态必须挂 sim 而非 Spell 实例字段（v0.26b 火山双实例教训）。
+   */
+  meteors: { x: number; z: number; y: number; vy: number; team: Team }[] = [];
   ankhs: Ankh[] = [];
   teams: [TeamState, TeamState];
   winner: Team | -1 | null = null;
@@ -958,6 +968,7 @@ export class Sim {
     this.tickEnter(dt);
     this.watchStuck();
     this.tickBlast(dt);
+    this.tickMeteors(dt);
     this.tickQuake(dt);
     this.tickTornado(dt);
     this.combat(dt);
@@ -1769,6 +1780,39 @@ export class Sim {
 
   blastAt(x: number, z: number): void {
     this.blastSpell.blastAt(this, x, z);
+  }
+
+  /**
+   * v0.27f 陨石下落与撞击：y 每帧下降，触地结算——
+   * 半径 FIREBALL_IMPACT_R(1.7) 内非己方单位：小直接伤害 + 点燃
+   * （fireT 视觉火焰 + burnT/burnDps 主伤害），不再击飞蒸发；
+   * 冲击波复用 blast 爆炸环，屏幕震动按是否命中分档。
+   */
+  tickMeteors(dt: number): void {
+    if (!this.meteors.length) return;
+    const alive: { x: number; z: number; y: number; vy: number; team: Team }[] = [];
+    for (const m of this.meteors) {
+      m.y += m.vy * dt;
+      if (m.y > this.world.heightAt(m.x, m.z) + 0.15) {
+        alive.push(m);
+        continue;
+      }
+      let hit = false;
+      for (const u of this.units) {
+        if (u.hp <= 0 || u.team === m.team) continue;
+        if (Math.hypot(u.x - m.x, u.z - m.z) > FIREBALL_IMPACT_R) continue;
+        hit = true;
+        u.hp -= FIREBALL_IMPACT_DMG;
+        u.fireT = Math.max(u.fireT, FIREBALL_FIRE_T);
+        u.burnT = Math.max(u.burnT, FIREBALL_BURN_T);
+        u.burnDps = Math.max(u.burnDps, FIREBALL_BURN_DPS);
+        if (u.team === BLUE) this.toast(u.kind === "shaman" ? "祭司被火球点燃" : "一名子民被火球点燃");
+      }
+      this.blast = { x: m.x, z: m.z, t: 0, life: 0.5 };
+      this.blastHit = true;
+      this.fxShake = Math.max(this.fxShake, hit ? 0.3 : 0.12);
+    }
+    this.meteors = alive;
   }
 
   tickBlast(dt: number): void {
