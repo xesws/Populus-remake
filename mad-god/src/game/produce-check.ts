@@ -347,8 +347,11 @@ function testGradualConstruction(): void {
   const d1 = a1!.built - r1;
   const d2 = a2!.built - r2;
   assert(d1 > 0 && d2 > d1, `存木 2 根比 1 根建得快（Δ1=${d1.toFixed(3)} Δ2=${d2.toFixed(3)}）`);
+  // a1 只有 1 根木：进度必须封顶在 1（v0.28i-2 存木封顶），补上第 2 根才允许建成。
+  assert(a1!.built <= a1!.wood + 1e-9, `进度不得超出存木（built=${a1!.built.toFixed(2)} ≤ wood=${a1!.wood}）`);
+  sim.deliverWood(a1!);
   for (let i = 0; i < 300 && (a1!.level === 0 || a2!.level === 0); i++) sim.tick(0.05);
-  assert(a1!.level === 1 && a2!.level === 1, "两工地最终都建成");
+  assert(a1!.level === 1 && a2!.level === 1, "两工地最终都建成（各补满木料）");
   console.log("testGradualConstruction ok");
 }
 

@@ -1670,6 +1670,15 @@ export class Sim {
         u.pathI = 0;
         return;
       }
+      // v0.28i-2 修复"搬运工永久卡死"：扛着木但已无工地可交（目标屋提前完工/被毁）时
+      // 旧实现带着 carry=1 永远游荡——AI 的 free 名额（carry===0）永久排除他，
+      // 红方仅有的两个村民这样双双锁死（实测 200 秒零增长）。就地弃木，回归可指派。
+      logger.throttled("haul:drop", 2000, LogLevel.Info, "produce", `村民#${u.id} 无工地可交，弃木归队`, {
+        team: u.team,
+      });
+      u.carry = 0;
+      u.job = "idle";
+      u.targetId = 0;
     }
 
     const wantCamp = u.foundKind && u.moveX < 0 && u.job === "idle" ? u.foundKind : null;

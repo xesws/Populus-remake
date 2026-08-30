@@ -315,7 +315,10 @@ export class ProductionSystem implements ISystem {
     for (const b of sim.buildings) {
       if (b.hp <= 0 || b.level !== 0 || b.need <= 0 || b.wood <= 0) continue;
       if (b.wood > b.need) b.wood = b.need;
-      b.built += dt * BUILD_RATE_BASE * (0.5 + b.wood);
+      // v0.28i-2 修复：进度封顶在存木数——旧实现只看时间，1/2 根木也能把 2 木的茅屋
+      // "涨满完工"（实测红方只送 1 根木就建成，第二根永远送不进）。
+      b.built = Math.min(b.need, Math.max(b.built, 0) + dt * BUILD_RATE_BASE * (0.5 + b.wood));
+      if (b.built > b.wood) b.built = b.wood;
       if (b.built >= b.need) {
         logger.info("produce", `工地#${b.id}(${b.kind}) 建成`, {
           team: b.team,
