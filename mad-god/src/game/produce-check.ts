@@ -10,6 +10,7 @@ import {
   Tree,
   Unit,
   woodNeedFor,
+  POP_CAP,
 } from "./types";
 import { World, padsOverlap } from "./world";
 
@@ -293,6 +294,37 @@ function testL1KeepsProducingWhileNotFull(): void {
 
 // v0.11 生产系统：速率随 dwell 连续加速、L3 上限 10、住户死亡/房屋被毁的名额释放。
 
+/**
+ * v0.28h 分队人口上限：满员时出生**暂停但进度保留**（绝不重蹈 v0.15 前的假死），
+ * 人口一降下一帧立即恢复出生。
+ */
+function testPopCapPausesAndResumes(): void {
+  const sim = new Sim(new World(42));
+  const cap0 = POP_CAP[BLUE];
+  const bw = sim.units.find((u) => u.team === BLUE && u.kind === "walker")!;
+  POP_CAP[BLUE] = sim.countPop(BLUE); // 当前人口即满员
+  try {
+    const hut = sim.placeComplete(BLUE, bw.x + 2, bw.z, 0, "hut", 1);
+    hut.dwell = 1;
+    hut.prod = 1.0; // 进度已满，就差出生
+    const born0 = hut.born;
+
+    for (let i = 0; i < 20; i++) sim.tick(0.05); // 1 秒：满员不得出生
+    assert(hut.born === born0, "cap: 满员时不出声");
+    assert(hut.prod >= 1.0, `cap: 进度保留不丢弃（prod=${hut.prod.toFixed(2)}）`);
+
+    // 人口降 1（阵亡一名村民）→ cull 后下一帧立即补生。
+    const victim = sim.units.find((u) => u.team === BLUE && u.kind === "walker" && u.homeId === 0 && u !== bw)!;
+    victim.hp = 0;
+    for (let i = 0; i < 10; i++) sim.tick(0.05);
+    assert(hut.born === born0 + 1, "cap: 减员后立即恢复出生（不假死）");
+    assert(hut.prod < 1.0, "cap: 出生后进度正常清零重充");
+  } finally {
+    POP_CAP[BLUE] = cap0; // 还原全局上限，别污染后续用例
+  }
+  console.log("testPopCapPausesAndResumes ok");
+}
+
 function testProductionRateScalesWithDwell(): void {
   const sim = new Sim(new World(42));
   // 多放一座茅屋（历史手法；v0.15 起无全局上限，仅为场景丰富）
@@ -421,6 +453,7 @@ function main(): void {
   testProductionAndUpgrade();
   testProductionRateScalesWithDwell();
   testL3CapTen();
+testPopCapPausesAndResumes();
   testDwellReleasedOnDeath();
   testHouseDestroyedReleasesDwellers();
   testUpgradeKeepsFootprint();

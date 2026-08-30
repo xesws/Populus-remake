@@ -453,8 +453,12 @@ export function houseMaxPop(level: number): number {
   return level === 3 ? 10 : level === 2 ? 5 : 2;
 }
 
-// v0.15：全局人口上限已移除——传教感化会持续加人，出生被上限拦死会让所有茅屋假死；
-// 生产只受"屋里是否有人"约束，人口数字仅作统计（HUD 显示子民数）。
+// v0.15 全局人口上限曾移除（出生被拦死导致茅屋假死）。
+// v0.28h 重新引入**分队**人口上限（用户拍板，性能考虑）：蓝 350 / 红 200。
+// 与旧实现的关键区别：到上限时茅屋只是**暂停出生（进度保留）**，人口一降下一帧立即
+// 恢复生产，绝不丢弃进度——不会再现 v0.15 之前的假死/卡死。上限是可变 Record，
+// 测试可临时改小（用完记得还原）。
+export const POP_CAP: Record<Team, number> = { [BLUE]: 350, [RED]: 200 };
 
 // v0.11 生产速率：基础速率按等级，且每多一名住户加速（dwell=1 时即基础速率）。
 export function houseBaseRate(level: number): number {

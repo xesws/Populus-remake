@@ -3,6 +3,7 @@ import {
   clamp,
   houseBaseRate,
   HOUSE_ROOF_Y,
+  POP_CAP,
   sitePad,
   TOWER_CLIMB_T,
   TOWER_DECK_Y,
@@ -166,6 +167,18 @@ export class ProductionSystem implements ISystem {
       const rate = houseBaseRate(b.level) * (1 + HOUSE_DWELL_BONUS * (b.dwell - 1)) * sim.rates.of(b.team).prod;
       b.prod += rate * dt;
       if (b.prod >= 1) {
+        // v0.28h 分队人口上限：满员只是**暂停**（进度保留），人口一降立即恢复出生。
+        if (sim.countPop(b.team) >= POP_CAP[b.team]) {
+          logger.throttled(
+            `cap:${b.id}`,
+            2000,
+            LogLevel.Warn,
+            "produce",
+            `茅屋#${b.id} 满员待产（进度保留）`,
+            { team: b.team, pop: sim.countPop(b.team), cap: POP_CAP[b.team] },
+          );
+          continue;
+        }
         const spot = sim.hutDoor(b);
         if (!sim.world.walkableAt(spot.x, spot.z)) {
           logger.throttled(`door:${b.id}`, 2000, LogLevel.Warn, "produce", `茅屋#${b.id} 门口不可走`, {

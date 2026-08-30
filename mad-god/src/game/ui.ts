@@ -1,6 +1,6 @@
 import { canUnlock } from "./spells";
 import { Sim } from "./sim";
-import { BLUE, BuildingKind, RED, SIZE, Tool, TrainKind, WATER } from "./types";
+import { BLUE, BuildingKind, POP_CAP, RED, SIZE, Tool, TrainKind, WATER } from "./types";
 import { World } from "./world";
 
 export class HUD {
@@ -98,8 +98,8 @@ export class HUD {
         fill.style.transform = `scaleX(${p.toFixed(3)})`;
       }
     });
-    // v0.15：人口上限已移除（感化加人不受限，上限只会拦死出生），只显示子民数。
-    this.popB.textContent = String(sim.countPop(BLUE));
+    // v0.28h 分队人口上限回归：显示 X/上限，满员一眼可见（生产暂停、进度保留）。
+    this.popB.textContent = `${sim.countPop(BLUE)}/${POP_CAP[BLUE]}`;
     this.popR.textContent = String(sim.countPop(RED));
     this.housesB.textContent = String(sim.countHouses(BLUE));
     this.housesR.textContent = String(sim.countHouses(RED));

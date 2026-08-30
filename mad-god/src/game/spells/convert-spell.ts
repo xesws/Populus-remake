@@ -1,4 +1,4 @@
-import { canConvert, CONVERT_CAST_RANGE, CONVERT_RADIUS, inMap, Team } from "../types";
+import { POP_CAP, canConvert, CONVERT_CAST_RANGE, CONVERT_RADIUS, inMap, Team } from "../types";
 import type { Sim } from "../sim";
 import { Spell, SpellResult } from "./spell";
 
@@ -21,6 +21,11 @@ export class ConvertSpell extends Spell {
       return { ...empty, msg: "需在大祭司身边施放" };
     }
     if (!sim.spendCharge(team, this.id)) return { ...empty, msg: "法力不足" };
+    // v0.28h 人口上限：己方满员直接拒放（不扣颗）——圈内没人可转，转化无从谈起。
+    if (sim.countPop(team) >= POP_CAP[team]) {
+      sim.refundCharge(team, this.id, 1);
+      return { ...empty, msg: "子民已满" };
+    }
     const foe: Team = team === 0 ? 1 : 0;
     let n = 0;
     for (const u of sim.units) {

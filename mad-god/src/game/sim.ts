@@ -45,6 +45,7 @@ import {
   Tool,
   FIREBALL_IMPACT_DMG,
   FIREBALL_IMPACT_R,
+  POP_CAP,
   TOWER_GARRISON_MAX,
   TOWER_CLIMB_T,
   FIREBALL_BURN_DPS,
@@ -557,7 +558,16 @@ export class Sim {
    * v0.26 公共换队逻辑（感化/转化共用一个出口，保证行为一致）：
    * 目标单位直接换队并重置为对方 walker，不经出生流程；source 区分来源（preach/spell）落日志。
    */
-  convertTo(tgt: Unit, newTeam: Team, source: "preach" | "spell"): void {
+  convertTo(tgt: Unit, newTeam: Team, source: "preach" | "spell"): boolean {
+    // v0.28h 人口上限：接收方满员则转化失败（目标保持原队）——感化方下一轮重试。
+    if (tgt.team !== newTeam && this.countPop(newTeam) >= POP_CAP[newTeam]) {
+      logger.throttled("convert:cap", 2000, LogLevel.Warn, "combat", `转化被拒：队伍${newTeam}已满员`, {
+        pop: this.countPop(newTeam),
+        cap: POP_CAP[newTeam],
+        source,
+      });
+      return false;
+    }
     tgt.team = newTeam;
     tgt.kind = "walker";
     tgt.str = Math.max(1, tgt.str);
@@ -583,6 +593,7 @@ export class Sim {
       pop: this.countPop(newTeam),
       source,
     });
+    return true;
   }
 
   /** v0.26 着火持续伤害：burnT 期间每秒 burnDps（火球法术的轻微灼烧）。 */
@@ -1012,6 +1023,7 @@ export class Sim {
         huts,
         dwell,
         popB: this.countPop(BLUE),
+        popCapB: POP_CAP[BLUE],
         popR: this.countPop(1),
         chargesB: this.totalCharges(BLUE),
         freezeProd: this.freezeProd,
