@@ -29,7 +29,7 @@ function testFireballDefaultKnockdown(): void {
   fire.order = "fight";
   const full = foe.hp;
 
-  const orig = stubRandom(0.99); // ≥ 0.2：默认击退倒地（随机方向角也由 stub 常数决定，确定性）
+  const orig = stubRandom(0.99); // ≥ 0.2：走默认击退分支（击退方向由弹道决定，stub 只关掉暴击）
   try {
     fireAndHit(sim);
   } finally {
@@ -37,13 +37,13 @@ function testFireballDefaultKnockdown(): void {
   }
   assert(foe.hp === full, "倒地瞬间不扣血（伤害延迟到站起）");
   assert(foe.downT > 0, "被火球命中后倒地");
-  const moved = Math.hypot(foe.x - 22, foe.z - 20);
-  assert(moved > 0.1 && moved <= 0.6, `随机方向击退约半格（d=${moved.toFixed(2)}）`);
+  const moved = foe.x - 22; // 弹道 +x：击退应沿 +x（远离射手）
+  assert(moved >= 0.7 && moved <= 1.2, `每发必沿弹道击退约一步（d=${moved.toFixed(2)}，朝远离射手方向）`);
   assert(foe.flyVy === 0 && !foe.flyKill, "默认命中不打飞");
 
   fire.atkId = 0; // 停火，观察站起结算
   for (let i = 0; i < 100 && foe.downT > 0; i++) sim.tick(0.05);
-  assert(foe.downT === 0, "0.9s 后站起");
+  assert(foe.downT === 0, "0.6s 后站起");
   assert(foe.downDmg === 0, "延迟伤害已清零");
   assert(
     Math.abs(foe.hp - (full - damageAfterArmor("firewarrior", "warrior"))) < 1e-6,

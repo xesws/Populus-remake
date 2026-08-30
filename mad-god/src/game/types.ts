@@ -161,7 +161,7 @@ export function acquireRole(kind: UnitKind): AcquireRole {
 }
 
 // v0.9/v0.12 火球参数：弹速、暴击击飞（落地即死）与默认击退倒地。
-export const FIREBALL_SPEED = 4;
+export const FIREBALL_SPEED = 5.2; // v0.28a 提速 1.3×（原 4）：弹道更利落，塔上齐射更凶
 // v0.27f 火球法术重构为"天降陨石"：施放后火球从高空坠落（约 0.85s 落地），
 // 撞击只造成小直接伤害（FIREBALL_IMPACT_DMG，村民 6 血剩 3，不再瞬间蒸发），
 // 主伤害靠点燃：fireT 视觉火焰 + burnT/burnDps 持续掉血把目标烧死。
@@ -176,8 +176,8 @@ export const FIREBALL_FIRE_T = 4;
 export const CONVERT_CAST_RANGE = 4;
 export const CONVERT_RADIUS = 2.5;
 export const FIRE_CRIT_CHANCE = 0.2; // 暴击：像闪电一样真正打飞，摔下来直接死亡
-export const FIRE_KNOCK_DIST = 0.5; // 默认命中：随机方向击退半格并倒地
-export const FIRE_DOWN_TIME = 0.9; // 倒地时长，站起瞬间才结算伤害
+export const FIRE_KNOCK_DIST = 1.0; // v0.28a 每发必击退：沿弹道方向（远离射手）推一步
+export const FIRE_DOWN_TIME = 0.6; // 短暂倒地，站起瞬间才结算伤害（原 0.9）
 
 // v0.12 武士暴击：概率击退并追加伤害（村民/传教士/间谍/萨满无暴击）。
 export const WARRIOR_CRIT_CHANCE = 0.5;

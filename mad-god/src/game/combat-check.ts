@@ -1,5 +1,5 @@
 import { Sim } from "./sim";
-import { attackInterval, BLUE, damageAfterArmor, houseHp, RED, unitDamageToBuilding, unitHp } from "./types";
+import { attackInterval, BLUE, damageAfterArmor, FIREBALL_SPEED, houseHp, RED, unitDamageToBuilding, unitHp } from "./types";
 import { World } from "./world";
 
 function assert(cond: boolean, msg: string): void {
@@ -79,6 +79,8 @@ function testCounterMultiplier(): void {
   fire.order = "fight";
 
   // v0.12 起火球默认命中为倒地延迟扣血；伤害在站起瞬间经克制结算。
+  // v0.28a 每发必击退：沿弹道方向（远离射手）推 ~1 格 + 短暂倒地；弹速 4→5.2。
+  assert(FIREBALL_SPEED === 5.2, "弹速提速 1.3×（4→5.2）");
   const orig = stubRandom(0.99); // 无暴击
   try {
     sim.combat(0.05);
@@ -88,6 +90,8 @@ function testCounterMultiplier(): void {
     Math.random = orig;
   }
   assert(villager.downT > 0 && villager.hp > 0, "默认命中：倒地、伤害延迟到站起");
+  const knocked = villager.x - 20.4;
+  assert(knocked >= 0.7, `每发必沿弹道击退 ~1 格（沿 +x 推了 ${knocked.toFixed(2)}，朝远离射手方向）`);
   for (let i = 0; i < 100 && villager.downT > 0; i++) sim.tick(0.05);
   assert(villager.hp <= 0, "克制系数表生效：火战士对村民 ×1.2，站起结算 round(5×1.2)=6 直接带走");
 

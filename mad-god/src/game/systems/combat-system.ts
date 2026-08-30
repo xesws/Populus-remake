@@ -560,9 +560,10 @@ export class CombatSystem implements ISystem {
       u.path = [];
       u.pathI = 0;
     } else {
-      // 默认击退：随机方向半格（pushUnit 分段探测，撞墙截断），倒地 + 伤害延付。
-      const ang = Math.random() * Math.PI * 2;
-      this.pushUnit(sim, u, u.x - Math.cos(ang), u.z - Math.sin(ang), FIRE_KNOCK_DIST);
+      // v0.28a 每发必击退：沿弹道方向（= 来弹去向，远离射手）推一步（pushUnit 分段探测，
+      // 撞墙截断），短暂倒地 + 伤害延付。不再是"随机方向半格"，暴击的大击飞照旧。
+      const len = Math.hypot(p.vx, p.vz) || 1;
+      this.pushUnit(sim, u, u.x - p.vx / len, u.z - p.vz / len, FIRE_KNOCK_DIST);
       u.downT = FIRE_DOWN_TIME;
       u.downDmg += unitAttack("firewarrior");
       u.path = [];
