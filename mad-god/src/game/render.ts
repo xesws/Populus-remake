@@ -632,12 +632,17 @@ export class View {
   syncUnits(sim: Sim): void {
     const live = new Set<number>();
     for (const u of sim.units) {
-      // v0.27-3 驻塔牛战士例外：住在哨塔里的单位画在塔顶平台（其余在屋单位照旧隐藏）。
+      // v0.27-3 驻塔牛战士画在塔顶平台；v0.27h 茅屋住户画在屋顶（sim.arrangeDwellers
+      // 已把坐标排到屋顶站位，照常走地面单位的绘制路径即可，选圈/点击都随坐标走）。
       let towerTop: { x: number; z: number; y: number } | null = null;
       if (u.homeId > 0 && u.enterT <= 0) {
         const home = sim.buildingById(u.homeId);
-        if (!home || home.kind !== "tower") continue;
-        towerTop = { x: home.x, z: home.z, y: home.y + TOWER_DECK_Y }; // 站在瞭望台面上，栏间可见
+        if (!home) continue;
+        if (home.kind === "tower") {
+          towerTop = { x: home.x, z: home.z, y: home.y + TOWER_DECK_Y }; // 站在瞭望台面上，栏间可见
+        } else if (home.kind !== "hut") {
+          continue; // 其他建筑（营地无驻人）不画
+        }
       }
       live.add(u.id);
       let g = this.unitMeshes.get(u.id);

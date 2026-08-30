@@ -122,12 +122,12 @@ export const UNIT_ATK_CD: Record<UnitKind, number> = {
 
 // 自动索敌半径（格）；0 = 不主动索敌、只还手。v0.8 生效；v0.19 武士 10 步、间谍 4 步；
 // v0.23 武士 13、牛头人 8（射程 4.5 的 ~1.8 倍）——用户要求"范围广一点才能主动扑过去"。
-// v0.27-2 再扩：武士 13→20（≥1.5×，追击才有意义）、牛头人 8→12（1.5×，站桩锁敌圈）、
-// 传教士 3→4.5（窄范围但必须追得上）。
+// v0.27-2 扩过一轮：武士 13→20、牛头人 8→12、传教士 3→4.5。
+// v0.27h 用户拍板回调：武士 20→8（近战索敌不该比远程牛头人 12 还大）。
 export const UNIT_SIGHT: Record<UnitKind, number> = {
   shaman: 0,
   walker: 0,
-  warrior: 20,
+  warrior: 8,
   preacher: 4.5,
   firewarrior: 12,
   spy: 4,
@@ -185,6 +185,10 @@ export const GUARD_DANCE_R = 2.2; // 绕圈跳舞的圆周半径（格）
 export const HOUSE_WALL = [0, 2.2, 2.2, 2.2] as const;
 export const HOUSE_ROOF = [0, 2.2, 2.2, 2.2] as const;
 export const HOUSE_PAD = [0, 2.6, 2.6, 2.6] as const;
+
+// v0.27h 住户"上房"：茅屋住户站上屋顶（按等级的屋顶面高度），玩家可直接点选拉出。
+// 高度对齐 render 的各级屋顶尖：L1 茅草尖 ~1.2 / L2 石檐 ~1.65 / L3 城堡顶 ~2.1。
+export const HOUSE_ROOF_Y = [0, 1.2, 1.65, 2.1] as const;
 
 // v0.27-3 哨塔 → v0.27f 瘦身加高：占地缩为小圆口径（TOWER_PAD 0.9，直径 ≈ 旧边长 1.8 的一半），
 // 外观改为"魔法哨塔"——细高石柱 + 瞭望台 + 四面栅栏（栏间即窗口，驻塔牛战士可见/开火）+ 队色尖顶。

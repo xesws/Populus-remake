@@ -643,6 +643,11 @@ export class Sim {
   orderMove(team: Team, x: number, z: number): void {
     const selected = this.selectedOf(team);
     if (!selected.length) return;
+    // v0.27h 选中驻扎者（屋顶村民/塔上牛战士）右键 = 走出来再执行指令；
+    // 驻扎者唯一自动出口是建筑损毁，索敌/战斗绝不自己跑出来。
+    for (const u of selected) {
+      if (u.homeId > 0) this.leaveBuilding(u, "（玩家下令走出）");
+    }
     const b = this.buildingAt(x, z);
     if (b && b.team === team && b.hp > 0 && b.level >= 1 && b.kind === "hut") {
       let sent = 0;
@@ -776,6 +781,10 @@ export class Sim {
   orderAttackTarget(team: Team, target: Unit | Building): void {
     const selected = this.selectedOf(team);
     if (!selected.length) return;
+    // v0.27h 选中驻扎者参与攻击令：先走出建筑再扑向目标。
+    for (const u of selected) {
+      if (u.homeId > 0) this.leaveBuilding(u, "（玩家下令出战）");
+    }
     const isB = this.isBuildingTarget(target);
     let sent = 0;
     for (const u of selected) {
@@ -1003,6 +1012,7 @@ export class Sim {
 
   tickEnter(dt: number): void {
     this.productionSystem.tickEnter(this, dt);
+    this.arrangeDwellers(); // v0.27h 住户上屋顶站位（可见/可点选）
   }
 
   tickTrees(dt: number): void {
@@ -1029,6 +1039,11 @@ export class Sim {
 
   produce(dt: number): void {
     this.productionSystem.produce(this, dt);
+  }
+
+  /** v0.27h 住户上屋顶：茅屋住户排到屋顶站位（坐标+高度），渲染/点选都走这里。 */
+  arrangeDwellers(): void {
+    this.productionSystem.arrangeDwellers(this);
   }
 
   spawnNear(b: Building): Cell | null {
@@ -1174,6 +1189,56 @@ export class Sim {
     this.productionSystem.deliverWood(this, b);
   }
 
+  /**
+   * v0.27h 主动走出建筑（茅屋/哨塔通用）：释放占用名额（茅屋 dwell-1）、
+   * 从屋顶/塔顶弹到门口，清战斗与移动意图。玩家右键地面/敌人时对选中驻扎者预弹射；
+   * 哨塔损毁的自动弹出也走这里。唯一出口——驻扎者绝不因索敌/战斗自己跑出来。
+   */
+  leaveBuilding(u: Unit, why = ""): void {
+    if (u.homeId <= 0) return;
+    const b = this.buildings.find((x) => x.id === u.homeId);
+    u.homeId = 0;
+    u.enterT = 0;
+    u.path = [];
+    u.pathI = 0;
+    u.job = "idle";
+    u.think = 0.3;
+    u.atkId = 0;
+    u.agroX = -1;
+    u.agroZ = -1;
+    u.targetId = 0;
+    u.channel = 0;
+    u.carry = 0;
+    if (!b) return;
+    if (b.kind === "hut") {
+      b.dwell = Math.max(0, b.dwell - 1);
+      const door = this.hutDoor(b);
+      u.x = door.x;
+      u.z = door.z;
+    } else {
+      const spot = this.spawnNear(b) ?? { x: b.x, z: b.z };
+      u.x = spot.x;
+      u.z = spot.z;
+    }
+    u.y = this.world.heightAt(u.x, u.z);
+    logger.info("produce", `单位#${u.id} 走出建筑#${b.id}(${b.kind})${why}`, { dwell: b.dwell, team: u.team });
+  }
+
+  /** v0.27h 拾取驻扎者（屋顶/塔顶）：范围内最近的己方在驻单位（selectAt 兜底用）。 */
+  occupantAt(x: number, z: number, r: number, team: Team): Unit | null {
+    let best: Unit | null = null;
+    let bestD = r * r;
+    for (const u of this.units) {
+      if (u.team !== team || u.homeId <= 0 || u.enterT > 0) continue;
+      const d = dist2(x, z, u.x, u.z);
+      if (d < bestD) {
+        bestD = d;
+        best = u;
+      }
+    }
+    return best;
+  }
+
   /** v0.27-3 哨塔当前驻军（牛战士）；无驻军返回 null。 */
   towerGarrison(b: Building): Unit | null {
     return this.units.find((u) => u.homeId === b.id && u.kind === "firewarrior" && u.hp > 0) ?? null;
@@ -1209,20 +1274,11 @@ export class Sim {
     return true;
   }
 
-  /** v0.27-3 弹出哨塔驻军：塔毁自动 / 玩家再点自家哨塔手动；弹出到塔边可走点位。 */
+  /** v0.27-3 弹出哨塔驻军：塔毁自动 / 玩家再点自家哨塔手动（统一走 leaveBuilding）。 */
   ejectTower(b: Building, why = ""): void {
     const g = this.units.find((u) => u.homeId === b.id && u.kind === "firewarrior");
     if (!g) return;
-    g.homeId = 0;
-    g.enterT = 0;
-    const spot = this.spawnNear(b) ?? { x: b.x, z: b.z };
-    g.x = spot.x;
-    g.z = spot.z;
-    g.y = this.world.heightAt(g.x, g.z);
-    g.job = "idle";
-    g.think = 0.5;
-    g.atkId = 0;
-    logger.info("combat", `牛战士#${g.id} 撤出哨塔#${b.id}${why}`, { team: g.team });
+    this.leaveBuilding(g, `（哨塔撤出${why}）`);
   }
 
   completeStep(b: Building): void {

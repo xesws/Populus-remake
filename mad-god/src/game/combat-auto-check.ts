@@ -212,10 +212,10 @@ function testWarriorClosesToMelee(): void {
 
 /** v0.27-2 f. 视野/拴绳数值：武士 20、牛头人 12、传教士 4.5；拴绳=视野+2。 */
 function testSightAndLeashValues(): void {
-  assert(UNIT_SIGHT.warrior === 20, "sight: 武士锁敌 20（13×1.5+）");
+  assert(UNIT_SIGHT.warrior === 8, "sight: 武士锁敌 8（v0.27h 回调：近战不应超远程）");
   assert(UNIT_SIGHT.firewarrior === 12, "sight: 牛头人锁敌 12（8×1.5）");
   assert(UNIT_SIGHT.preacher === 4.5, "sight: 传教士锁敌 4.5");
-  assert(agroLeash("warrior") === 22, "leash: 武士拴绳=22（视野+2）");
+  assert(agroLeash("warrior") === 10, "leash: 武士拴绳=10（视野 8+2）");
   assert(agroLeash("firewarrior") === 14, "leash: 牛头人拴绳=14");
   assert(agroLeash("walker") === 0, "leash: 不索敌兵种拴绳 0");
   console.log("testSightAndLeashValues ok");

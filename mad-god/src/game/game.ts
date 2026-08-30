@@ -330,7 +330,9 @@ export class Game {
     let best = undefined as (typeof this.sim.units)[number] | undefined;
     let bestD = 28 * 28;
     for (const u of this.sim.units) {
-      if (u.team !== BLUE || u.homeId > 0) continue;
+      // v0.27h 屋顶村民/塔上牛战士可点选（坐标已在建筑上，屏幕投影正确）；
+      // 进屋动画中（enterT>0）的不选。
+      if (u.team !== BLUE || u.enterT > 0) continue;
       const p = this.view.worldToCanvas(u.x, u.y + 0.28, u.z, this.canvas);
       const d = (p.x - sx) * (p.x - sx) + (p.y - sy) * (p.y - sy);
       if (d <= bestD) {
@@ -397,6 +399,13 @@ export class Game {
 
   selectAt(x: number, z: number): void {
     for (const u of this.sim.units) u.selected = false;
+    // v0.27h 地面拾取兜底：点在茅屋/哨塔上时优先选中驻扎者（屋顶站位坐标）。
+    const occ = this.sim.occupantAt(x, z, 0.9, BLUE);
+    if (occ) {
+      occ.selected = true;
+      this.sim.toast(this.pickLabel(occ.kind));
+      return;
+    }
     const u = this.sim.unitAt(x, z, 0.8);
     if (u && u.team === BLUE) {
       u.selected = true;

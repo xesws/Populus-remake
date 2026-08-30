@@ -33,9 +33,9 @@ function testWarriorSight10(): void {
     const sim = new Sim(new World(42));
     const at = findClear(sim, 20, 20);
     const warrior = sim.addUnit(BLUE, "warrior", at.x, at.z);
-    const foe = sim.addUnit(RED, foeKind, at.x + 12, at.z); // v0.23 索敌 13 步内
+    const foe = sim.addUnit(RED, foeKind, at.x + 7, at.z); // v0.27h 武士索敌 8 步内
     for (let i = 0; i < 100 && warrior.atkId === 0; i++) sim.tick(0.05);
-    assert(warrior.atkId === foe.id, `武士 13 步内自动锁定敌方${foeKind === "shaman" ? "大祭司" : "村民"}`);
+    assert(warrior.atkId === foe.id, `武士 8 步内自动锁定敌方${foeKind === "shaman" ? "大祭司" : "村民"}`);
   }
   console.log("testWarriorSight10 ok");
 }

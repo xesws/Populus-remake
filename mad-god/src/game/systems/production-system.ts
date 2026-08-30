@@ -2,6 +2,7 @@ import {
   BLUE,
   clamp,
   houseBaseRate,
+  HOUSE_ROOF_Y,
   TOWER_PAD,
   houseHp,
   houseMaxPop,
@@ -29,14 +30,29 @@ export class ProductionSystem implements ISystem {
     sim.markHouseBlocks();
     this.regenCharges(sim, dt);
     this.produce(sim, dt);
-    this.ejectRuinedTowers(sim);
+    this.arrangeDwellers(sim);
   }
 
-  /** v0.27-3 哨塔损毁（被打爆/地基失效）：驻塔牛战士自动弹出到塔边（幂等，无驻军即空转）。 */
-  ejectRuinedTowers(sim: Sim): void {
+  /**
+   * v0.27h 住户"上房"：每座茅屋的住户在屋顶排一圈小站位（r=0.55、按序错角），
+   * 屋顶高度 HOUSE_ROOF_Y[level]。目的有二：① 屋里住了几个人一眼可见；
+   * ② 玩家能直接点选屋顶上的具体村民、右键拉他出来（进出对等的驻扎机制）。
+   * 仍在进屋动画（enterT>0）的不动；单位坐标在屋内地基上，不影响寻路/生产。
+   */
+  arrangeDwellers(sim: Sim): void {
     for (const b of sim.buildings) {
-      if (b.kind !== "tower" || b.hp > 0) continue;
-      if (sim.units.some((u) => u.homeId === b.id)) sim.ejectTower(b, "（哨塔损毁）");
+      if (b.kind !== "hut" || b.hp <= 0 || b.level < 1) continue;
+      const lv = b.level >= 3 ? 3 : b.level;
+      let i = 0;
+      for (const u of sim.units) {
+        if (u.homeId !== b.id || u.enterT > 0) continue;
+        const ang = i * 2.4; // 黄金角错开，人数增减不整体重排
+        const p = sim.padLocalToWorld(b, Math.cos(ang) * 0.55, Math.sin(ang) * 0.55);
+        u.x = p.x;
+        u.z = p.z;
+        u.y = b.y + HOUSE_ROOF_Y[lv]!;
+        i++;
+      }
     }
   }
 
