@@ -45,6 +45,8 @@ import {
   Tool,
   FIREBALL_IMPACT_DMG,
   FIREBALL_IMPACT_R,
+  TOWER_GARRISON_MAX,
+  TOWER_CLIMB_T,
   FIREBALL_BURN_DPS,
   FIREBALL_BURN_T,
   FIREBALL_FIRE_T,
@@ -1101,7 +1103,10 @@ export class Sim {
         continue;
       }
       if (u.kind === "preacher" && u.channel > 0) continue;
-      if (u.think > 0 && u.path.length) continue;
+      // v0.28f 节流改纯时间制：旧条件"think>0 且有路径才跳过"会让**无路径**的单位
+      // 每帧 repath（待机村民/走不通的游走者 60Hz 刷 A*，实测 227 次/帧 = 卡顿二号元凶）。
+      // 追击/入住等链路不经此处（acquirePass/tryOccupy 独立驱动），不受影响。
+      if (u.think > 0) continue;
       u.think = 0.6 + Math.random() * 0.5;
       this.repath(u);
     }
@@ -1246,26 +1251,37 @@ export class Sim {
     return best;
   }
 
-  /** v0.27-3 哨塔当前驻军（牛战士）；无驻军返回 null。 */
-  towerGarrison(b: Building): Unit | null {
-    return this.units.find((u) => u.homeId === b.id && u.kind === "firewarrior" && u.hp > 0) ?? null;
+  /** v0.27-3 哨塔驻军（v0.28e 容量 3）；按 id 稳定排序保证塔顶站位不抖。 */
+  towerGarrison(b: Building): Unit[] {
+    return this.units
+      .filter((u) => u.homeId === b.id && u.kind === "firewarrior" && u.hp > 0)
+      .sort((x, y) => x.id - y.id);
+  }
+
+  /** v0.28e 塔顶瞭望台站位：3 个槽位绕塔心均分（半径 0.28），index 超出取模。 */
+  towerSlotPos(b: Building, index: number): Cell {
+    const ang = (index % TOWER_GARRISON_MAX) * ((Math.PI * 2) / TOWER_GARRISON_MAX) + Math.PI / 6;
+    return this.padLocalToWorld(b, Math.cos(ang) * 0.28, Math.sin(ang) * 0.28);
   }
 
   /**
-   * v0.27-3 哨塔驻扎：右键自家哨塔后牛战士走到塔边（≤2.6 格）自动上塔。
-   * 阈值要盖住 padEdge 站位（v0.27f 瘦身后塔半宽 0.45 + 站位外扩 0.62 ≈ 1.1）再留碰撞余量。
-   * 塔内容量 TOWER_GARRISON_MAX=1；上塔后吸附塔心、隐藏选中、清战斗状态。
+   * v0.27-3 哨塔驻扎 → v0.28e 重做：走到塔边（≤2.6 格）后开始**爬塔动画**——
+   * 记录塔脚起点（climbX/Y/Z），enterT=TOWER_CLIMB_T 期间由 tickEnter 把单位
+   * 沿直线+爬升插值到瞭望台站位（真的"走到楼顶"，不再是瞬移吸附）。
+   * 容量 TOWER_GARRISON_MAX=3；塔顶站位由 towerSlotPos 按序分配。
    */
   tryGarrison(u: Unit): boolean {
     if (u.kind !== "firewarrior" || u.homeId > 0 || !u.targetId) return false;
     const t = this.buildingById(u.targetId);
     if (!t || t.kind !== "tower" || t.hp <= 0 || t.level < 1 || t.team !== u.team) return false;
-    if (this.towerGarrison(t)) return false; // 已有驻军（容量 1）
+    if (this.towerGarrison(t).length >= TOWER_GARRISON_MAX) return false; // 塔满（容量 3）
     if (dist2(u.x, u.z, t.x, t.z) > 2.6 * 2.6) return false;
     u.homeId = t.id;
     u.selected = false;
-    u.x = t.x;
-    u.z = t.z;
+    // 爬塔动画：从当前塔脚位置爬到瞭望台（tickEnter 驱动，物理上 y 逐步上升）。
+    u.climbX = u.x;
+    u.climbY = u.y;
+    u.climbZ = u.z;
     u.path = [];
     u.pathI = 0;
     u.job = "idle";
@@ -1275,17 +1291,17 @@ export class Sim {
     u.agroX = -1;
     u.agroZ = -1;
     u.channel = 0;
-    u.enterT = 0.6; // 攀爬入塔
-    logger.info("combat", `牛战士#${u.id} 驻扎哨塔#${t.id}`, { team: u.team });
-    if (u.team === BLUE) this.toast("牛战士登上哨塔");
+    u.enterT = TOWER_CLIMB_T;
+    logger.info("combat", `牛战士#${u.id} 开始爬上哨塔#${t.id}`, { team: u.team, garrison: this.towerGarrison(t).length });
+    if (u.team === BLUE) this.toast("牛战士攀上哨塔");
     return true;
   }
 
-  /** v0.27-3 弹出哨塔驻军：塔毁自动 / 玩家再点自家哨塔手动（统一走 leaveBuilding）。 */
+  /** v0.27-3 弹出哨塔驻军（v0.28e 全员弹出）：塔毁自动 / 玩家再点自家哨塔手动。 */
   ejectTower(b: Building, why = ""): void {
-    const g = this.units.find((u) => u.homeId === b.id && u.kind === "firewarrior");
-    if (!g) return;
-    this.leaveBuilding(g, `（哨塔撤出${why}）`);
+    for (const g of this.towerGarrison(b)) {
+      this.leaveBuilding(g, `（哨塔撤出${why}）`);
+    }
   }
 
   completeStep(b: Building): void {
@@ -1367,9 +1383,9 @@ export class Sim {
       return;
     }
 
-    // v0.8 自动索敌：在 order/job 分派之前尝试拿一个最近敌人；失败再走原逻辑。
-    this.combatSystem.acquireTarget(this, u);
-
+    // v0.8 自动索敌曾在此全量扫描（每次 repath O(n)——222 次/帧 × 500 单位就是
+    // 每帧 10 万次距离比较）。v0.28f 删除：CombatSystem.acquirePass 已按 4Hz
+    // 对全部单位做同样的索敌，这里纯属重复。
     // v0.27-2 已有【自动】攻击目标的待机单位不再游荡：近战追击由 CombatSystem 的锁敌刷新维持，
     // 牛头人站桩等目标进射程。旧实现靠 chaseAttack 把 job 设成 move 才绕开了 wander；
     // 远程站桩化后 job 保持 idle，会掉进游荡分支带着目标乱走。

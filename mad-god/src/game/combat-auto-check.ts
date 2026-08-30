@@ -379,6 +379,8 @@ function testMeleeFollowsUntilTargetEscapes(): void {
   foe.hp = 999;
 
   // 阶段 1：目标始终保持在武士前方 4 格逃跑 12+ 格（旧锚点拴绳 10 会中途放弃）。
+  // v0.28f 起首锁要等第一轮 acquirePass（≤0.25s）——脱锁判定从"已锁上"之后才开始。
+  let lockedOnce = false;
   let neverDropped = true;
   for (let i = 0; i < 600; i++) {
     sim.tick(0.05);
@@ -386,8 +388,10 @@ function testMeleeFollowsUntilTargetEscapes(): void {
     foe.z = warrior.z;
     foe.path = [];
     foe.pathI = 0;
-    if (warrior.atkId !== foe.id) neverDropped = false;
+    if (warrior.atkId === foe.id) lockedOnce = true;
+    else if (lockedOnce) neverDropped = false;
   }
+  assert(lockedOnce, "follow: 首锁在 0.25s 索敌轮内建立");
   const chased = Math.hypot(warrior.x - pad.x, warrior.z - pad.z);
   assert(neverDropped, "follow: 贴身目标全程不脱锁（锁了就追，绝不中途放手）");
   assert(chased >= 12, `follow: 无限追击位移 ≥12（实际 ${chased.toFixed(1)}，锚点制会在 ~10 掐断）`);

@@ -223,7 +223,10 @@ export class PathSystem implements ISystem {
       // Hold position after a player move order: idle wander must not immediately walk the unit away.
       u.think = 30;
     } else {
-      u.think = 0;
+      // v0.28f 到站节流：旧 think=0 会让游走/干活的单位一到站当帧就 repath
+      //（实测 528 单位 222 次 repath/帧、A* 每秒 1.3 万次，高人口卡顿二号元凶）。
+      // 战斗追击不受影响（refreshChase 对无路径单位无视 think 立即补路）。
+      u.think = 0.8 + Math.random() * 0.7;
     }
     const home = sim.buildingById(u.targetId);
     if (home) {
@@ -471,32 +474,49 @@ export class PathSystem implements ISystem {
         u.z += dz * push;
       }
     }
-    const n = sim.units.length;
-    for (let i = 0; i < n; i++) {
-      const a = sim.units[i]!;
-      if (a.homeId > 0) continue;
+    // v0.28f 单位对撞空间哈希：旧实现全员两两比较 O(n²)——528 单位实测 4.9ms/帧
+    //（每帧 ~14 万对），是高人口卡顿的头号元凶。现按 1 格格桶分桶，只与同桶及
+    // 右/下四个半邻桶的单位配对（最大半径和 0.5 < 桶宽 1.0，覆盖无遗漏）。
+    const CELL = 1.0;
+    const grid = new Map<number, Unit[]>();
+    for (const u of sim.units) {
+      if (u.homeId > 0) continue;
+      const k = (Math.floor(u.x / CELL) + 8) * 4096 + (Math.floor(u.z / CELL) + 8);
+      const arr = grid.get(k);
+      if (arr) arr.push(u);
+      else grid.set(k, [u]);
+    }
+    const pushPair = (a: Unit, b: Unit) => {
       const ra = UNIT_RADIUS[a.kind];
-      for (let j = i + 1; j < n; j++) {
-        const b = sim.units[j]!;
-        if (b.homeId > 0) continue;
-        const rb = UNIT_RADIUS[b.kind];
-        const dx = a.x - b.x;
-        const dz = a.z - b.z;
-        const d2 = dx * dx + dz * dz;
-        const need = ra + rb;
-        if (d2 >= need * need || d2 < 1e-8) continue;
-        const d = Math.sqrt(d2);
-        const rawPush = ((need - d) / d) * 0.5;
-        const dispMag = rawPush * d;
-        const scale = dispMag > 0.04 ? 0.04 / dispMag : 1.0;
-        const push = rawPush * scale;
-        a.x += dx * push;
-        a.z += dz * push;
-        b.x -= dx * push;
-        b.z -= dz * push;
+      const rb = UNIT_RADIUS[b.kind];
+      const dx = a.x - b.x;
+      const dz = a.z - b.z;
+      const d2 = dx * dx + dz * dz;
+      const need = ra + rb;
+      if (d2 >= need * need || d2 < 1e-8) return;
+      const d = Math.sqrt(d2);
+      const rawPush = ((need - d) / d) * 0.5;
+      const dispMag = rawPush * d;
+      const scale = dispMag > 0.04 ? 0.04 / dispMag : 1.0;
+      const push = rawPush * scale;
+      a.x += dx * push;
+      a.z += dz * push;
+      b.x -= dx * push;
+      b.z -= dz * push;
+    };
+    for (const [k, arr] of grid) {
+      for (let i = 0; i < arr.length; i++) {
+        const a = arr[i]!;
+        for (let j = i + 1; j < arr.length; j++) pushPair(a, arr[j]!);
+        // 半邻域四桶（右/下/右下/左下）——每对只被处理一次。
+        for (const nk of [k + 1, k + 4096, k + 4097, k + 4095]) {
+          const nb = grid.get(nk);
+          if (!nb) continue;
+          for (const b of nb) pushPair(a, b);
+        }
+        a.x = clamp(a.x, 0.3, WORLD - 0.3);
+        a.z = clamp(a.z, 0.3, WORLD - 0.3);
       }
-      a.x = clamp(a.x, 0.3, WORLD - 0.3);
-      a.z = clamp(a.z, 0.3, WORLD - 0.3);
     }
     for (const u of sim.units) {
       if (u.job !== "train" || !u.targetId) continue;
