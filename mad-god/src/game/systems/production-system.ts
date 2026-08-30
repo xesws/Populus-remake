@@ -2,6 +2,7 @@ import {
   BLUE,
   clamp,
   houseBaseRate,
+  TOWER_PAD,
   houseHp,
   houseMaxPop,
   HOUSE_DWELL_BONUS,
@@ -28,6 +29,15 @@ export class ProductionSystem implements ISystem {
     sim.markHouseBlocks();
     this.regenCharges(sim, dt);
     this.produce(sim, dt);
+    this.ejectRuinedTowers(sim);
+  }
+
+  /** v0.27-3 哨塔损毁（被打爆/地基失效）：驻塔牛战士自动弹出到塔边（幂等，无驻军即空转）。 */
+  ejectRuinedTowers(sim: Sim): void {
+    for (const b of sim.buildings) {
+      if (b.kind !== "tower" || b.hp > 0) continue;
+      if (sim.units.some((u) => u.homeId === b.id)) sim.ejectTower(b, "（哨塔损毁）");
+    }
   }
 
   tickTrees(sim: Sim, dt: number): void {
@@ -54,7 +64,8 @@ export class ProductionSystem implements ISystem {
       if (b.shell || sim.lavaOnPad(b)) continue;
       if (b.kind === "hut") {
         if (sim.world.houseLevelAt(b.x, b.z, b.yaw) === 0) b.hp = 0;
-      } else if (isCampKind(b.kind)) {
+      } else if (isCampKind(b.kind) || b.kind === "tower") {
+        // v0.27-3 哨塔与营地同款地基校验（塔更小，同样不能悬空/泡水）。
         const s = sim.world.padStats(b.x, b.z, b.padW, b.padD, b.yaw);
         if (s.n === 0 || s.land < 0.55 || s.mean <= WATER) b.hp = 0;
       }
@@ -235,12 +246,14 @@ export class ProductionSystem implements ISystem {
       if (b.level === 0) this.upgradeBuilding(sim, b, 1);
       return;
     }
-    if (isCampKind(b.kind) && b.level === 0) this.upgradeBuilding(sim, b, 1);
+    // v0.27-3 哨塔与营地同款完工：送满木头即落成（塔只需 1 捆，落成最快）。
+    if ((isCampKind(b.kind) || b.kind === "tower") && b.level === 0) this.upgradeBuilding(sim, b, 1);
   }
 
   upgradeBuilding(sim: Sim, b: Building, level: number): void {
     b.level = level;
-    const pad = padSize(b.kind === "hut" ? level : 1);
+    // v0.27-3 哨塔占地独立（TOWER_PAD 1.8，比茅屋/营地的 2.6 小一圈）。
+    const pad = b.kind === "hut" ? padSize(level) : b.kind === "tower" ? { w: TOWER_PAD, d: TOWER_PAD } : padSize(1);
     const h = sim.world.heightAt(b.x, b.z);
     sim.world.flattenPad(b.x, b.z, pad.w, pad.d, b.yaw, h);
     b.padW = pad.w;
@@ -262,6 +275,8 @@ export class ProductionSystem implements ISystem {
       else sim.toast(b.team === BLUE ? `茅屋升至 ${level} 级` : "敌方茅屋升级");
     } else if (isCampKind(b.kind)) {
       sim.toast(b.team === BLUE ? "训练营落成" : "敌方训练营落成");
+    } else if (b.kind === "tower") {
+      sim.toast(b.team === BLUE ? "哨塔落成" : "敌方哨塔落成");
     }
   }
 

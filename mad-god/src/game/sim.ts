@@ -666,6 +666,23 @@ export class Sim {
       if (team === BLUE) this.toast("前往训练");
       return;
     }
+    // v0.27-3 哨塔：选中牛战士右键自家哨塔 = 前往驻扎；选中的都不是牛战士（含空编队里
+    // 混了武士/村民）= 撤出当前驻军。玩家手动撤出的单位弹出到塔边，可再选中下指令。
+    if (b && b.team === team && b.hp > 0 && b.level >= 1 && b.kind === "tower") {
+      const fires = selected.filter((u) => u.kind === "firewarrior" && u.homeId === 0 && !this.inSwamp(u));
+      if (fires.length) {
+        for (const f of fires) {
+          const edge = this.padEdge(b.x, b.z, b.padW, b.padD, b.yaw, f.x, f.z);
+          this.sendMove(f, edge.x, edge.z);
+          f.targetId = b.id;
+          f.atkId = 0;
+        }
+        if (team === BLUE) this.toast("牛战士前往哨塔");
+        return;
+      }
+      this.ejectTower(b, "（玩家下令撤出）");
+      return;
+    }
     for (const u of selected) {
       u.atkId = 0;
       this.sendMove(u, x, z);
@@ -1028,6 +1045,7 @@ export class Sim {
       if (u.homeId > 0) continue;
       u.think -= dt;
       if (this.tryOccupy(u)) continue;
+      if (this.tryGarrison(u)) continue; // v0.27-3 哨塔驻扎（牛战士走到塔边自动上塔）
       if (this.inSwamp(u)) {
         u.path = [];
         u.pathI = 0;
@@ -1147,6 +1165,58 @@ export class Sim {
 
   deliverWood(b: Building): void {
     this.productionSystem.deliverWood(this, b);
+  }
+
+  /** v0.27-3 哨塔当前驻军（牛战士）；无驻军返回 null。 */
+  towerGarrison(b: Building): Unit | null {
+    return this.units.find((u) => u.homeId === b.id && u.kind === "firewarrior" && u.hp > 0) ?? null;
+  }
+
+  /**
+   * v0.27-3 哨塔驻扎：右键自家哨塔后牛战士走到塔边（≤2.6 格）自动上塔。
+   * 阈值要盖住 padEdge 站位（塔半宽 0.9 + 站位外扩 0.62 ≈ 1.5）再留碰撞余量——
+   * 实测走到 2.36 格就会被地基/单位碰撞顶住，卡在 2.2 阈值外导致永不上塔。
+   * 塔内容量 TOWER_GARRISON_MAX=1；上塔后吸附塔心、隐藏选中、清战斗状态。
+   */
+  tryGarrison(u: Unit): boolean {
+    if (u.kind !== "firewarrior" || u.homeId > 0 || !u.targetId) return false;
+    const t = this.buildingById(u.targetId);
+    if (!t || t.kind !== "tower" || t.hp <= 0 || t.level < 1 || t.team !== u.team) return false;
+    if (this.towerGarrison(t)) return false; // 已有驻军（容量 1）
+    if (dist2(u.x, u.z, t.x, t.z) > 2.6 * 2.6) return false;
+    u.homeId = t.id;
+    u.selected = false;
+    u.x = t.x;
+    u.z = t.z;
+    u.path = [];
+    u.pathI = 0;
+    u.job = "idle";
+    u.think = 99;
+    u.targetId = 0;
+    u.atkId = 0;
+    u.agroX = -1;
+    u.agroZ = -1;
+    u.channel = 0;
+    u.enterT = 0.6; // 攀爬入塔
+    logger.info("combat", `牛战士#${u.id} 驻扎哨塔#${t.id}`, { team: u.team });
+    if (u.team === BLUE) this.toast("牛战士登上哨塔");
+    return true;
+  }
+
+  /** v0.27-3 弹出哨塔驻军：塔毁自动 / 玩家再点自家哨塔手动；弹出到塔边可走点位。 */
+  ejectTower(b: Building, why = ""): void {
+    const g = this.units.find((u) => u.homeId === b.id && u.kind === "firewarrior");
+    if (!g) return;
+    g.homeId = 0;
+    g.enterT = 0;
+    const spot = this.spawnNear(b) ?? { x: b.x, z: b.z };
+    g.x = spot.x;
+    g.z = spot.z;
+    g.y = this.world.heightAt(g.x, g.z);
+    g.job = "idle";
+    g.think = 0.5;
+    g.atkId = 0;
+    logger.info("combat", `牛战士#${g.id} 撤出哨塔#${b.id}${why}`, { team: g.team });
   }
 
   completeStep(b: Building): void {

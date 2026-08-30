@@ -1,6 +1,6 @@
 import * as THREE from "three";
 import { Sim } from "./sim";
-import { BLUE, clamp, FIRE_DOWN_TIME, FxBolt, houseMaxPop, isCampKind, SAMPLES, STEP, Team, TRAIN_TIME, WATER, WORLD } from "./types";
+import { BLUE, clamp, FIRE_DOWN_TIME, FxBolt, houseMaxPop, isCampKind, SAMPLES, STEP, Team, TOWER_TOP, TRAIN_TIME, WATER, WORLD } from "./types";
 import { World } from "./world";
 import { TornadoFX } from "./render-parts/tornado-fx";
 import { LavaFX } from "./render-parts/lava-fx";
@@ -626,7 +626,13 @@ export class View {
   syncUnits(sim: Sim): void {
     const live = new Set<number>();
     for (const u of sim.units) {
-      if (u.homeId > 0 && u.enterT <= 0) continue;
+      // v0.27-3 驻塔牛战士例外：住在哨塔里的单位画在塔顶平台（其余在屋单位照旧隐藏）。
+      let towerTop: { x: number; z: number; y: number } | null = null;
+      if (u.homeId > 0 && u.enterT <= 0) {
+        const home = sim.buildingById(u.homeId);
+        if (!home || home.kind !== "tower") continue;
+        towerTop = { x: home.x, z: home.z, y: home.y + TOWER_TOP - 0.2 };
+      }
       live.add(u.id);
       let g = this.unitMeshes.get(u.id);
       const teamVis = u.team === 2 ? 0 : (u.team as Team);
@@ -640,7 +646,8 @@ export class View {
         this.unitGroup.add(g);
       }
       const bob = Math.abs(Math.sin(this.t * 8 + u.phase)) * 0.03;
-      g.position.set(u.x, u.y + bob, u.z);
+      if (towerTop) g.position.set(towerTop.x, towerTop.y + bob, towerTop.z);
+      else g.position.set(u.x, u.y + bob, u.z);
       g.rotation.y = u.yaw;
       // v0.12 倒地动画：命中后 0.2s 倒下 → 平躺 → 归零前 0.2s 爬起，倾角按包络系数过渡。
       if (u.downT > 0) {

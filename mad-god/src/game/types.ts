@@ -48,6 +48,8 @@ export function isCampKind(kind: BuildingKind): boolean {
 export function woodNeedFor(kind: BuildingKind, level: number): number {
   if (isCampKind(kind)) return level >= 1 ? 0 : 4;
   if (kind === "hut") return level >= 1 ? 0 : 2;
+  // v0.27-3 哨塔：1 捆木头（比茅屋的 2 捆还少）——定位是速起的防御工事。
+  if (kind === "tower") return level >= 1 ? 0 : 1;
   return 0;
 }
 
@@ -175,6 +177,14 @@ export const GUARD_DANCE_R = 2.2; // 绕圈跳舞的圆周半径（格）
 export const HOUSE_WALL = [0, 2.2, 2.2, 2.2] as const;
 export const HOUSE_ROOF = [0, 2.2, 2.2, 2.2] as const;
 export const HOUSE_PAD = [0, 2.6, 2.6, 2.6] as const;
+
+// v0.27-3 哨塔：占地小（1.8，塔身 1.2×1.2），驻 1 名牛战士从塔顶发射火球。
+// 塔上射程与视野都是地面 2 倍：射程 4.5→9、锁敌 12→24（用户口径"哨塔上最远 3 倍距离"）。
+export const TOWER_PAD = 1.8;
+export const TOWER_TOP = 2.75; // 塔顶平台高度（火球发射原点 / 驻军站位）
+export const TOWER_RANGE_MULT = 2;
+export const TOWER_SIGHT_MULT = 2;
+export const TOWER_GARRISON_MAX = 1;
 
 export function houseHalf(level: number): number {
   const lv = level >= 3 ? 3 : level === 2 ? 2 : 1;
@@ -306,6 +316,8 @@ export interface Projectile {
   y: number;
   vx: number;
   vz: number;
+  /** v0.27-3 垂直速度（可选）：哨塔火球从塔顶俯冲到目标高度；地面平射不填（0）。 */
+  vy?: number;
   team: Team;
   dmg: number;
   life: number;

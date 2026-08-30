@@ -195,6 +195,9 @@ html, body, #app {
 .ico.fire::after { inset: 4px; background: #ffaa44; }
 .ico.spy { background: #2a2a30; }
 .ico.spy::after { inset: 6px 4px; background: #5aa6d4; }
+/* v0.27-3 哨塔：窄塔身 + 顶台 */
+.ico.tower { background: #8a8478; clip-path: polygon(30% 0, 70% 0, 85% 100%, 15% 100%); }
+.ico.tower::after { left: 8px; right: 8px; top: 0; height: 7px; background: #c9a227; }
 .ico.raise { background: linear-gradient(#c9a227, #4e8d3b); clip-path: polygon(50% 0, 100% 100%, 0 100%); }
 .ico.lower { background: linear-gradient(#4e8d3b, #1e5a88); clip-path: polygon(0 0, 100% 0, 50% 100%); }
 .ico.bolt { background: #f2e08a; clip-path: polygon(60% 0, 20% 50%, 48% 50%, 40% 100%, 80% 45%, 52% 45%); }

@@ -165,7 +165,7 @@ export class Game {
       temple: "神庙",
       fireHut: "火战士营",
       spyHut: "间谍营",
-      tower: "箭塔",
+      tower: "哨塔",
       rebirth: "重生",
     };
     this.sim.toast(`建造：${names[kind] ?? kind}`);

@@ -1,6 +1,9 @@
 import {
   agroLeash,
   attackInterval,
+  TOWER_RANGE_MULT,
+  TOWER_SIGHT_MULT,
+  TOWER_TOP,
   BLUE,
   Building,
   canConvert,
@@ -186,6 +189,80 @@ export class CombatSystem implements ISystem {
       u.atkCd = attackInterval(u.kind);
       if (b.hp <= 0) this.clearAutoLock(u);
     }
+    this.towerCombat(sim, dt); // v0.27-3 哨塔驻军射击（主循环跳过 homeId>0，塔走独立通道）
+  }
+
+  /**
+   * v0.27-3 哨塔驻军射击：塔上牛战士是固定炮台——
+   * - 索敌：2× 视野（12→24）内最近敌方单位；无敌方单位时锁最近敌方建筑（沿 v0.19 语义）；
+   * - 开火：目标进 2× 射程（4.5→9）从塔顶 (b.x, b.z, b.y+TOWER_TOP) 发射；
+   *   塔上不做 losBlocked 预判——弹体自带撞地熄灭，从高处平飞天然被山体遮挡，物理自洽；
+   * - 不参与 leash/追击/refreshChase（塔不会动）；目标扫描 0.2s 节流，冷却逐帧递减。
+   */
+  private towerAcc = 0;
+  private towerCombat(sim: Sim, dt: number): void {
+    this.towerAcc += dt;
+    const scan = this.towerAcc >= 0.2;
+    if (scan) this.towerAcc = 0;
+    for (const b of sim.buildings) {
+      if (b.kind !== "tower" || b.hp <= 0 || b.level < 1) continue;
+      const g = sim.units.find((u) => u.homeId === b.id && u.kind === "firewarrior" && u.hp > 0);
+      if (!g) continue;
+      if (g.atkCd > 0) g.atkCd = Math.max(0, g.atkCd - dt);
+      if (scan) {
+        const enemy: Team = g.team === BLUE ? RED : BLUE;
+        const sight = UNIT_SIGHT.firewarrior * TOWER_SIGHT_MULT;
+        const range = unitRange("firewarrior") * TOWER_RANGE_MULT;
+        let best: Unit | null = null;
+        let bestD = sight * sight;
+        for (const o of sim.units) {
+          if (o.team !== enemy || o.hp <= 0 || o.homeId > 0) continue;
+          const d = dist2(b.x, b.z, o.x, o.z);
+          if (d < bestD) {
+            bestD = d;
+            best = o;
+          }
+        }
+        if (best) {
+          g.atkId = best.id;
+        } else {
+          // 圈内无敌方单位 → 锁最近敌方建筑（firewarrior 天然拆家，沿 v0.19 语义）。
+          let bb: Building | null = null;
+          let bd = sight * sight;
+          for (const t of sim.buildings) {
+            if (t.team !== enemy || t.hp <= 0 || t.kind === "rebirth") continue;
+            const d = dist2(b.x, b.z, t.x, t.z);
+            if (d < bd) {
+              bd = d;
+              bb = t;
+            }
+          }
+          g.atkId = bb ? bb.id : 0;
+        }
+      }
+      // 开火判定（逐帧，用当前 atkId）。
+      const tu = sim.unitById(g.atkId);
+      if (tu) {
+        const range = unitRange("firewarrior") * TOWER_RANGE_MULT;
+        const d2 = dist2(b.x, b.z, tu.x, tu.z);
+        if (g.atkCd <= 0 && d2 <= range * range) {
+          this.launchFireball(sim, g, tu.x, tu.z, { x: b.x, z: b.z, y: b.y + TOWER_TOP });
+          g.atkCd = attackInterval(g.kind);
+        }
+        continue;
+      }
+      const tb = sim.buildingById(g.atkId);
+      if (tb) {
+        const edge = padSupportRadius({ x: tb.x, z: tb.z, w: tb.padW, d: tb.padD, yaw: tb.yaw }, b.x, b.z);
+        const d = Math.hypot(tb.x - b.x, tb.z - b.z) - edge;
+        if (g.atkCd <= 0 && d <= unitRange("firewarrior") * TOWER_RANGE_MULT) {
+          this.launchFireball(sim, g, tb.x, tb.z, { x: b.x, z: b.z, y: b.y + TOWER_TOP });
+          g.atkCd = attackInterval(g.kind);
+        }
+      } else {
+        g.atkId = 0;
+      }
+    }
   }
 
   preach(sim: Sim, u: Unit, dt: number): boolean {
@@ -369,7 +446,7 @@ export class CombatSystem implements ISystem {
     for (const p of sim.shots) {
       p.x += p.vx * dt;
       p.z += p.vz * dt;
-      p.life -= dt;
+      if (p.vy) p.y += p.vy * dt; // v0.27-3 塔顶俯冲弹道（地面平射 vy 恒 0）
       // v0.9 飞行撞地：发射端 LOS 之外的双保险——中途地形抬过弹道线即熄灭（遮挡无法通过）。
       if (p.y < sim.world.heightAt(p.x, p.z) + 0.12) {
         p.life = 0;
@@ -397,23 +474,44 @@ export class CombatSystem implements ISystem {
     sim.shots = sim.shots.filter((p) => p.life > 0);
   }
 
-  /** v0.9 火球发射：平飞高度取两端地形较高者 +0.6（与 world.losBlocked 同一条基准线），弹速恒定。 */
-  launchFireball(sim: Sim, u: Unit, tx: number, tz: number): void {
-    const dx = tx - u.x;
-    const dz = tz - u.z;
+  /**
+   * v0.9 火球发射：平飞高度取两端地形较高者 +0.6（与 world.losBlocked 同一条基准线），弹速恒定。
+   * v0.27-3 origin：哨塔驻军从塔顶发射（起点/高度/弹道寿命都按塔顶算），地面单位不传。
+   */
+  launchFireball(
+    sim: Sim,
+    u: Unit,
+    tx: number,
+    tz: number,
+    origin?: { x: number; z: number; y: number },
+  ): void {
+    const ox = origin?.x ?? u.x;
+    const oz = origin?.z ?? u.z;
+    const oy = origin?.y ?? Math.max(sim.world.heightAt(ox, oz), sim.world.heightAt(tx, tz)) + 0.6;
+    const dx = tx - ox;
+    const dz = tz - oz;
     const dist = Math.hypot(dx, dz) || 1;
+    // v0.27-3 塔顶发射：弹道从塔顶匀速俯冲到目标脚下 +0.6（与地面弹同一命中高度），
+    // 否则平飞 2.75 高度永远够不到命中判据的 |Δy|<1.2。地面发射 vy 不填（平飞）。
+    const flight = dist / FIREBALL_SPEED + 0.4;
+    let vy: number | undefined;
+    if (origin) {
+      const ty = sim.world.heightAt(tx, tz) + 0.6;
+      vy = (ty - oy) / (dist / FIREBALL_SPEED);
+    }
     sim.shots.push({
-      x: u.x,
-      z: u.z,
-      y: Math.max(sim.world.heightAt(u.x, u.z), sim.world.heightAt(tx, tz)) + 0.6,
+      x: ox,
+      z: oz,
+      y: oy,
+      vy,
       vx: (dx / dist) * FIREBALL_SPEED,
       vz: (dz / dist) * FIREBALL_SPEED,
       team: u.team as Team,
       dmg: unitAttack(u.kind),
-      life: dist / FIREBALL_SPEED + 0.4,
+      life: flight,
       knock: 0,
-      ox: u.x,
-      oz: u.z,
+      ox,
+      oz,
     });
   }
 
