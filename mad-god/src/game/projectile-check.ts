@@ -1,5 +1,5 @@
 import { Sim } from "./sim";
-import { BLUE, damageAfterArmor, houseHp, RED } from "./types";
+import { BLUE, FIREBALL_SPEED, RED, damageAfterArmor, houseHp } from "./types";
 import { World } from "./world";
 
 function assert(cond: boolean, msg: string): void {
@@ -172,6 +172,61 @@ function testFireballVsBuilding(): void {
   console.log("testFireballVsBuilding ok");
 }
 
+/**
+ * v0.28j 火球衰减：飞出 FIREBALL_RANGE_HARD(25) 格后每帧 50% 概率凭空熄灭——
+ * 随机 <0.5 必灭、≥0.5 必不灭（stub 常数两端各验一次）。
+ */
+function testFireballRangeDecay(): void {
+  const sim = new Sim(new World(42));
+  const pad = sim.world.startPad(BLUE);
+  const mk = () =>
+    sim.shots.push({
+      x: pad.x,
+      z: pad.z,
+      y: sim.world.heightAt(pad.x, pad.z) + 0.6,
+      vx: FIREBALL_SPEED,
+      vz: 0,
+      team: BLUE,
+      dmg: 5,
+      life: 12,
+      knock: 0,
+      ox: pad.x,
+      oz: pad.z,
+    });
+
+  // 必灭分支：越过 25 格后一帧内熄灭。
+  mk();
+  let died = false;
+  let far = 0;
+  const orig = stubRandom(0.1);
+  try {
+    for (let i = 0; i < 400; i++) {
+      sim.projectiles(0.05);
+      if (!sim.shots.length) {
+        died = true;
+        break;
+      }
+      far = sim.shots[0]!.x - pad.x;
+    }
+  } finally {
+    Math.random = orig;
+  }
+  assert(died, `超过 25 格后燃尽熄灭（飞行 ${far.toFixed(1)} 格处消失）`);
+  assert(far < 27, `熄灭点不超过 25 格+一帧步长（got ${far.toFixed(1)}）`);
+
+  // 必不灭分支：随机 ≥0.5 时 27 格处仍在飞。
+  mk();
+  const orig2 = stubRandom(0.9);
+  try {
+    for (let i = 0; i < 400 && sim.shots.length; i++) sim.projectiles(0.05);
+  } finally {
+    Math.random = orig2;
+  }
+  const d = (sim.shots[0]?.x ?? pad.x) - pad.x;
+  assert(d > 27, `随机不灭时飞得更远（got ${d.toFixed(1)} 格）`);
+  console.log("testFireballRangeDecay ok");
+}
+
 function main(): void {
   testFireballDefaultKnockdown();
   testFireballCritLethalLaunch();
@@ -182,4 +237,5 @@ function main(): void {
   console.log("projectile-check ok (v0.12 火球：倒地延迟扣血 / 暴击致死击飞)");
 }
 
+testFireballRangeDecay();
 main();

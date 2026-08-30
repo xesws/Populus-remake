@@ -12,6 +12,8 @@ import {
   dist2,
   FIRE_CRIT_CHANCE,
   FIRE_DOWN_TIME,
+  FIREBALL_FIZZLE_CHANCE,
+  FIREBALL_RANGE_HARD,
   FIRE_KNOCK_DIST,
   FIREBALL_SPEED,
   isTribe,
@@ -477,6 +479,11 @@ export class CombatSystem implements ISystem {
       if (p.vy) p.y += p.vy * dt; // v0.27-3 塔顶俯冲弹道（地面平射 vy 恒 0）
       // v0.9 飞行撞地：发射端 LOS 之外的双保险——中途地形抬过弹道线即熄灭（遮挡无法通过）。
       if (p.y < sim.world.heightAt(p.x, p.z) + 0.12) {
+        p.life = 0;
+        continue;
+      }
+      // v0.28j 火球衰减：飞出 25 格后弹体燃尽，每帧 50% 概率凭空熄灭（直线无衰减的远程白嫖不再）。
+      if (Math.hypot(p.x - p.ox, p.z - p.oz) > FIREBALL_RANGE_HARD && Math.random() < FIREBALL_FIZZLE_CHANCE) {
         p.life = 0;
         continue;
       }

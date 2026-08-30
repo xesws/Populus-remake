@@ -165,6 +165,10 @@ export function acquireRole(kind: UnitKind): AcquireRole {
 
 // v0.9/v0.12 火球参数：弹速、暴击击飞（落地即死）与默认击退倒地。
 export const FIREBALL_SPEED = 5.2; // v0.28a 提速 1.3×（原 4）：弹道更利落，塔上齐射更凶
+// v0.28j 火球衰减：飞出 FIREBALL_RANGE_HARD 格后弹体燃尽，每帧 FIREBALL_FIZZLE_CHANCE 概率凭空熄灭
+//（远程白嫖不再：25 格 ≈ 19 座房宽之外的目标基本打不着）。
+export const FIREBALL_RANGE_HARD = 25;
+export const FIREBALL_FIZZLE_CHANCE = 0.5;
 // v0.27f 火球法术重构为"天降陨石"：施放后火球从高空坠落（约 0.85s 落地），
 // 撞击只造成小直接伤害（FIREBALL_IMPACT_DMG，村民 6 血剩 3，不再瞬间蒸发），
 // 主伤害靠点燃：fireT 视觉火焰 + burnT/burnDps 持续掉血把目标烧死。
@@ -219,7 +223,7 @@ export const HOUSE_ROOF_Y = [0, 1.2, 1.65, 2.1] as const;
 export const TOWER_PAD = 0.6; // v0.28c 地基贴塔身（建模宽 0.5，原 0.9 明显偏宽）
 export const TOWER_DECK_Y = 3.38; // 瞭望台面高度（驻军站位 / 渲染基准）
 export const TOWER_TOP = 3.9; // 火球发射原点（窗口高度，尖顶之下）
-export const TOWER_RANGE_MULT = 2;
+export const TOWER_RANGE_MULT = 1.5; // v0.28j 2→1.5：14 格太超模，现为 7×1.5=10.5 格
 export const TOWER_SIGHT_MULT = 2;
 export const TOWER_GARRISON_MAX = 3; // v0.28e 塔上最多驻 3 名牛战士
 export const TOWER_CLIMB_T = 1.1; // 爬塔动画时长（秒）：从塔脚走到瞭望台
