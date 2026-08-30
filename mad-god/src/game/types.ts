@@ -124,8 +124,9 @@ export const UNIT_ATK_CD: Record<UnitKind, number> = {
 // v0.23 武士 13、牛头人 8（射程 4.5 的 ~1.8 倍）——用户要求"范围广一点才能主动扑过去"。
 // v0.27-2 扩过一轮：武士 13→20、牛头人 8→12、传教士 3→4.5。
 // v0.27h 用户拍板回调：武士 20→8（近战索敌不该比远程牛头人 12 还大）。
+// v0.28 大祭司入列近战索敌（跟随牵引）：0→6。
 export const UNIT_SIGHT: Record<UnitKind, number> = {
-  shaman: 0,
+  shaman: 6,
   walker: 0,
   warrior: 8,
   preacher: 4.5,
@@ -139,12 +140,24 @@ export const COUNTER_MULT: Partial<Record<UnitKind, Partial<Record<UnitKind, num
   firewarrior: { walker: 1.2 },
 };
 
-// 自动索敌/还手的追击拴绳（格）：自动获得的目标离锚点超过该距离就放弃；玩家手动指令不受拴绳限制。
-// v0.27-2 拴绳与视野挂钩（原全局 13 与视野脱钩，武士视野 20 会被 13 拴绳提前掐断追击）：
-// 追出自身锁敌圈 +2 格才放弃；不索敌的兵种返回 0（本就不会有自动锁）。
+// 自动索敌/还手的追击拴绳（格）；玩家手动指令不受拴绳限制。
+// v0.28 牵引语义：**目标**逃出追击者自身锁敌圈 +2 格才放手（原锚点制废除——
+// "必须一直跟着他"，只要贴得住就无限追，绝不被出发点的距离掐断）。
 export function agroLeash(kind: UnitKind): number {
   const s = UNIT_SIGHT[kind];
   return s > 0 ? s + 2 : 0;
+}
+
+/**
+ * v0.28 索敌角色（近战/远程分流，用户拍板）：
+ * - "follow" 跟随索敌：武士/传教士/间谍/大祭司/村民（还手时）——锁了就追，
+ *   目标逃出牵引范围（agroLeash）前绝不放手；
+ * - "hold" 站桩索敌：牛头人（及未来的巫师/法师）——射程远，原地开火，
+ *   绝不跟随、绝不移动，目标进出射程由每轮重选自然处理。
+ */
+export type AcquireRole = "follow" | "hold";
+export function acquireRole(kind: UnitKind): AcquireRole {
+  return kind === "firewarrior" ? "hold" : "follow";
 }
 
 // v0.9/v0.12 火球参数：弹速、暴击击飞（落地即死）与默认击退倒地。

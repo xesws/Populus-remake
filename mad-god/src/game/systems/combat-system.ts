@@ -1,4 +1,5 @@
 import {
+  acquireRole,
   agroLeash,
   attackInterval,
   TOWER_RANGE_MULT,
@@ -60,15 +61,16 @@ export class CombatSystem implements ISystem {
     this.acquireAcc = 0;
     for (const u of sim.units) {
       if (u.job === "train") continue;
-      // v0.27-2 锁敌刷新：自动锁（agroX≥0）的近战兵种目标超出攻击距离就重新追击。
+      // v0.28 锁敌刷新（只对"跟随"角色）：自动锁的目标超出攻击距离就重新追击——
+      // "锁了就追，直到目标逃出牵引范围"。站桩角色（牛头人）永不刷新路径。
       // 旧实现只靠一次性 chaseAttack——路径走完/目标移开后单位拿着过期 atkId 原地发呆，
       // 也不重新索敌（acquireTarget 对已有 atkId 直接 return），这正是"感觉没有自动攻击"的根源。
-      if (u.atkId && u.agroX >= 0 && u.kind !== "firewarrior" && u.isSoldier()) {
+      if (u.atkId && u.agroX >= 0 && acquireRole(u.kind) === "follow" && UNIT_SIGHT[u.kind] > 0) {
         this.refreshChase(sim, u);
         continue;
       }
       if (u.job === "move") continue; // 玩家移动令优先，不被索敌抢走（v0.8 语义）
-      this.acquireTarget(sim, u); // 内部自带 atkId/在屋/倒地/腾空/非士兵守卫
+      this.acquireTarget(sim, u); // 内部自带 atkId/在屋/倒地/腾空守卫
     }
   }
 
@@ -118,16 +120,17 @@ export class CombatSystem implements ISystem {
       // v0.16 感化接线：传教士优先传教（站桩，不打断玩家指令），传教中跳过攻击逻辑。
       if (this.autoPreach(sim, u, dt)) continue;
       if (!u.atkId) continue;
-      // v0.8 自动索敌拴绳：agroX = -1 表示玩家手动指令，不受拴绳限制。
-      // v0.27-2 拴绳按兵种视野取（视野+2），不再全局一刀切 13。
-      const leash = agroLeash(u.kind);
-      if (u.agroX >= 0 && leash > 0 && dist2(u.x, u.z, u.agroX, u.agroZ) > leash * leash) {
-        this.clearAutoLock(u);
-        continue;
-      }
 
       const tu = sim.unitById(u.atkId);
       if (tu) {
+        // v0.28 跟随索敌的牵引：目标（而非锚点）逃出追击者锁敌圈 +2 才放手——
+        // "必须一直跟着他"；只要贴得住就无限追，绝不被出发点距离掐断。
+        // 手动指令（agroX=-1）不受牵引限制；站桩角色不移动，同样按此清理射程外死锁。
+        const leash = agroLeash(u.kind);
+        if (u.agroX >= 0 && leash > 0 && dist2(u.x, u.z, tu.x, tu.z) > leash * leash) {
+          this.clearAutoLock(u);
+          continue;
+        }
         // v0.9 被击飞腾空的目标近战/火球都打不到，攻击者原地等它落地。
         if (tu.flyVy !== 0 || tu.y > sim.world.heightAt(tu.x, tu.z) + 0.08) continue;
         const range = unitRange(u.kind);
@@ -398,10 +401,10 @@ export class CombatSystem implements ISystem {
    */
   acquireTarget(sim: Sim, u: Unit): void {
     if (u.atkId) {
-      // v0.27-2 牛头人站桩锁不"粘"：自动锁每轮重选最近目标——它不追击，换锁无副作用，
-      // 还能避免"锁着一个射程外的远目标，放着进射程的近目标不管"。
-      // 手动锁（agroX=-1）与其他兵种照旧（近战追击由 refreshChase 维持）。
-      if (u.kind !== "firewarrior" || u.agroX < 0) return;
+      // v0.28 站桩角色（牛头人/未来法师）的锁不"粘"：自动锁每轮重选最近目标——
+      // 它不追击，换锁无副作用，还能避免"锁着一个射程外的远目标，放着进射程的近目标不管"。
+      // 手动锁（agroX=-1）与跟随角色照旧（近战追击由 refreshChase 维持）。
+      if (acquireRole(u.kind) !== "hold" || u.agroX < 0) return;
       u.atkId = 0;
       u.agroX = -1;
       u.agroZ = -1;
@@ -410,7 +413,7 @@ export class CombatSystem implements ISystem {
     if (!isTribe(u.team)) return;
     if (u.job === "train") return;
     if (u.downT > 0 || u.flyVy !== 0) return; // v0.12 倒地/腾空不索敌
-    if (!u.isSoldier()) return;
+    // v0.28 索敌资格 = 有锁敌视野（大祭司/间谍不再被 isSoldier 挡在门外；村民视野 0 依旧只还手）。
     const sight = UNIT_SIGHT[u.kind];
     if (sight <= 0) return;
     const enemy: Team = u.team === BLUE ? RED : BLUE;
@@ -440,9 +443,9 @@ export class CombatSystem implements ISystem {
     u.atkId = target.id;
     u.agroX = u.x;
     u.agroZ = u.z;
-    // v0.27-2 远程站桩：牛头人自动锁敌后不移动、不追击，原地等目标进射程再开火；
+    // v0.28 站桩角色自动锁敌后不移动、不追击，原地开火等目标进射程；
     // 手动攻击令仍走 sim.chaseAttack 的"拉近到射程沿 → rangedHold 站定开火"。
-    if (u.kind !== "firewarrior") sim.chaseAttack(u);
+    if (acquireRole(u.kind) === "follow") sim.chaseAttack(u);
   }
 
   /**

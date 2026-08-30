@@ -1,5 +1,5 @@
 import { Sim } from "./sim";
-import { BLUE, RED, agroLeash, UNIT_SIGHT, unitRange } from "./types";
+import { acquireRole, BLUE, RED, agroLeash, UNIT_SIGHT, unitRange } from "./types";
 import { World } from "./world";
 
 function assert(cond: boolean, msg: string): void {
@@ -78,7 +78,7 @@ function testNoAcquireOutOfSight(): void {
   console.log("testNoAcquireOutOfSight ok");
 }
 
-/** c. 萨满不主动索敌（UNIT_SIGHT=0），但被打会还手并反杀村民。 */
+/** c. 萨满还手反杀村民（v0.28 起萨满也主动索敌，此处验证还手链路依旧成立）。 */
 function testShamanRetaliate(): void {
   const sim = new Sim(new World(42));
   const shaman = sim.addUnit(BLUE, "shaman", 20, 20);
@@ -139,7 +139,7 @@ function testAgroLeash(): void {
   tickFor(sim, 0.5);
   assert(warrior.atkId !== 0, "leash: 武士已自动获得 atkId");
 
-  // 传送武士到远离锚点（agroX/Z 仍是 20,20）；v0.27-2 拴绳=视野+2=22，要拉到 24 格外。
+  // 传送武士远离目标 22.5 格；v0.28 牵引=目标距追击者 > 视野+2（10）即放手。
   // 注意同步 y：combat 对"腾空"单位（y 高于脚下地面 0.08+）在拴绳判定前就 continue，
   // 传送不落地会误测成"拴绳没生效"。
   warrior.x = 44;
@@ -148,7 +148,7 @@ function testAgroLeash(): void {
   warrior.flyVy = 0;
 
   sim.combat(0.05);
-  assert(warrior.atkId === 0, "leash: 距锚点 24 > 拴绳(视野20+2)，自动放弃目标");
+  assert(warrior.atkId === 0, "leash: 目标逃出 22.5 格 > 牵引(视野8+2=10)，自动放手");
 
   console.log("testAgroLeash ok");
 }
@@ -213,6 +213,7 @@ function testWarriorClosesToMelee(): void {
 /** v0.27-2 f. 视野/拴绳数值：武士 20、牛头人 12、传教士 4.5；拴绳=视野+2。 */
 function testSightAndLeashValues(): void {
   assert(UNIT_SIGHT.warrior === 8, "sight: 武士锁敌 8（v0.27h 回调：近战不应超远程）");
+  assert(UNIT_SIGHT.shaman === 6, "sight: 大祭司锁敌 6（v0.28 入列近战跟随索敌）");
   assert(UNIT_SIGHT.firewarrior === 12, "sight: 牛头人锁敌 12（8×1.5）");
   assert(UNIT_SIGHT.preacher === 4.5, "sight: 传教士锁敌 4.5");
   assert(agroLeash("warrior") === 10, "leash: 武士拴绳=10（视野 8+2）");
@@ -366,6 +367,80 @@ function testFirewarriorEngagesPassingFoe(): void {
   console.log("testFirewarriorEngagesPassingFoe ok");
 }
 
+/**
+ * v0.28 k. 跟随索敌（近战）：目标保持贴身距离逃跑时必须**无限追击**（旧锚点制追出
+ * 10 格就会被掐断），目标瞬移逃出牵引范围（>视野+2）才放手。
+ */
+function testMeleeFollowsUntilTargetEscapes(): void {
+  const sim = new Sim(new World(42));
+  const pad = sim.world.startPad(BLUE);
+  const warrior = sim.addUnit(BLUE, "warrior", pad.x, pad.z);
+  const foe = sim.addUnit(RED, "walker", pad.x - 4, pad.z); // 往地图内侧逃（出生点在角落，+x 10 格就撞地图边）
+  foe.hp = 999;
+
+  // 阶段 1：目标始终保持在武士前方 4 格逃跑 12+ 格（旧锚点拴绳 10 会中途放弃）。
+  let neverDropped = true;
+  for (let i = 0; i < 600; i++) {
+    sim.tick(0.05);
+    foe.x = warrior.x - 4;
+    foe.z = warrior.z;
+    foe.path = [];
+    foe.pathI = 0;
+    if (warrior.atkId !== foe.id) neverDropped = false;
+  }
+  const chased = Math.hypot(warrior.x - pad.x, warrior.z - pad.z);
+  assert(neverDropped, "follow: 贴身目标全程不脱锁（锁了就追，绝不中途放手）");
+  assert(chased >= 12, `follow: 无限追击位移 ≥12（实际 ${chased.toFixed(1)}，锚点制会在 ~10 掐断）`);
+
+  // 阶段 2：目标瞬移逃出牵引范围（视野 8+2=10）→ 1 秒内放手。
+  foe.x = warrior.x + 30;
+  foe.z = warrior.z;
+  let dropped = false;
+  for (let i = 0; i < 20; i++) {
+    sim.tick(0.05);
+    foe.x = warrior.x + 30;
+    foe.z = warrior.z;
+    foe.path = [];
+    foe.pathI = 0;
+    if (warrior.atkId === 0) dropped = true;
+  }
+  assert(dropped, "follow: 目标逃出牵引范围（30 格 > 10）后放手");
+  console.log("testMeleeFollowsUntilTargetEscapes ok");
+}
+
+/** v0.28 l. 大祭司入列近战索敌：视野内敌人出现即主动锁定并跟随攻击。 */
+function testShamanAutoAcquires(): void {
+  const sim = new Sim(new World(42));
+  const shaman = sim.addUnit(BLUE, "shaman", 20, 20);
+  const foe = sim.addUnit(RED, "walker", 24, 20); // 4 格 < 视野 6
+  foe.hp = 999;
+
+  let locked = false;
+  let hit = false;
+  for (let i = 0; i < 200; i++) {
+    sim.tick(0.05);
+    foe.x = 24;
+    foe.z = 20;
+    foe.path = [];
+    foe.pathI = 0;
+    if (shaman.atkId === foe.id) locked = true;
+    if (foe.hp < 999) hit = true;
+    if (hit) break;
+  }
+  assert(locked, "shaman: 大祭司主动锁定视野内敌人（不再只还手）");
+  assert(hit, "shaman: 跟随贴身并出刀命中");
+  console.log("testShamanAutoAcquires ok");
+}
+
+/** v0.28 m. 远程站桩角色断言：牛头人 hold、其余 follow。 */
+function testAcquireRoles(): void {
+  assert(acquireRole("firewarrior") === "hold", "role: 牛头人=站桩（绝不跟随）");
+  for (const k of ["warrior", "preacher", "spy", "shaman", "walker"] as const) {
+    assert(acquireRole(k) === "follow", `role: ${k}=跟随`);
+  }
+  console.log("testAcquireRoles ok");
+}
+
 function main(): void {
   testWarriorAutoAcquire();
   testNoAcquireOutOfSight();
@@ -379,6 +454,9 @@ function main(): void {
   testFirewarriorHoldsGroundAndFires();
   testFirewarriorSwitchesToCloserFoe();
   testFirewarriorEngagesPassingFoe();
+  testMeleeFollowsUntilTargetEscapes();
+  testShamanAutoAcquires();
+  testAcquireRoles();
   console.log("combat-auto-check ok (v0.8 索敌还手 + v0.12 远程拉停 + v0.27-2 锁敌刷新/远程站桩/视野扩大)");
 }
 
