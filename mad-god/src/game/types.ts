@@ -96,13 +96,15 @@ export const UNIT_ARMOR: Record<UnitKind, number> = {
   wildman: 0,
 };
 
-// 攻击距离（格）。火战士 v0.9 起为远程火球。
+// 攻击距离（格）。火战士 v0.9 起为远程火球；v0.27g 4.5→7（×1.5，用户口径
+// "1.5~2 倍攻击范围"）：v0.27-2 站桩化后 4.5 格射程外的路人它只会站着看，
+// 敌人从 5~7 格路过必须直接开火。哨塔 ×2 = 14（≈ 基础 4.5 的 3 倍距离）。
 export const UNIT_RANGE: Record<UnitKind, number> = {
   shaman: 0.95,
   walker: 0.95,
   warrior: 0.95,
   preacher: 0.95,
-  firewarrior: 4.5,
+  firewarrior: 7,
   spy: 0.95,
   wildman: 0.95,
 };

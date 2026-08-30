@@ -86,7 +86,22 @@ function testTowerFire(): void {
   }
   assert(f.homeId === t.id, "fire: 牛战士已上塔");
 
-  const foe = sim.addUnit(RED, "walker", pad.x + 4, pad.z); // 距塔 7 格：>4.5（地面射程），<9（塔上射程）
+  // 距塔 10 格的可射靶位：>7（v0.27g 地面射程，证 ×2），<14（塔上射程）。
+  // 程序化找点：必须可走且与塔之间无地形遮挡（俯冲弹道仍会被中途土脊挡熄——
+  // 这是"火球遇地形遮挡无法通过"的既有设计，测试只挑打得着的方向）。
+  let fx = t.x + 10;
+  let fz = t.z;
+  for (let a = 0; a < 16; a++) {
+    const ang = (a / 16) * Math.PI * 2;
+    const x = t.x + Math.cos(ang) * 10;
+    const z = t.z + Math.sin(ang) * 10;
+    if (sim.world.walkableAt(x, z) && !sim.world.losBlocked(t.x, t.z, x, z)) {
+      fx = x;
+      fz = z;
+      break;
+    }
+  }
+  const foe = sim.addUnit(RED, "walker", fx, fz);
   foe.hp = 999;
   const foeX = foe.x;
   const foeZ = foe.z;
@@ -100,7 +115,7 @@ function testTowerFire(): void {
     if (foe.hp < 999 || foe.downT > 0 || foe.flyVy !== 0) hit = true;
     if (hit) break;
   }
-  assert(hit, "fire: 塔上 7 格外开火命中（射程 ×2 生效；地面 4.5 打不到）");
+  assert(hit, "fire: 塔上 10 格外开火命中（射程 ×2=14 生效；地面 7 打不到）");
   console.log("testTowerFire ok");
 }
 

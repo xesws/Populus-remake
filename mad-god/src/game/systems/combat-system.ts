@@ -358,6 +358,22 @@ export class CombatSystem implements ISystem {
     u.think = 0.15;
   }
 
+  /** v0.27g 火战士专用：射程内且视线通畅的最近敌人（打得着的才优先锁）。 */
+  closestShootableEnemy(sim: Sim, u: Unit, enemy: Team): Unit | null {
+    const range = unitRange(u.kind);
+    let best: Unit | null = null;
+    let bestD = range * range;
+    for (const o of sim.units) {
+      if (o.team !== enemy || o.hp <= 0 || o.homeId > 0) continue;
+      const d = dist2(u.x, u.z, o.x, o.z);
+      if (d >= bestD) continue;
+      if (sim.world.losBlocked(u.x, u.z, o.x, o.z)) continue;
+      bestD = d;
+      best = o;
+    }
+    return best;
+  }
+
   closestEnemyUnit(sim: Sim, u: Unit, enemy: Team, range: number): Unit | null {
     let best: Unit | null = null;
     let bestD = range * range;
@@ -398,7 +414,13 @@ export class CombatSystem implements ISystem {
     const sight = UNIT_SIGHT[u.kind];
     if (sight <= 0) return;
     const enemy: Team = u.team === BLUE ? RED : BLUE;
-    const foe = this.closestEnemyUnit(sim, u, enemy, sight);
+    let foe = this.closestEnemyUnit(sim, u, enemy, sight);
+    // v0.27g 火战士优先锁"射程内且视线通畅"的目标：起伏地形上最近的敌人可能被山体
+    // 遮挡（站桩不追击就永远打不到），优先挑真正打得着的，没有再退回视野内最近者。
+    if (u.kind === "firewarrior" && foe) {
+      const shootable = this.closestShootableEnemy(sim, u, enemy);
+      if (shootable) foe = shootable;
+    }
     // v0.19 牛头人自动拆家：圈内无敌方单位 → 锁定最近的敌方建筑（走既有对建筑喷火分支）。
     let target: { id: number; x: number; z: number } | null = foe;
     if (!target && u.kind === "firewarrior") {

@@ -158,24 +158,24 @@ function testFirewarriorStandsOff(): void {
   const sim = new Sim(new World(42));
   const fire = sim.addUnit(BLUE, "firewarrior", 20, 20);
   fire.order = "fight";
-  const foe = sim.addUnit(RED, "walker", 26, 20); // 距离 6 > 索敌 5.5，模拟玩家手动下令
+  const foe = sim.addUnit(RED, "walker", 28, 20); // 距离 8 > 射程 7（v0.27g），模拟玩家手动下令
   fire.atkId = foe.id;
 
   let minDist = 1e9;
   let hit = false;
   for (let i = 0; i < 100; i++) {
     sim.tick(0.05);
-    foe.x = 26;
+    foe.x = 28;
     foe.z = 20; // 钉住敌人，观察火战士自身走位
-    const d = Math.hypot(fire.x - 26, fire.z - 20);
+    const d = Math.hypot(fire.x - 28, fire.z - 20);
     if (d < minDist) minDist = d;
     if (foe.hp < foe.maxHp || foe.downT > 0 || foe.flyVy !== 0 || foe.hp <= 0) hit = true;
     if (foe.hp <= 0) break;
   }
   assert(hit, "远程持续开火命中（倒地/击飞/掉血至少其一）");
-  const d = Math.hypot(fire.x - 26, fire.z - 20);
-  assert(d <= 4.6 && d >= 3.2, `停在射程边沿开火（d=${d.toFixed(2)}）`);
-  assert(minDist >= 2.8, `不进入肉搏距离（min=${minDist.toFixed(2)}）`);
+  const d = Math.hypot(fire.x - 28, fire.z - 20);
+  assert(d <= 7.05 && d >= 6.2, `停在射程边沿开火（d=${d.toFixed(2)}，射程 7）`);
+  assert(minDist >= 6.2, `不进入肉搏距离（min=${minDist.toFixed(2)}）`);
 
   console.log("testFirewarriorStandsOff ok");
 }
@@ -315,8 +315,8 @@ function testFirewarriorSwitchesToCloserFoe(): void {
   const sx = fire.x; // 出生碰撞会把火战士挤开一步，位移基准取稳定后的落点
   const sz = fire.z;
 
-  // 近目标放在射程外一点（离火战士 5.5 > 4.5）：本用例只验"换锁"，不触发射击/
-  // 击退/还手冲锋（那些会把火战士挤动，干扰"换锁不产生移动"的断言）。
+  // v0.27g 射程 7 后近目标（5.5 格）已在射程内、会被开火击退/还手——两个靶子都全程
+  // 钉桩，位移断言只看火战士自己。
   const near = sim.addUnit(RED, "walker", pad.x + 3.5, pad.z);
   near.hp = 999;
   let ok2 = false;
@@ -337,6 +337,35 @@ function testFirewarriorSwitchesToCloserFoe(): void {
   console.log("testFirewarriorSwitchesToCloserFoe ok");
 }
 
+/**
+ * v0.27g j. 路人场景（用户实况复现）：敌武士从火战士面前横向走过（最近 ~4 格，
+ * 旧射程 4.5 + 站桩不追击 = 全程看戏）。现在射程 7：必须开火命中，且自己不挪窝。
+ */
+function testFirewarriorEngagesPassingFoe(): void {
+  const sim = new Sim(new World(42));
+  const pad = sim.world.startPad(BLUE);
+  const fire = sim.addUnit(BLUE, "firewarrior", pad.x - 2, pad.z);
+  const foe = sim.addUnit(RED, "warrior", pad.x + 9, pad.z + 4);
+  foe.hp = 999;
+  sim.tick(0.05);
+  const sx = fire.x;
+  const sz = fire.z;
+  let shot = false;
+  for (let i = 0; i < 300; i++) {
+    sim.tick(0.05);
+    const t = Math.max(0.5, 9 - i * 0.03); // 敌人从 9 格外横穿到正面（侧向偏移 4 → 最近 ~4 格）
+    foe.x = pad.x + t;
+    foe.z = pad.z + 4;
+    foe.path = [];
+    foe.pathI = 0;
+    if (sim.shots.length > 0) shot = true;
+    if (shot) break;
+  }
+  assert(shot, "pass: 敌人从面前路过（最近 ~4 格）被火球命中（旧实现全程看戏）");
+  assert(Math.hypot(fire.x - sx, fire.z - sz) <= 0.5, "pass: 火战士站桩开火，不追击");
+  console.log("testFirewarriorEngagesPassingFoe ok");
+}
+
 function main(): void {
   testWarriorAutoAcquire();
   testNoAcquireOutOfSight();
@@ -349,6 +378,7 @@ function main(): void {
   testWarriorChasesFleeingFoe();
   testFirewarriorHoldsGroundAndFires();
   testFirewarriorSwitchesToCloserFoe();
+  testFirewarriorEngagesPassingFoe();
   console.log("combat-auto-check ok (v0.8 索敌还手 + v0.12 远程拉停 + v0.27-2 锁敌刷新/远程站桩/视野扩大)");
 }
 
