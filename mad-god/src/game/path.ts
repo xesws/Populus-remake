@@ -131,7 +131,82 @@ export function pullString(world: World, fromX: number, fromZ: number, path: Cel
   return best;
 }
 
+/**
+ * v0.29 寻路预算（三层）：astar 单次最差 ~60ms（20736 节点上限，见 astarInner 注释），
+ * 战斗/AI 波动时同帧扎堆十几连调就会掉帧。tick 窗口内（pathBudgetBegin…pathBudgetEnd）：
+ *  ① 名额层：每 tick 最多 PATH_BUDGET_PER_TICK 次调用——限分配爆发（每次 astar 要
+ *     分配 2×20736 的 typed array + 一堆堆对象）；
+ *  ② 时间层：本 tick 累计 A* 耗时达 PATH_TIME_BUDGET_MS 后拒绝后续调用——防"少量
+ *     中长路径"扎堆（尖刺实测主源：paths=8 的 tick 仍可达 20-40ms）；
+ *  ③ 节点层：窗口内单次访问上限 PATH_VISIT_CAP_TICK——防"一条近不可达 monster 路径"
+ *     独烧 60ms（截断成部分路径，单位先走一段、下次 think 再续，行为优雅）。
+ * prio=0（玩家指令）三层全免；窗口外（玩家点击/事件处理器/检查脚本直调）一律放行。
+ * 被拒的调用按 astar 既有失败口径拿 []：全部 21 处调用方本就容忍寻路失败（空路径 →
+ * 原地等待，think 节流 0.6~1.1s 到点自然重试），无需显式排队——排队只是把 CPU 峰值
+ * 平移到下一帧，think 节流已经在错峰。
+ */
+export const PATH_BUDGET_PER_TICK = 8;
+export const PATH_TIME_BUDGET_MS = 5;
+export const PATH_VISIT_CAP_TICK = 6000;
+export const pathStats = {
+  left: PATH_BUDGET_PER_TICK,
+  used: 0,
+  denied: 0,
+  timeMs: 0,
+  lastUsed: 0,
+  lastDenied: 0,
+  lastTimeMs: 0,
+};
+let budgetOpen = false;
+
+/** tick 开头调用：重置本 tick 名额/时间，并把上一 tick 用量归档进 last*。 */
+export function pathBudgetBegin(): void {
+  pathStats.lastUsed = pathStats.used;
+  pathStats.lastDenied = pathStats.denied;
+  pathStats.lastTimeMs = pathStats.timeMs;
+  pathStats.used = 0;
+  pathStats.denied = 0;
+  pathStats.timeMs = 0;
+  pathStats.left = PATH_BUDGET_PER_TICK;
+  budgetOpen = true;
+}
+
+/** tick 结尾调用：关闭预算窗口，tick 之外的一切 astar 调用不再受名额约束。 */
+export function pathBudgetEnd(): void {
+  budgetOpen = false;
+}
+
 export function astar(
+  world: World,
+  sx: number,
+  sz: number,
+  tx: number,
+  tz: number,
+  maxVisit = 20736,
+  // v0.29 寻路优先级：默认 2 = 普通 AI/系统寻路，tick 预算耗尽时按失败口径返回 []；
+  // 0 = 玩家指令特权，三层预算全免（sendMove 用）。
+  prio = 2,
+): Cell[] {
+  // v0.29 预算壳：名额层 + 时间层在这里判（节点层在传给 astarInner 的 maxVisit 上做）。
+  if (prio > 0 && budgetOpen && (pathStats.left <= 0 || pathStats.timeMs >= PATH_TIME_BUDGET_MS)) {
+    pathStats.denied++;
+    return [];
+  }
+  if (budgetOpen) {
+    pathStats.used++;
+    pathStats.left--;
+  }
+  const t0 = performance.now();
+  try {
+    // 节点层：窗口内普通寻路单次访问上限（玩家特权保持全图上限）。
+    const cap = prio > 0 && budgetOpen ? Math.min(maxVisit, PATH_VISIT_CAP_TICK) : maxVisit;
+    return astarInner(world, sx, sz, tx, tz, cap);
+  } finally {
+    if (budgetOpen) pathStats.timeMs += performance.now() - t0;
+  }
+}
+
+function astarInner(
   world: World,
   sx: number,
   sz: number,

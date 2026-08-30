@@ -1,4 +1,4 @@
-import { astar, nearestLand } from "./path";
+import { astar, nearestLand, pathBudgetBegin, pathBudgetEnd } from "./path";
 import { createBuilding, createTree, createUnit } from "./entities";
 import {
   Ankh,
@@ -654,7 +654,8 @@ export class Sim {
     u.moveX = dest.x;
     u.moveZ = dest.z;
     u.think = 40;
-    u.path = astar(this.world, u.x, u.z, dest.x, dest.z);
+    // v0.29 prio=0：玩家指令特权，寻路永不因 tick 预算被拒（20736 = maxVisit 默认值）。
+    u.path = astar(this.world, u.x, u.z, dest.x, dest.z, 20736, 0);
     if (!u.path.length) u.path = [{ x: dest.x, z: dest.z }];
     u.pathI = 0;
     this.stuckWatch.set(u.id, { x: u.x, z: u.z, t: this.time });
@@ -984,6 +985,9 @@ export class Sim {
 
   tick(dt: number): void {
     if (this.winner !== null) return;
+    // v0.29 寻路预算：tick 开头开启预算窗口（本 tick 只发 8 个 astar 名额），
+    // checkWin 后由 pathBudgetEnd 关闭——窗口之外（玩家点击/事件路径）的寻路不受限。
+    pathBudgetBegin();
     this.time += dt;
     this.tickVolcano(dt);
     this.world.tickFx(dt);
@@ -1009,6 +1013,7 @@ export class Sim {
     this.cull();
     this.tickGuardFires(dt);
     this.checkWin();
+    pathBudgetEnd(); // v0.29 寻路预算：关闭窗口，tick 之外（玩家指令/事件路径）的寻路不再受限
     // v0.14 全局心跳：每秒一条运行状况快照（人口/上限、茅屋/入住、法力、生产冻结），落 logs/game.log。
     logger.periodic("sim:beat", 1000, LogLevel.Debug, "sim", "心跳", () => {
       let huts = 0;

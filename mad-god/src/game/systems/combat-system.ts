@@ -41,9 +41,28 @@ import type { Sim } from "../sim";
 import type { ISystem } from "./system";
 import { logger } from "../logger";
 
+/**
+ * v0.29 索敌性能观测：acquirePass 每轮耗时（毫秒）与累计轮数。
+ * lastMs=最近一轮，maxMs=历史峰值——供性能检查脚本/调试面板确认空间哈希收益。
+ */
+export const combatAcquireStats = { lastMs: 0, maxMs: 0, passes: 0 };
+
+/** v0.29 索敌空间哈希桶边长（格）：世界 72 格 → 每轴 0..11 桶。 */
+const ACQUIRE_BUCKET = 6;
+
+/** v0.29 桶键：(floor(x/6)&1023)<<10 | (floor(z/6)&1023)，掩码保证键恒为非负有界整数。 */
+function gridKey(x: number, z: number): number {
+  return ((Math.floor(x / ACQUIRE_BUCKET) & 1023) << 10) | (Math.floor(z / ACQUIRE_BUCKET) & 1023);
+}
+
 export class CombatSystem implements ISystem {
-  /** v0.23 高频索敌节流计时：每 0.25s 一轮全量扫描。 */
+  /** v0.23 高频索敌节流计时：每 0.25s 一轮索敌扫描。 */
   private acquireAcc = 0;
+
+  /** v0.29 索敌空间哈希：桶键 → hp>0 单位列表（每轮 acquirePass 重建）。 */
+  private grid = new Map<number, Unit[]>();
+  /** v0.29 哈希新鲜度：仅索敌轮内为 true，轮末失效——轮外查询自动回退全量扫描。 */
+  private gridFresh = false;
 
   update(sim: Sim, dt: number): void {
     this.combat(sim, dt);
@@ -61,6 +80,13 @@ export class CombatSystem implements ISystem {
     this.acquireAcc += dt;
     if (this.acquireAcc < 0.25) return;
     this.acquireAcc = 0;
+    // v0.29 空间哈希索敌：轮前按当前坐标重建桶（仅 hp>0 入桶；team/homeId 留在查询侧过滤，
+    // 语义与全量扫描一致），本轮 closestEnemyUnit / closestShootableEnemy 查桶代替
+    // "每单位 O(n) 全扫"（700 单位 ≈ 49 万次距离比较 → 只比桶内候选）。
+    // 轮末 gridFresh=false：轮外调用（repath 的 acquireTarget 等）自动回退旧全量扫描。
+    this.gridFresh = true;
+    const t0 = performance.now();
+    this.rebuildGrid(sim);
     for (const u of sim.units) {
       if (u.job === "train") continue;
       // v0.28 锁敌刷新（只对"跟随"角色）：自动锁的目标超出攻击距离就重新追击——
@@ -73,6 +99,41 @@ export class CombatSystem implements ISystem {
       }
       if (u.job === "move") continue; // 玩家移动令优先，不被索敌抢走（v0.8 语义）
       this.acquireTarget(sim, u); // 内部自带 atkId/在屋/倒地/腾空守卫
+    }
+    this.gridFresh = false;
+    const ms = performance.now() - t0;
+    combatAcquireStats.lastMs = ms;
+    if (ms > combatAcquireStats.maxMs) combatAcquireStats.maxMs = ms;
+    combatAcquireStats.passes++;
+  }
+
+  /** v0.29 重建索敌空间哈希：桶 6 格，hp>0 单位入桶（homeId>0 照插，查询侧过滤）。 */
+  private rebuildGrid(sim: Sim): void {
+    this.grid.clear();
+    for (const o of sim.units) {
+      if (o.hp <= 0) continue;
+      const k = gridKey(o.x, o.z);
+      const bucket = this.grid.get(k);
+      if (bucket) bucket.push(o);
+      else this.grid.set(k, [o]);
+    }
+  }
+
+  /**
+   * v0.29 遍历 (x,z) 周边 range 覆盖到的所有桶。桶索引跨度取 ceil(range/桶边长)：
+   * 索引距离 > 跨度的桶内单位到 (x,z) 必然超过 range（每跨一桶至少远 6 格），不会漏。
+   * 索敌视距最大 12（火战士）→ 5×5 桶；即便传塔视距 24 也只 9×9 桶封顶。
+   */
+  private visitGrid(x: number, z: number, range: number, visit: (o: Unit) => void): void {
+    const r = Math.ceil(range / ACQUIRE_BUCKET);
+    const bx = Math.floor(x / ACQUIRE_BUCKET);
+    const bz = Math.floor(z / ACQUIRE_BUCKET);
+    for (let ix = bx - r; ix <= bx + r; ix++) {
+      for (let iz = bz - r; iz <= bz + r; iz++) {
+        const bucket = this.grid.get(((ix & 1023) << 10) | (iz & 1023));
+        if (!bucket) continue;
+        for (let i = 0; i < bucket.length; i++) visit(bucket[i]);
+      }
     }
   }
 
@@ -369,6 +430,27 @@ export class CombatSystem implements ISystem {
   /** v0.27g 火战士专用：射程内且视线通畅的最近敌人（打得着的才优先锁）。 */
   closestShootableEnemy(sim: Sim, u: Unit, enemy: Team): Unit | null {
     const range = unitRange(u.kind);
+    // v0.29 索敌轮外调用（repath 等）回退旧全量扫描，行为与 v0.28 一致。
+    if (!this.gridFresh) return this.closestShootableScan(sim, u, enemy);
+    // v0.29 桶内收齐射程内候选，按距离升序逐个做 losBlocked，首个通视者胜——
+    // 结果与旧全扫（最近且通视）一致，LOS 行走次数降为"依序到首个命中"。
+    const cands: { o: Unit; d: number }[] = [];
+    this.visitGrid(u.x, u.z, range, (o) => {
+      if (o.team !== enemy || o.hp <= 0 || o.homeId > 0) return;
+      const d = dist2(u.x, u.z, o.x, o.z);
+      if (d >= range * range) return;
+      cands.push({ o, d });
+    });
+    cands.sort((a, b) => a.d - b.d);
+    for (const c of cands) {
+      if (!sim.world.losBlocked(u.x, u.z, c.o.x, c.o.z)) return c.o;
+    }
+    return null;
+  }
+
+  /** v0.29 旧全量扫描：closestShootableEnemy 的索敌轮外回退路径（语义保持 v0.28 原样）。 */
+  private closestShootableScan(sim: Sim, u: Unit, enemy: Team): Unit | null {
+    const range = unitRange(u.kind);
     let best: Unit | null = null;
     let bestD = range * range;
     for (const o of sim.units) {
@@ -383,6 +465,24 @@ export class CombatSystem implements ISystem {
   }
 
   closestEnemyUnit(sim: Sim, u: Unit, enemy: Team, range: number): Unit | null {
+    // v0.29 索敌轮内查空间哈希（只比 range 覆盖桶内的候选）；轮外回退全量扫描。
+    if (!this.gridFresh) return this.closestEnemyUnitScan(sim, u, enemy, range);
+    let best: Unit | null = null;
+    let bestD = range * range;
+    this.visitGrid(u.x, u.z, range, (o) => {
+      if (o.team !== enemy) return;
+      if (o.hp <= 0 || o.homeId > 0) return;
+      const d = dist2(u.x, u.z, o.x, o.z);
+      if (d < bestD) {
+        bestD = d;
+        best = o;
+      }
+    });
+    return best;
+  }
+
+  /** v0.29 旧全量扫描：closestEnemyUnit 的索敌轮外回退路径（语义保持 v0.28 原样）。 */
+  private closestEnemyUnitScan(sim: Sim, u: Unit, enemy: Team, range: number): Unit | null {
     let best: Unit | null = null;
     let bestD = range * range;
     for (const o of sim.units) {

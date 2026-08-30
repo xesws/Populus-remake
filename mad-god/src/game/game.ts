@@ -9,6 +9,9 @@ import { HUD, showEnd } from "./ui";
 import { World } from "./world";
 import { logger } from "./logger";
 
+// v0.29 固定步长：模拟以 1/60s 固定步推进，渲染等其余逻辑仍按每帧真实 dt。
+const SIM_DT = 1 / 60;
+
 export class Game {
   world: World;
   sim: Sim;
@@ -50,6 +53,7 @@ export class Game {
   };
   canvas: HTMLCanvasElement;
   last = 0;
+  simAcc = 0; // v0.29 固定步长累加器
   seed = 0;
 
   constructor(canvas: HTMLCanvasElement) {
@@ -550,8 +554,16 @@ export class Game {
           if (r.msg && r.msg !== "") this.sim.toast(r.msg);
         }
       }
-      this.sim.tick(dt);
-      if (!this.shotDirector.isShotActive()) this.aiDirector.update(this.sim, dt);
+      // v0.29 固定步长：sim.tick / aiDirector.update 按 1/60s 子步推进，每帧最多 3 步；
+      // 超出 3 步的余量直接丢弃（simAcc 封顶），防止低帧率下积压螺旋。
+      this.simAcc = Math.min(this.simAcc + dt, SIM_DT * 3);
+      let steps = 0;
+      while (this.simAcc >= SIM_DT && steps < 3) {
+        this.sim.tick(SIM_DT);
+        if (!this.shotDirector.isShotActive()) this.aiDirector.update(this.sim, SIM_DT);
+        this.simAcc -= SIM_DT;
+        steps++;
+      }
       for (const b of this.bolts) b.life -= dt;
       this.bolts = this.bolts.filter((b) => b.life > 0);
       if (this.sim.winner !== null) {
