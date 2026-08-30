@@ -1,5 +1,5 @@
 import { astar, nearestLand, pullString } from "../path";
-import { Cell, clamp, dist2, padSize, UNIT_RADIUS, Unit, WORLD } from "../types";
+import { Cell, clamp, dist2, sitePad, UNIT_RADIUS, Unit, WORLD } from "../types";
 import { applyUnitDamage } from "../damage";
 import { inDoorSlit, inPad, pushCircleFromPad, TREE_BLOCK_R } from "../world";
 import type { Sim } from "../sim";
@@ -258,7 +258,7 @@ export class PathSystem implements ISystem {
       if (tr && tr.alive) return sim.treeRim(tr, u.x, u.z);
     }
     if (u.settleX >= 0) {
-      const pad = padSize(1);
+      const pad = sitePad(u.foundKind ?? "hut");
       return sim.padEdge(u.settleX, u.settleZ, pad.w, pad.d, u.settleYaw, u.x, u.z);
     }
     return null;

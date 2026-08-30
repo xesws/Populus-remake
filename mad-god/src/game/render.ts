@@ -835,41 +835,42 @@ export class View {
     }
 
     if (level <= 1) {
+      // v0.28c 茅屋缩半：水平尺寸 2.2→1.1（高度不变，只瘦身）。
       const wallCol = team === 0 ? 0x8a6a40 : 0x7a4a32;
-      this.box(g, 2.2, 0.7, 2.2, new THREE.MeshLambertMaterial({ color: wallCol }), 0, 0.35, 0);
+      this.box(g, 1.1, 0.7, 1.1, new THREE.MeshLambertMaterial({ color: wallCol }), 0, 0.35, 0);
       const thatch = new THREE.MeshLambertMaterial({ color: 0xc4a44a });
-      this.box(g, 2.2, 0.3, 2.2, thatch, 0, 0.85, 0);
-      this.box(g, 1.76, 0.2, 1.76, thatch, 0, 1.05, 0);
-      this.box(g, 0.44, 0.4, 0.176, teamMat, 0, 0.3, 1.188);
-      this.box(g, 0.132, 0.28, 0.132, new THREE.MeshLambertMaterial({ color: 0x6a4a20 }), 0.72, 1.22, 0.72);
-      this.box(g, 0.704, 0.25, 0.132, teamMat, 1.06, 1.30, 0.72);
+      this.box(g, 1.1, 0.3, 1.1, thatch, 0, 0.85, 0);
+      this.box(g, 0.88, 0.2, 0.88, thatch, 0, 1.05, 0);
+      this.box(g, 0.3, 0.4, 0.15, teamMat, 0, 0.3, 0.594);
+      this.box(g, 0.11, 0.28, 0.11, new THREE.MeshLambertMaterial({ color: 0x6a4a20 }), 0.36, 1.22, 0.36);
+      this.box(g, 0.36, 0.25, 0.11, teamMat, 0.53, 1.3, 0.36);
       return g;
     }
 
     if (level === 2) {
-      // v0.11a：L2 石屋与 L1 同占地（2.2），只更高（石墙 + 队色屋檐 + 顶饰）。
+      // v0.11a：L2 石屋与 L1 同占地，只更高；v0.28c 占地随缩半为 1.1。
       const stone = new THREE.MeshLambertMaterial({ color: 0x8a8478 });
-      this.box(g, 2.2, 1.15, 2.2, stone, 0, 0.58, 0);
-      this.box(g, 2.2, 0.45, 2.2, teamMat, 0, 1.38, 0);
-      this.box(g, 0.6, 0.3, 0.6, stone, 0, 1.75, 0);
-      this.box(g, 0.44, 0.55, 0.176, teamMat, 0, 0.28, 1.188);
+      this.box(g, 1.1, 1.15, 1.1, stone, 0, 0.58, 0);
+      this.box(g, 1.1, 0.45, 1.1, teamMat, 0, 1.38, 0);
+      this.box(g, 0.35, 0.3, 0.35, stone, 0, 1.75, 0);
+      this.box(g, 0.3, 0.55, 0.15, teamMat, 0, 0.28, 0.594);
       return g;
     }
 
-    // v0.11a：L3 城堡同样恒定占地（2.2），再高一些：石塔 + 四角垛口 + 旗。
+    // v0.11a：L3 城堡恒定占地只更高；v0.28c 占地随缩半为 1.1：石塔 + 四角垛口 + 旗。
     const light = new THREE.MeshLambertMaterial({ color: 0xd0cec6 });
-    this.box(g, 2.2, 1.5, 2.2, light, 0, 0.75, 0);
+    this.box(g, 1.1, 1.5, 1.1, light, 0, 0.75, 0);
     for (const [x, z] of [
-      [0.88, 0.88],
-      [0.88, -0.88],
-      [-0.88, 0.88],
-      [-0.88, -0.88],
+      [0.5, 0.5],
+      [0.5, -0.5],
+      [-0.5, 0.5],
+      [-0.5, -0.5],
     ] as const) {
-      this.box(g, 0.42, 0.34, 0.42, light, x, 1.67, z);
+      this.box(g, 0.26, 0.34, 0.26, light, x, 1.67, z);
     }
-    this.box(g, 0.28, 0.55, 0.28, new THREE.MeshLambertMaterial({ color: 0x6a4a28 }), 0.78, 1.95, 0.78);
-    this.box(g, 0.55, 0.3, 0.06, teamMat, 1.0, 2.1, 0.78);
-    this.box(g, 0.44, 0.7, 0.176, teamMat, 0, 0.35, 1.188);
+    this.box(g, 0.2, 0.55, 0.2, new THREE.MeshLambertMaterial({ color: 0x6a4a28 }), 0.45, 1.95, 0.45);
+    this.box(g, 0.4, 0.3, 0.05, teamMat, 0.55, 2.1, 0.45);
+    this.box(g, 0.3, 0.7, 0.15, teamMat, 0, 0.35, 0.594);
     return g;
   }
 

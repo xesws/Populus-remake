@@ -3,7 +3,7 @@ import {
   clamp,
   houseBaseRate,
   HOUSE_ROOF_Y,
-  TOWER_PAD,
+  sitePad,
   houseHp,
   houseMaxPop,
   HOUSE_DWELL_BONUS,
@@ -47,7 +47,7 @@ export class ProductionSystem implements ISystem {
       for (const u of sim.units) {
         if (u.homeId !== b.id || u.enterT > 0) continue;
         const ang = i * 2.4; // 黄金角错开，人数增减不整体重排
-        const p = sim.padLocalToWorld(b, Math.cos(ang) * 0.55, Math.sin(ang) * 0.55);
+        const p = sim.padLocalToWorld(b, Math.cos(ang) * 0.38, Math.sin(ang) * 0.38); // v0.28c 屋顶缩半→站位环 0.55→0.38
         u.x = p.x;
         u.z = p.z;
         u.y = b.y + HOUSE_ROOF_Y[lv]!;
@@ -269,7 +269,7 @@ export class ProductionSystem implements ISystem {
   upgradeBuilding(sim: Sim, b: Building, level: number): void {
     b.level = level;
     // v0.27-3 哨塔占地独立（TOWER_PAD 1.8，比茅屋/营地的 2.6 小一圈）。
-    const pad = b.kind === "hut" ? padSize(level) : b.kind === "tower" ? { w: TOWER_PAD, d: TOWER_PAD } : padSize(1);
+    const pad = b.kind === "hut" ? padSize(level) : sitePad(b.kind); // v0.28c 训练营 2.6 / 哨塔 0.6
     const h = sim.world.heightAt(b.x, b.z);
     sim.world.flattenPad(b.x, b.z, pad.w, pad.d, b.yaw, h);
     b.padW = pad.w;

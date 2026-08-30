@@ -24,6 +24,7 @@ import {
   Order,
   Owner,
   padSize,
+  sitePad,
   Projectile,
   RED,
   snapYaw,
@@ -290,8 +291,9 @@ export class Sim {
     return { x: b.x, z: b.z, w: b.padW, d: b.padD, yaw: b.yaw };
   }
 
-  canFound(x: number, z: number, level: number, yaw: number, ignoreId = 0): boolean {
-    const pad = padSize(level);
+  canFound(x: number, z: number, level: number, yaw: number, ignoreId = 0, kind: BuildingKind = "hut"): boolean {
+    // v0.28c 地基按建筑类型取：茅屋 1.3 / 训练营 2.6 / 哨塔 0.6（原一律 padSize → 茅屋缩半后训练营被误缩）。
+    const pad = kind === "hut" ? padSize(level) : sitePad(kind);
     if (!this.world.padReady(x, z, pad.w, pad.d, yaw)) return false;
     const mine: Pad = { x, z, w: pad.w, d: pad.d, yaw };
     for (const b of this.buildings) {
@@ -412,7 +414,12 @@ export class Sim {
     padW?: number,
     padD?: number,
   ): Building {
-    const pad = padW !== undefined && padD !== undefined ? { w: padW, d: padD } : padSize(kind === "hut" ? Math.max(1, level) : 1);
+    const pad =
+      padW !== undefined && padD !== undefined
+        ? { w: padW, d: padD }
+        : kind === "hut"
+          ? padSize(Math.max(1, level))
+          : sitePad(kind); // v0.28c 训练营 2.6 / 哨塔 0.6
     const h = Math.max(this.world.heightAt(x, z), 0.8);
     this.world.flattenPad(x, z, pad.w, pad.d, yaw, h);
     const y = this.world.heightAt(x, z);
@@ -438,8 +445,8 @@ export class Sim {
   }
 
   foundSite(team: Team, x: number, z: number, yaw: number, kind: BuildingKind): Building | null {
-    if (!this.canFound(x, z, 1, yaw)) return null;
-    const pad = padSize(1);
+    if (!this.canFound(x, z, 1, yaw, 0, kind)) return null;
+    const pad = sitePad(kind); // v0.28c 落基占地按建筑类型
     const h = this.world.heightAt(x, z);
     this.world.flattenPad(x, z, pad.w, pad.d, yaw, h);
     const y = this.world.heightAt(x, z);
@@ -953,7 +960,7 @@ export class Sim {
       u.settleZ = -1;
       return;
     }
-    const pad = padSize(1);
+    const pad = sitePad(u.foundKind ?? "hut");
     const edge = this.padEdge(site.x, site.z, pad.w, pad.d, u.settleYaw, u.x, u.z);
     u.path = astar(this.world, u.x, u.z, edge.x, edge.z);
   }
@@ -1149,7 +1156,7 @@ export class Sim {
     }
 
     if (u.settleX >= 0 && !this.buildingAt(u.settleX, u.settleZ)) {
-      const pad = padSize(1);
+      const pad = sitePad(u.foundKind ?? "hut");
       const edge = this.padEdge(u.settleX, u.settleZ, pad.w, pad.d, u.settleYaw, u.x, u.z);
       if (dist2(u.x, u.z, edge.x, edge.z) <= 1.5) {
         const kind = u.foundKind ?? "hut";
@@ -1540,10 +1547,10 @@ export class Sim {
     return true;
   }
 
-  tryPrepFound(x: number, z: number, yaw: number): boolean {
+  tryPrepFound(x: number, z: number, yaw: number, kind: BuildingKind = "hut"): boolean {
     if (!inMap(x, z)) return false;
     if (this.world.heightAt(x, z) <= WATER) return false;
-    const pad = padSize(1);
+    const pad = sitePad(kind); // v0.28c 预平整/间距判定按建筑类型占地
     const mine: Pad = { x, z, w: pad.w + 0.7, d: pad.d + 0.7, yaw };
     for (const b of this.buildings) {
       if (b.hp <= 0) continue;
@@ -1551,7 +1558,7 @@ export class Sim {
     }
     const h = Math.max(this.world.heightAt(x, z), 0.8);
     this.world.flattenPad(x, z, pad.w + 1.0, pad.d + 1.0, yaw, h);
-    return this.canFound(x, z, 1, yaw);
+    return this.canFound(x, z, 1, yaw, 0, kind);
   }
 
   findCampSite(u: Unit): Cell | null {
@@ -1677,7 +1684,7 @@ export class Sim {
       if (site) {
         u.settleX = site.x;
         u.settleZ = site.z;
-        const pad = padSize(1);
+        const pad = sitePad(u.foundKind ?? "hut");
         const edge = this.padEdge(site.x, site.z, pad.w, pad.d, u.settleYaw, u.x, u.z);
         u.path = astar(this.world, u.x, u.z, edge.x, edge.z);
         u.pathI = 0;

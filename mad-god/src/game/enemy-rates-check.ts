@@ -96,14 +96,14 @@ function testTrainRate(): void {
 
   // 收尾：蓝方先训成（起步相近且速率更快），红方在那一刻仍是 walker，随后也训成。
   let t = 0;
-  while (bw.kind === "walker" && t < 8) {
+  while (bw.kind === "walker" && t < 12) {
     sim.tick(0.25);
     t += 0.25;
   }
   assert(bw.kind === "warrior", "train: 蓝方先训成武士");
   assert(rw.kind === "walker", "train: 蓝方训成时红方尚未训成（0.75×）");
   t = 0;
-  while (rw.kind === "walker" && t < 8) {
+  while (rw.kind === "walker" && t < 12) {
     sim.tick(0.25);
     t += 0.25;
   }

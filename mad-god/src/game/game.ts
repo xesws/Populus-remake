@@ -226,7 +226,7 @@ export class Game {
       return;
     }
     if (this.placeKind) {
-      if (!this.sim.canFound(x, z, 1, this.placeYaw)) return;
+      if (!this.sim.canFound(x, z, 1, this.placeYaw, 0, this.placeKind ?? "hut")) return;
       const made = this.sim.foundSite(BLUE, x, z, this.placeYaw, this.placeKind);
       if (made) {
         this.sim.assignBuilders(BLUE, made);
@@ -484,7 +484,7 @@ export class Game {
 
     const cell = ndcCell({ clientX: this.input.mx, clientY: this.input.my }, this.canvas, this.view);
     if (this.placeKind && cell && inMap(cell.x, cell.z)) {
-      const legal = this.sim.canFound(cell.x, cell.z, 1, this.placeYaw);
+      const legal = this.sim.canFound(cell.x, cell.z, 1, this.placeYaw, 0, this.placeKind ?? "hut");
       this.view.showGhost(this.placeKind, BLUE, cell.x, cell.z, this.placeYaw, legal);
       this.view.hover(0, 0, false);
     } else {

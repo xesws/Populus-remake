@@ -387,7 +387,7 @@ function testUpgradeKeepsFootprint(): void {
   assert(spot !== null, "出生点附近存在地形合格的屋址");
   const c = sim.placeComplete(BLUE, spot!.x, spot!.z, s.yaw, "hut", 1);
   assert(!!c, "邻屋放置成功");
-  assert(a.padW === 2.6 && c!.padW === 2.6, "两屋初始 pad 均为 2.6");
+  assert(a.padW === 1.3 && c!.padW === 1.3, "两屋初始 pad 均为 1.3（v0.28c 茅屋缩半）");
 
   // 走真实升级路径一路升到 L3
   sim.productionSystem.upgradeBuilding(sim, a, 2);
@@ -396,8 +396,8 @@ function testUpgradeKeepsFootprint(): void {
   sim.productionSystem.upgradeBuilding(sim, c!, 3);
 
   assert(a.level === 3 && c!.level === 3, "两屋均升至 L3");
-  assert(a.padW === 2.6 && a.padD === 2.6, "L3 后 pad 仍为 2.6（面积不变，只许长高）");
-  assert(c!.padW === 2.6 && c!.padD === 2.6, "邻屋 L3 后 pad 仍为 2.6");
+  assert(a.padW === 1.3 && a.padD === 1.3, "L3 后 pad 仍为 1.3（面积不变，只许长高）");
+  assert(c!.padW === 1.3 && c!.padD === 1.3, "邻屋 L3 后 pad 仍为 1.3");
 
   const padOf = (b: { x: number; z: number; padW: number; padD: number; yaw: number }) => ({
     x: b.x,

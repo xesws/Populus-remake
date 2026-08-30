@@ -195,9 +195,15 @@ export const GUARD_HEAL = 1.0; // 跳舞回血速率（hp/秒）
 export const GUARD_DANCE_R = 2.2; // 绕圈跳舞的圆周半径（格）
 
 // v0.11a 修复：房屋升级不再扩大占地（否则升级会把邻居挤掉）。各级 pad / 墙体面积恒定为 L1 尺寸，只许长高。
-export const HOUSE_WALL = [0, 2.2, 2.2, 2.2] as const;
-export const HOUSE_ROOF = [0, 2.2, 2.2, 2.2] as const;
-export const HOUSE_PAD = [0, 2.6, 2.6, 2.6] as const;
+// v0.28c 茅屋缩半（用户拍板：原 2.2/2.6 太大）：墙体 2.2→1.1、地基 2.6→1.3；
+// 训练营不缩（本来就该是大建筑，见 CAMP_PAD）。
+export const HOUSE_WALL = [0, 1.1, 1.1, 1.1] as const;
+export const HOUSE_ROOF = [0, 1.1, 1.1, 1.1] as const;
+export const HOUSE_PAD = [0, 1.3, 1.3, 1.3] as const;
+
+/** v0.28c 训练营占地：保持大尺寸 2.6（茅屋缩半但训练营不缩，用户拍板）。 */
+export const CAMP_PAD = 2.6;
+
 
 // v0.27h 住户"上房"：茅屋住户站上屋顶（按等级的屋顶面高度），玩家可直接点选拉出。
 // 高度对齐 render 的各级屋顶尖：L1 茅草尖 ~1.2 / L2 石檐 ~1.65 / L3 城堡顶 ~2.1。
@@ -207,7 +213,7 @@ export const HOUSE_ROOF_Y = [0, 1.2, 1.65, 2.1] as const;
 // 外观改为"魔法哨塔"——细高石柱 + 瞭望台 + 四面栅栏（栏间即窗口，驻塔牛战士可见/开火）+ 队色尖顶。
 // 塔上射程与视野都是地面 2 倍：射程 4.5→9、锁敌 12→24（用户口径"哨塔上最远 3 倍距离"）；
 // 火球发射原点在窗口高度（TOWER_TOP），弹道俯冲而出、永不与自家塔体判撞。
-export const TOWER_PAD = 0.9;
+export const TOWER_PAD = 0.6; // v0.28c 地基贴塔身（建模宽 0.5，原 0.9 明显偏宽）
 export const TOWER_DECK_Y = 3.38; // 瞭望台面高度（驻军站位 / 渲染基准）
 export const TOWER_TOP = 3.9; // 火球发射原点（窗口高度，尖顶之下）
 export const TOWER_RANGE_MULT = 2;
@@ -223,6 +229,13 @@ export function padSize(level: number): { w: number; d: number } {
   const lv = level >= 3 ? 3 : level === 2 ? 2 : 1;
   const s = HOUSE_PAD[lv];
   return { w: s, d: s };
+}
+
+/** v0.28c 各建筑的落基/完工占地：茅屋=padSize(级)，训练营=CAMP_PAD（不缩），哨塔=贴塔身。 */
+export function sitePad(kind: BuildingKind): { w: number; d: number } {
+  if (isCampKind(kind)) return { w: CAMP_PAD, d: CAMP_PAD };
+  if (kind === "tower") return { w: TOWER_PAD, d: TOWER_PAD };
+  return padSize(1);
 }
 
 export type Order = "settle" | "gather" | "fight" | "shaman" | "guard";

@@ -33,7 +33,7 @@ function testTowerCostAndCompletion(): void {
   assert(!!site, "cost: 找到可落塔基的点位");
   const t = sim.buildings.find((b) => b.kind === "tower")!;
   assert(t.level === 0 && t.need === 1, "cost: L0 塔基 need=1");
-  assert(t.padW === 2.6 && t.padD === 2.6, "cost: 塔基 pad 沿用 L0 通用占地（落成后收窄）");
+  assert(t.padW === 0.6 && t.padD === 0.6, "cost: 塔基 pad 贴塔身 0.6（v0.28c 落基即最终尺寸）");
 
   sim.deliverWood(t); // 送满 1 捆 → completeStep → 落成 L1
   assert(t.level === 1, "cost: 送 1 捆木头即落成 L1（哨塔建造最快）");
@@ -267,7 +267,7 @@ function testOmniFireAndTowerSafe(): void {
 
 /** h. v0.27f 瘦身：占地缩为 0.9（直径 ≈ 旧边长 1.8 的一半）。 */
 function testTowerSlimFootprint(): void {
-  assert(TOWER_PAD === 0.9, "slim: 哨塔占地直径 0.9（旧 1.8 的一半）");
+  assert(TOWER_PAD === 0.6, "slim: 哨塔地基贴塔身（建模 0.5，地基 0.6）");
   console.log("testTowerSlimFootprint ok");
 }
 

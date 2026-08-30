@@ -161,24 +161,17 @@ export class TrainingSystem implements ISystem {
     u.carry = 0;
     u.targetId = 0;
     u.disguise = kind === "spy" ? null : u.disguise;
-    const door = this.trainDoor(camp);
-    const rx = Math.cos(camp.yaw);
-    const rz = -Math.sin(camp.yaw);
-    let sx = door.x + rx * 0.8;
-    let sz = door.z + rz * 0.8;
-    if (!sim.world.walkableAt(sx, sz)) {
-      sx = door.x - rx * 0.8;
-      sz = door.z - rz * 0.8;
+    // v0.28c 训成出营散开：旧实现只偏到门口旁 0.8 格，新兵堆在门口堵住训练排队。
+    // 现在与茅屋出生同款：弹到营地外 2~3 格的开阔点（随机偏移避免连训的新兵叠同一点），
+    // 再交给 order（fight / 团队令）接管。
+    let out = sim.padLocalToWorld(camp, (Math.random() - 0.5) * 2.4, camp.padD / 2 + 2.2 + Math.random() * 1.0);
+    if (!sim.world.walkableAt(out.x, out.z)) out = sim.padLocalToWorld(camp, 0, camp.padD / 2 + 2.2);
+    if (!sim.world.walkableAt(out.x, out.z)) {
+      const fb = sim.spawnNear(camp);
+      if (fb) out = fb;
     }
-    if (!sim.world.walkableAt(sx, sz)) {
-      const safe = nearestLand(sim.world, sx, sz);
-      if (safe) {
-        sx = safe.x;
-        sz = safe.z;
-      }
-    }
-    u.x = sx;
-    u.z = sz;
+    u.x = out.x;
+    u.z = out.z;
     u.y = sim.world.heightAt(u.x, u.z);
     u.path = [];
     u.pathI = 0;
