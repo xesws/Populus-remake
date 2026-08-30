@@ -2,6 +2,7 @@ import {
   BLUE,
   clamp,
   houseBaseRate,
+  BUILD_RATE_BASE,
   HOUSE_ROOF_Y,
   POP_CAP,
   sitePad,
@@ -34,6 +35,11 @@ export class ProductionSystem implements ISystem {
     this.regenCharges(sim, dt);
     this.produce(sim, dt);
     this.arrangeDwellers(sim);
+  }
+
+  /** 供 sim.tick 调用的渐进式建造入口。 */
+  constructionTick(sim: Sim, dt: number): void {
+    this.tickConstruction(sim, dt);
   }
 
   /**
@@ -294,9 +300,34 @@ export class ProductionSystem implements ISystem {
   deliverWood(sim: Sim, b: Building): void {
     if (sim.review) return;
     if (b.hp <= 0 || b.need <= 0 || b.wood >= b.need) return;
+    // v0.28i 渐进式建造：交付只堆木（地基上可见），完工由 tickConstruction 按存木速率起升达标触发。
     b.wood += 1;
-    if (b.wood < b.need) return;
-    this.completeStep(sim, b);
+    logger.info("produce", `工地#${b.id}(${b.kind}) 收到木料 ${b.wood}/${b.need}`, { team: b.team });
+  }
+
+  /**
+   * v0.28i 渐进式建造 tick：每座有存木的 L0 工地 built += dt × BASE × (0.5 + 存木)，
+   * 达到 need 即完工（completeStep 升 L1，清木料与进度）。
+   * 存木越多建得越快——两个村民供木 = 更快到齐 + 更高存量 = 显著加速。
+   */
+  tickConstruction(sim: Sim, dt: number): void {
+    if (sim.freezeProd) return;
+    for (const b of sim.buildings) {
+      if (b.hp <= 0 || b.level !== 0 || b.need <= 0 || b.wood <= 0) continue;
+      if (b.wood > b.need) b.wood = b.need;
+      b.built += dt * BUILD_RATE_BASE * (0.5 + b.wood);
+      if (b.built >= b.need) {
+        logger.info("produce", `工地#${b.id}(${b.kind}) 建成`, {
+          team: b.team,
+          wood: b.wood,
+          need: b.need,
+          built: +b.built.toFixed(2),
+        });
+        b.wood = 0;
+        b.built = 0;
+        this.completeStep(sim, b);
+      }
+    }
   }
 
   completeStep(sim: Sim, b: Building): void {

@@ -54,6 +54,9 @@ export function woodNeedFor(kind: BuildingKind, level: number): number {
 }
 
 export const CHOP_TIME = 1.2;
+// v0.28i 渐进式建造：木料交付后堆在地基上，建筑按 built += dt × BASE × (0.5 + 存木) 起升——
+// 放的木头越多建得越快（两村民供木翻倍 + 存量更高 = 显著加速）。
+export const BUILD_RATE_BASE = 0.3;
 export const TRAIN_TIME = 4;
 export const TREE_REGEN = 25;
 

@@ -12,6 +12,8 @@ export abstract class Building extends BaseEntity {
   prod = 0;
   wood = 0;
   need = 0;
+  /** v0.28i 渐进式建造进度（0..need，浮点）：交付的木料堆在地基上，建筑按存木量起升。 */
+  built = 0;
   shell = false;
   dwell = 0;
   born = 0;

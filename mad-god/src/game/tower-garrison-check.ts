@@ -35,8 +35,9 @@ function testTowerCostAndCompletion(): void {
   assert(t.level === 0 && t.need === 1, "cost: L0 塔基 need=1");
   assert(t.padW === 0.6 && t.padD === 0.6, "cost: 塔基 pad 贴塔身 0.6（v0.28c 落基即最终尺寸）");
 
-  sim.deliverWood(t); // 送满 1 捆 → completeStep → 落成 L1
-  assert(t.level === 1, "cost: 送 1 捆木头即落成 L1（哨塔建造最快）");
+  sim.deliverWood(t); // v0.28i 渐进式建造：送 1 捆只堆木，起升达标（≈2.2s）落成 L1
+  for (let i = 0; i < 200 && t.level === 0; i++) sim.tick(0.05);
+  assert(t.level === 1, "cost: 1 捆木头起升后落成 L1（哨塔建造最快）");
   assert(t.padW === TOWER_PAD && t.padD === TOWER_PAD, `cost: 落成占地 ${TOWER_PAD}×${TOWER_PAD}`);
   console.log("testTowerCostAndCompletion ok");
 }

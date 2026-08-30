@@ -992,6 +992,7 @@ export class Sim {
     this.markHouseBlocks();
     this.regenCharges(dt);
     this.produce(dt);
+    this.constructionTick(dt); // v0.28i 渐进式建造
     this.thinkUnits(dt);
     this.moveUnits(dt);
     this.tickEnter(dt);
@@ -1065,6 +1066,11 @@ export class Sim {
   /** v0.27h 住户上屋顶：茅屋住户排到屋顶站位（坐标+高度），渲染/点选都走这里。 */
   arrangeDwellers(): void {
     this.productionSystem.arrangeDwellers(this);
+  }
+
+  /** v0.28i 渐进式建造：存木起升，达标完工。 */
+  constructionTick(dt: number): void {
+    this.productionSystem.constructionTick(this, dt);
   }
 
   spawnNear(b: Building): Cell | null {

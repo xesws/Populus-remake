@@ -752,8 +752,20 @@ export class View {
       const dirt = new THREE.MeshLambertMaterial({ color: 0x6a5530 });
       const log = new THREE.MeshLambertMaterial({ color: 0x8a5a28 });
       this.box(g, 2.5, 0.07, 2.5, dirt, 0, 0.035, 0);
-      this.box(g, 0.08, 0.35, 0.08, log, -1.05, 0.2, -1.05);
-      this.box(g, 0.08, 0.35, 0.08, log, 1.05, 0.2, 1.05);
+      // v0.28i 渐进式建造：四角脚手架独立成组，syncHouses 每帧按 built/need 抬升 scale.y。
+      const scaffold = new THREE.Group();
+      scaffold.name = "scaffold";
+      for (const [x, z] of [
+        [-1.05, -1.05],
+        [1.05, -1.05],
+        [-1.05, 1.05],
+        [1.05, 1.05],
+      ] as const) {
+        this.box(scaffold, 0.08, 1.0, 0.08, log, x, 0.5, z);
+      }
+      this.box(scaffold, 2.1, 0.07, 0.07, log, 0, 0.96, -1.05);
+      this.box(scaffold, 2.1, 0.07, 0.07, log, 0, 0.96, 1.05);
+      g.add(scaffold);
       this.addWoodStacks(g, wood);
       return g;
     }
@@ -1130,6 +1142,11 @@ export class View {
       }
       g.position.set(b.x, b.y, b.z);
       g.rotation.y = b.yaw;
+      // v0.28i 工地脚手架随建造进度起升（存木越多升得越快，一眼可读）。
+      if (b.level === 0 && b.need > 0) {
+        const sc = g.getObjectByName("scaffold");
+        if (sc) sc.scale.y = 0.15 + 0.85 * Math.min(1, b.built / b.need);
+      }
     }
     for (const [id, g] of this.houseMeshes) {
       if (!live.has(id)) {

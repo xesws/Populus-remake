@@ -19,7 +19,15 @@ export class PathSystem implements ISystem {
       if (u.fireT > 0) u.fireT = Math.max(0, u.fireT - dt);
       if (u.ghostT > 0) u.ghostT = Math.max(0, u.ghostT - dt);
       const g0 = sim.world.heightAt(u.x, u.z);
-      if (u.flyVy !== 0 || u.y > g0 + 0.08) {
+      // v0.28i 修"建工到站即冻住"：整地（tryPrepFound/foundSite 抬升地基周边）会让站在
+      // 旁边的单位 y 落后于新地面任意落差——旧判定"y>地面+0.08 即腾空"会清空路径 →
+      // thinkUnits 把移动令作废 → 建工拿着 buildId 站 40 秒（repath 风暴时代被每帧
+      // 重寻路掩盖）。正确语义：**没有初速（flyVy=0）的单位不可能在飞**——所有击飞/
+      // 甩飞都带 flyVy；纯落差（整地抬升）直接贴地继续走。
+      if (u.flyVy === 0 && u.y > g0 + 0.02) {
+        u.y = g0;
+      }
+      if (u.flyVy !== 0) {
         u.flyVy -= 18 * dt;
         u.x = clamp(u.x + u.flyVx * dt, 0.3, WORLD - 0.3);
         u.z = clamp(u.z + u.flyVz * dt, 0.3, WORLD - 0.3);
@@ -221,7 +229,10 @@ export class PathSystem implements ISystem {
       u.moveX = -1;
       u.moveZ = -1;
       // Hold position after a player move order: idle wander must not immediately walk the unit away.
-      u.think = 30;
+      // v0.28i 修复"建工到站发呆 30s"：30s hold 只给纯玩家移动令；系统指派
+      //（建工 buildId / 入住在途 targetId）到站 0.4s 内接活去砍树/入住——
+      // 旧实现被 v0.28f 的纯时间节流揭穿（此前靠每帧 repath 风暴掩盖）。
+      u.think = u.buildId > 0 || u.targetId > 0 ? 0.4 : 30;
     } else {
       // v0.28f 到站节流：旧 think=0 会让游走/干活的单位一到站当帧就 repath
       //（实测 528 单位 222 次 repath/帧、A* 每秒 1.3 万次，高人口卡顿二号元凶）。

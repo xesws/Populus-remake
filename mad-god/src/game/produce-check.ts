@@ -115,10 +115,12 @@ function testWoodChoppingAndDelivery(): void {
   assert(site!.wood >= 1, "site received 1 wood");
   assert(walker!.carry === 0, "walker dropped wood after delivery");
 
-  // Deliver second wood to finish L0 hut into L1 hut
+  // Deliver second wood: v0.28i 渐进式建造——交付只堆满木料，完工由起升 tick 达标（≈1.6s）。
   sim.deliverWood(site!);
+  assert(site!.wood === site!.need && site!.built >= 0, "木料堆满地基，起升开始");
+  for (let i = 0; i < 200 && site!.level === 0; i++) sim.tick(0.05);
   assert(site!.wood === 0, "wood reset upon completion");
-  assert(site!.level === 1, "hut upgraded from L0 to L1");
+  assert(site!.level === 1, "hut upgraded from L0 to L1（存木起升达标）");
   assert(site!.hp === houseHp(1), "hut hp upgraded to L1 hp");
   assert(site!.need === woodNeedFor("hut", 1), "hut need is 0 for L1");
 
@@ -165,6 +167,8 @@ function testCampSiteDelivery(): void {
   }
 
   sim.deliverWood(camp!);
+  // v0.28i 渐进式完工（4 木存量 ≈ 1.35/s → ~3s）。
+  for (let i = 0; i < 200 && camp!.level === 0; i++) sim.tick(0.05);
   assert(camp!.level === 1, "camp completes into level 1 warriorHut");
   assert(camp!.need === 0, "camp needs 0 wood once complete");
 
@@ -325,6 +329,49 @@ function testPopCapPausesAndResumes(): void {
   console.log("testPopCapPausesAndResumes ok");
 }
 
+/**
+ * v0.28i 渐进式建造：存木越多 built 增速越快（wood=2 比 wood=1 快 ~1.67 倍）。
+ */
+function testGradualConstruction(): void {
+  const sim = new Sim(new World(42));
+  const bw = sim.units.find((u) => u.team === BLUE && u.kind === "walker")!;
+  const a1 = hutSiteNear(sim, bw!); // 螺旋找真实可落地基（写死坐标常踩水/坡）
+  const a2 = hutSiteNear(sim, bw!);
+  assert(!!a1 && !!a2, "两座工地落地");
+  sim.deliverWood(a1!); // 工地1：1 根
+  sim.deliverWood(a2!);
+  sim.deliverWood(a2!); // 工地2：2 根
+  const r1 = a1!.built;
+  const r2 = a2!.built;
+  sim.tick(0.5); // 0.5 秒增量（工地2 未到 need，量纯增量）
+  const d1 = a1!.built - r1;
+  const d2 = a2!.built - r2;
+  assert(d1 > 0 && d2 > d1, `存木 2 根比 1 根建得快（Δ1=${d1.toFixed(3)} Δ2=${d2.toFixed(3)}）`);
+  for (let i = 0; i < 300 && (a1!.level === 0 || a2!.level === 0); i++) sim.tick(0.05);
+  assert(a1!.level === 1 && a2!.level === 1, "两工地最终都建成");
+  console.log("testGradualConstruction ok");
+}
+
+/** v0.28i 建工到站接活：指派建工走到工地边后 10 秒内应已开始砍树/搬运（旧实现卡 30s）。 */
+function testBuilderStartsQuickly(): void {
+  const sim = new Sim(new World(42));
+  const bw = sim.units.find((u) => u.team === BLUE && u.kind === "walker")!;
+  const site = hutSiteNear(sim, bw!);
+  assert(!!site, "工地落地");
+  bw.selected = true;
+  sim.assignBuilders(BLUE, site!);
+  let started = false;
+  for (let i = 0; i < 200; i++) {
+    sim.tick(0.05);
+    if (bw.job === "chop" || bw.job === "haul" || bw.carry === 1) {
+      started = true;
+      break;
+    }
+  }
+  assert(started, `建工到站 10s 内已开工（job=${bw.job}，旧实现发呆 30s）`);
+  console.log("testBuilderStartsQuickly ok");
+}
+
 function testProductionRateScalesWithDwell(): void {
   const sim = new Sim(new World(42));
   // 多放一座茅屋（历史手法；v0.15 起无全局上限，仅为场景丰富）
@@ -454,6 +501,8 @@ function main(): void {
   testProductionRateScalesWithDwell();
   testL3CapTen();
 testPopCapPausesAndResumes();
+testGradualConstruction();
+testBuilderStartsQuickly();
   testDwellReleasedOnDeath();
   testHouseDestroyedReleasesDwellers();
   testUpgradeKeepsFootprint();
