@@ -145,7 +145,7 @@ function testCampSiteDelivery(): void {
   ] as Array<[number, number]>) {
     const x = s.x + fx * a + px * b;
     const z = s.z + fz * a + pz * b;
-    sim.tryPrepFound(x, z, s.yaw);
+    sim.tryPrepFound(x, z, s.yaw, "warriorHut"); // v0.28c 预备/落基同口径（训练营 2.6）
     if (sim.canFound(x, z, 1, s.yaw)) {
       campX = x;
       campZ = z;

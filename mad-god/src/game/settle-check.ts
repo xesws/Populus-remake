@@ -57,8 +57,9 @@ function main(): void {
   ] as Array<[number, number]>) {
     const x = s.x + fx * a + px * b;
     const z = s.z + fz * a + pz * b;
-    sim.tryPrepFound(x, z, s.yaw);
-    if (sim.canFound(x, z, 1, s.yaw)) {
+    // v0.28c 起地基按建筑类型取尺寸：预备/校验/落基必须同一口径（这里建训练营）。
+    sim.tryPrepFound(x, z, s.yaw, "warriorHut");
+    if (sim.canFound(x, z, 1, s.yaw, 0, "warriorHut")) {
       campX = x;
       campZ = z;
       break;

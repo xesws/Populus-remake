@@ -1557,7 +1557,8 @@ export class Sim {
       if (padsOverlap(mine, this.buildingPad(b))) return false;
     }
     const h = Math.max(this.world.heightAt(x, z), 0.8);
-    this.world.flattenPad(x, z, pad.w + 1.0, pad.d + 1.0, yaw, h);
+    // v0.28d 预备整地不再外扩 1.0 格（原 pad+1.0 会让小屋踩一块大土台）——只比地基宽 0.15。
+    this.world.flattenPad(x, z, pad.w + 0.15, pad.d + 0.15, yaw, h);
     return this.canFound(x, z, 1, yaw, 0, kind);
   }
 

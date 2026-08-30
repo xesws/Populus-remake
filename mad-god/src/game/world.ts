@@ -842,7 +842,11 @@ export class World {
   flattenPad(cx: number, cz: number, w: number, d: number, yaw: number, h: number): void {
     const target = clamp(h, 0, MAX_H);
     const pad: Pad = { x: cx, z: cz, w, d, yaw };
-    const reach = 0.5 * Math.hypot(w, d) + 0.6;
+    // v0.28d 缓坡环带按 pad 尺寸取宽（0.75×边长，0.8~2.0 封顶）：小茅屋不再背一圈
+    // 固定 2 格的"大裙边"——那正是"地基大得出奇"的观感来源；大 pad（训练营/出生点）
+    // 保留 2.0 上限防断崖（环带太窄会在坡地产生 >MAX_SLOPE 的坎，单位上不了 pad）。
+    const ring = clamp(0.75 * Math.max(w, d), 0.8, 2.0);
+    const reach = 0.5 * Math.hypot(w, d) + 0.6 + ring;
     const minIx = clamp(Math.floor((cx - reach) / STEP), 0, SAMPLES - 1);
     const maxIx = clamp(Math.ceil((cx + reach) / STEP), 0, SAMPLES - 1);
     const minIz = clamp(Math.floor((cz - reach) / STEP), 0, SAMPLES - 1);
@@ -856,11 +860,11 @@ export class World {
           this.setSample(ix, iz, target);
           continue;
         }
-        if (inPad(px, pz, pad, 2.0)) {
-          // v0.13 环形缓坡：pad 外 0.45~2.0 带 smoothstep 过渡到原地形（C1 连续，消除四周断崖）。
+        if (inPad(px, pz, pad, 0.45 + ring)) {
+          // v0.13 环形缓坡：pad 外 0.45~0.45+ring 带 smoothstep 过渡到原地形（C1 连续，消除四周断崖）。
           const l = localOnPad(px, pz, pad);
           const infl = Math.max(Math.abs(l.x) - pad.w / 2, Math.abs(l.z) - pad.d / 2, 0);
-          const t = clamp(infl / 1.55, 0, 1);
+          const t = clamp(infl / ring, 0, 1);
           const f = t * t * (3 - 2 * t);
           const i = this.idx(ix, iz);
           const nv = this.h[i]! + (target - this.h[i]!) * (1 - f);

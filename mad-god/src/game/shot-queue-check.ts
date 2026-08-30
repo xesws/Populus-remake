@@ -34,8 +34,8 @@ function setupLikeShot(): Sim {
   for (const [a, b] of offsets) {
     const x = s.x + fx * a + px * b;
     const z = s.z + fz * a + pz * b;
-    sim.tryPrepFound(x, z, s.yaw);
-    if (sim.canFound(x, z, 1, s.yaw)) {
+    sim.tryPrepFound(x, z, s.yaw, "warriorHut"); // v0.28c 同口径
+    if (sim.canFound(x, z, 1, s.yaw, 0, "warriorHut")) {
       campX = x;
       campZ = z;
       break;
