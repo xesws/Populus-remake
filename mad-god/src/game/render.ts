@@ -1,6 +1,6 @@
 import * as THREE from "three";
 import { Sim } from "./sim";
-import { BLUE, clamp, FIRE_DOWN_TIME, FxBolt, houseMaxPop, isCampKind, SAMPLES, STEP, Team, TOWER_DECK_Y, TRAIN_TIME, WATER, WORLD } from "./types";
+import { BLUE, clamp, FIRE_DOWN_TIME, FxBolt, houseMaxPop, isCampKind, SAMPLES, STEP, Team, TRAIN_TIME, WATER, WORLD } from "./types";
 import { World } from "./world";
 import { TornadoFX } from "./render-parts/tornado-fx";
 import { LavaFX } from "./render-parts/lava-fx";
@@ -632,17 +632,11 @@ export class View {
   syncUnits(sim: Sim): void {
     const live = new Set<number>();
     for (const u of sim.units) {
-      // v0.27-3 驻塔牛战士画在塔顶平台；v0.27h 茅屋住户画在屋顶（sim.arrangeDwellers
-      // 已把坐标排到屋顶站位，照常走地面单位的绘制路径即可，选圈/点击都随坐标走）。
-      let towerTop: { x: number; z: number; y: number } | null = null;
+      // v0.27h 茅屋住户画在屋顶；v0.28e 塔顶驻军同理——sim.arrangeDwellers/tickEnter
+      // 已把坐标/高度维护到位（含爬塔插值），照常走地面单位绘制路径，攀爬过程自然可见。
       if (u.homeId > 0 && u.enterT <= 0) {
         const home = sim.buildingById(u.homeId);
-        if (!home) continue;
-        if (home.kind === "tower") {
-          towerTop = { x: home.x, z: home.z, y: home.y + TOWER_DECK_Y }; // 站在瞭望台面上，栏间可见
-        } else if (home.kind !== "hut") {
-          continue; // 其他建筑（营地无驻人）不画
-        }
+        if (!home || (home.kind !== "hut" && home.kind !== "tower")) continue;
       }
       live.add(u.id);
       let g = this.unitMeshes.get(u.id);
@@ -657,8 +651,7 @@ export class View {
         this.unitGroup.add(g);
       }
       const bob = Math.abs(Math.sin(this.t * 8 + u.phase)) * 0.03;
-      if (towerTop) g.position.set(towerTop.x, towerTop.y + bob, towerTop.z);
-      else g.position.set(u.x, u.y + bob, u.z);
+      g.position.set(u.x, u.y + bob, u.z);
       g.rotation.y = u.yaw;
       // v0.12 倒地动画：命中后 0.2s 倒下 → 平躺 → 归零前 0.2s 爬起，倾角按包络系数过渡。
       if (u.downT > 0) {
@@ -806,6 +799,11 @@ export class View {
       const stone = new THREE.MeshLambertMaterial({ color: 0x8a8478 });
       const wood = new THREE.MeshLambertMaterial({ color: 0x6a4a28 });
       this.box(g, 0.5, 3.2, 0.5, stone, 0, 1.6, 0); // 塔柱（细高）
+      // v0.28e 塔门 + 爬梯：牛战士从塔脚的门沿梯子爬上瞭望台（视觉入口）。
+      const door = new THREE.MeshLambertMaterial({ color: 0x35281a });
+      this.box(g, 0.24, 0.44, 0.06, door, 0, 0.22, 0.27);
+      const rung = new THREE.MeshLambertMaterial({ color: 0x8a6a3a });
+      for (let i = 0; i < 5; i++) this.box(g, 0.3, 0.04, 0.04, rung, 0, 0.8 + i * 0.52, 0.26);
       this.box(g, 1.0, 0.12, 1.0, stone, 0, 3.3, 0); // 瞭望台地板（台面 3.36）
       // 四面扶手横杆：栏间即窗口，火球与视线四面八方通畅。
       for (const [x, z, w, d] of [

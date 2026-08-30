@@ -281,7 +281,9 @@ export class Game {
         this.view.showMoveMark(b.x, b.z);
         return;
       }
-      if (b.kind === "hut" || isCampKind(b.kind)) {
+      if (b.kind === "hut" || isCampKind(b.kind) || b.kind === "tower") {
+        // v0.28e 修游戏内实锤断链：哨塔此前落不进 orderMove，右键只会让牛战士走到塔边傻站
+        //（检查脚本直调 sim.orderMove 测不到这层）。塔的进/出驻扎分支在 sim.orderMove 内。
         this.sim.orderMove(BLUE, b.x, b.z);
         return;
       }

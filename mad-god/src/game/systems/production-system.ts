@@ -4,6 +4,8 @@ import {
   houseBaseRate,
   HOUSE_ROOF_Y,
   sitePad,
+  TOWER_CLIMB_T,
+  TOWER_DECK_Y,
   houseHp,
   houseMaxPop,
   HOUSE_DWELL_BONUS,
@@ -41,17 +43,30 @@ export class ProductionSystem implements ISystem {
    */
   arrangeDwellers(sim: Sim): void {
     for (const b of sim.buildings) {
-      if (b.kind !== "hut" || b.hp <= 0 || b.level < 1) continue;
-      const lv = b.level >= 3 ? 3 : b.level;
-      let i = 0;
-      for (const u of sim.units) {
-        if (u.homeId !== b.id || u.enterT > 0) continue;
-        const ang = i * 2.4; // 黄金角错开，人数增减不整体重排
-        const p = sim.padLocalToWorld(b, Math.cos(ang) * 0.38, Math.sin(ang) * 0.38); // v0.28c 屋顶缩半→站位环 0.55→0.38
-        u.x = p.x;
-        u.z = p.z;
-        u.y = b.y + HOUSE_ROOF_Y[lv]!;
-        i++;
+      if (b.hp <= 0 || b.level < 1) continue;
+      if (b.kind === "hut") {
+        const lv = b.level >= 3 ? 3 : b.level;
+        let i = 0;
+        for (const u of sim.units) {
+          if (u.homeId !== b.id || u.enterT > 0) continue;
+          const ang = i * 2.4; // 黄金角错开，人数增减不整体重排
+          const p = sim.padLocalToWorld(b, Math.cos(ang) * 0.38, Math.sin(ang) * 0.38); // v0.28c 屋顶缩半→站位环 0.55→0.38
+          u.x = p.x;
+          u.z = p.z;
+          u.y = b.y + HOUSE_ROOF_Y[lv]!;
+          i++;
+        }
+      } else if (b.kind === "tower") {
+        // v0.28e 塔顶驻军站位（爬塔动画 enterT 期间由 tickEnter 接管，不在此覆盖）。
+        const garrison = sim.towerGarrison(b);
+        for (let i = 0; i < garrison.length; i++) {
+          const g = garrison[i]!;
+          if (g.enterT > 0) continue;
+          const slot = sim.towerSlotPos(b, i);
+          g.x = slot.x;
+          g.z = slot.z;
+          g.y = b.y + TOWER_DECK_Y;
+        }
       }
     }
   }
@@ -189,7 +204,21 @@ export class ProductionSystem implements ISystem {
   tickEnter(sim: Sim, dt: number): void {
     for (const u of sim.units) {
       if (u.enterT <= 0) continue;
-      const hut = sim.buildingById(u.homeId);
+      const home = sim.buildingById(u.homeId);
+      // v0.28e 爬塔动画：enterT 期间从塔脚起点直线+爬升插值到瞭望台站位——
+      // 物理上 y 逐帧上升（真的"走到楼顶"），渲染随 u.x/y/z 自然呈现攀爬过程。
+      if (home && home.kind === "tower") {
+        const idx = sim.towerGarrison(home).findIndex((g) => g.id === u.id);
+        const slot = sim.towerSlotPos(home, Math.max(0, idx));
+        const p = 1 - u.enterT / TOWER_CLIMB_T; // 0→1 爬塔进度
+        u.x = u.climbX + (slot.x - u.climbX) * p;
+        u.z = u.climbZ + (slot.z - u.climbZ) * p;
+        u.y = u.climbY + (home.y + TOWER_DECK_Y - u.climbY) * p;
+        u.yaw = Math.atan2(slot.x - u.climbX, slot.z - u.climbZ);
+        u.enterT = Math.max(0, u.enterT - dt);
+        continue;
+      }
+      const hut = home;
       const dest = hut ? sim.padLocalToWorld(hut, 0, hut.padD * 0.12) : { x: u.x, z: u.z };
       const dx = dest.x - u.x;
       const dz = dest.z - u.z;

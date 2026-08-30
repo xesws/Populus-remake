@@ -209,61 +209,64 @@ export class CombatSystem implements ISystem {
     if (scan) this.towerAcc = 0;
     for (const b of sim.buildings) {
       if (b.kind !== "tower" || b.hp <= 0 || b.level < 1) continue;
-      const g = sim.units.find((u) => u.homeId === b.id && u.kind === "firewarrior" && u.hp > 0);
-      if (!g) continue;
-      if (g.atkCd > 0) g.atkCd = Math.max(0, g.atkCd - dt);
-      if (scan) {
-        const enemy: Team = g.team === BLUE ? RED : BLUE;
-        const sight = UNIT_SIGHT.firewarrior * TOWER_SIGHT_MULT;
-        const range = unitRange("firewarrior") * TOWER_RANGE_MULT;
-        let best: Unit | null = null;
-        let bestD = sight * sight;
-        for (const o of sim.units) {
-          if (o.team !== enemy || o.hp <= 0 || o.homeId > 0) continue;
-          const d = dist2(b.x, b.z, o.x, o.z);
-          if (d < bestD) {
-            bestD = d;
-            best = o;
-          }
-        }
-        if (best) {
-          g.atkId = best.id;
-        } else {
-          // 圈内无敌方单位 → 锁最近敌方建筑（firewarrior 天然拆家，沿 v0.19 语义）。
-          let bb: Building | null = null;
-          let bd = sight * sight;
-          for (const t of sim.buildings) {
-            if (t.team !== enemy || t.hp <= 0 || t.kind === "rebirth") continue;
-            const d = dist2(b.x, b.z, t.x, t.z);
-            if (d < bd) {
-              bd = d;
-              bb = t;
+      // v0.28e 容量 3：塔上每名牛战士各自独立冷却/索敌/开火（塔 = 多炮位炮台）。
+      // 爬塔中（enterT>0）的不开火。
+      for (const g of sim.towerGarrison(b)) {
+        if (g.enterT > 0) continue;
+        if (g.atkCd > 0) g.atkCd = Math.max(0, g.atkCd - dt);
+        if (scan) {
+          const enemy: Team = g.team === BLUE ? RED : BLUE;
+          const sight = UNIT_SIGHT.firewarrior * TOWER_SIGHT_MULT;
+          const range = unitRange("firewarrior") * TOWER_RANGE_MULT;
+          let best: Unit | null = null;
+          let bestD = sight * sight;
+          for (const o of sim.units) {
+            if (o.team !== enemy || o.hp <= 0 || o.homeId > 0) continue;
+            const d = dist2(b.x, b.z, o.x, o.z);
+            if (d < bestD) {
+              bestD = d;
+              best = o;
             }
           }
-          g.atkId = bb ? bb.id : 0;
+          if (best) {
+            g.atkId = best.id;
+          } else {
+            // 圈内无敌方单位 → 锁最近敌方建筑（firewarrior 天然拆家，沿 v0.19 语义）。
+            let bb: Building | null = null;
+            let bd = sight * sight;
+            for (const t of sim.buildings) {
+              if (t.team !== enemy || t.hp <= 0 || t.kind === "rebirth") continue;
+              const d = dist2(b.x, b.z, t.x, t.z);
+              if (d < bd) {
+                bd = d;
+                bb = t;
+              }
+            }
+            g.atkId = bb ? bb.id : 0;
+          }
         }
-      }
-      // 开火判定（逐帧，用当前 atkId）。
-      const tu = sim.unitById(g.atkId);
-      if (tu) {
-        const range = unitRange("firewarrior") * TOWER_RANGE_MULT;
-        const d2 = dist2(b.x, b.z, tu.x, tu.z);
-        if (g.atkCd <= 0 && d2 <= range * range) {
-          this.launchFireball(sim, g, tu.x, tu.z, { x: b.x, z: b.z, y: b.y + TOWER_TOP });
-          g.atkCd = attackInterval(g.kind);
+        // 开火判定（逐帧，用当前 atkId）。
+        const tu = sim.unitById(g.atkId);
+        if (tu) {
+          const range = unitRange("firewarrior") * TOWER_RANGE_MULT;
+          const d2 = dist2(b.x, b.z, tu.x, tu.z);
+          if (g.atkCd <= 0 && d2 <= range * range) {
+            this.launchFireball(sim, g, tu.x, tu.z, { x: b.x, z: b.z, y: b.y + TOWER_TOP });
+            g.atkCd = attackInterval(g.kind);
+          }
+          continue;
         }
-        continue;
-      }
-      const tb = sim.buildingById(g.atkId);
-      if (tb) {
-        const edge = padSupportRadius({ x: tb.x, z: tb.z, w: tb.padW, d: tb.padD, yaw: tb.yaw }, b.x, b.z);
-        const d = Math.hypot(tb.x - b.x, tb.z - b.z) - edge;
-        if (g.atkCd <= 0 && d <= unitRange("firewarrior") * TOWER_RANGE_MULT) {
-          this.launchFireball(sim, g, tb.x, tb.z, { x: b.x, z: b.z, y: b.y + TOWER_TOP });
-          g.atkCd = attackInterval(g.kind);
+        const tb = sim.buildingById(g.atkId);
+        if (tb) {
+          const edge = padSupportRadius({ x: tb.x, z: tb.z, w: tb.padW, d: tb.padD, yaw: tb.yaw }, b.x, b.z);
+          const d = Math.hypot(tb.x - b.x, tb.z - b.z) - edge;
+          if (g.atkCd <= 0 && d <= unitRange("firewarrior") * TOWER_RANGE_MULT) {
+            this.launchFireball(sim, g, tb.x, tb.z, { x: b.x, z: b.z, y: b.y + TOWER_TOP });
+            g.atkCd = attackInterval(g.kind);
+          }
+        } else {
+          g.atkId = 0;
         }
-      } else {
-        g.atkId = 0;
       }
     }
   }

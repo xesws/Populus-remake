@@ -41,7 +41,7 @@ function testTowerCostAndCompletion(): void {
   console.log("testTowerCostAndCompletion ok");
 }
 
-/** b. 驻扎：选中牛战士右键自家哨塔 → 走到塔边自动上塔；容量 1，第二人上不去。 */
+/** b. 驻扎：选中牛战士右键自家哨塔 → 走到塔边爬塔上瞭望台；容量 3（v0.28e），第四人上不去。 */
 function testGarrisonFlow(): void {
   const sim = new Sim(new World(42));
   const pad = sim.world.startPad(BLUE);
@@ -63,12 +63,18 @@ function testGarrisonFlow(): void {
   assert(inTower, "garrison: 牛战士走到塔边自动上塔（homeId=塔）");
   assert(!f1.selected && f1.atkId === 0, "garrison: 上塔后清选中/清战斗状态");
 
-  // 容量 1：第二个牛战士同样下令也进不去。
+  // v0.28e 容量 3：第二、三名可继续上塔，第四名被拒。
   const f2 = sim.addUnit(BLUE, "firewarrior", pad.x - 6, pad.z - 1);
-  f2.selected = true;
-  sim.orderMove(BLUE, t.x, t.z);
-  for (let i = 0; i < 120; i++) sim.tick(0.05);
-  assert(f2.homeId === 0, "garrison: 塔容量 1，第二人无法驻扎");
+  const f3 = sim.addUnit(BLUE, "firewarrior", pad.x - 6, pad.z - 2);
+  const f4 = sim.addUnit(BLUE, "firewarrior", pad.x - 6, pad.z - 3);
+  for (const f of [f2, f3, f4]) {
+    f.selected = true;
+    sim.orderMove(BLUE, t.x, t.z);
+  }
+  for (let i = 0; i < 160; i++) sim.tick(0.05); // 爬塔 1.1s + 行军
+  assert(f2.homeId === t.id && f3.homeId === t.id, "garrison: 塔容量 3，第二/三名可驻扎");
+  assert(f4.homeId === 0, "garrison: 第四名被拒（容量 3）");
+  assert(sim.towerGarrison(t).length === 3, "garrison: 驻军数 3");
   console.log("testGarrisonFlow ok");
 }
 

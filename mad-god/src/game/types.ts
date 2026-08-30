@@ -218,7 +218,8 @@ export const TOWER_DECK_Y = 3.38; // 瞭望台面高度（驻军站位 / 渲染�
 export const TOWER_TOP = 3.9; // 火球发射原点（窗口高度，尖顶之下）
 export const TOWER_RANGE_MULT = 2;
 export const TOWER_SIGHT_MULT = 2;
-export const TOWER_GARRISON_MAX = 1;
+export const TOWER_GARRISON_MAX = 3; // v0.28e 塔上最多驻 3 名牛战士
+export const TOWER_CLIMB_T = 1.1; // 爬塔动画时长（秒）：从塔脚走到瞭望台
 
 export function houseHalf(level: number): number {
   const lv = level >= 3 ? 3 : level === 2 ? 2 : 1;

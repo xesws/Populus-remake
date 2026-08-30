@@ -52,6 +52,10 @@ export abstract class Unit extends BaseEntity {
   flyKill = false;
   // v0.10 建工指派：assignBuilders 写入的在建工地 id；工地完工/损毁自动失效。蓝方待机豁免依赖它。
   buildId = 0;
+  // v0.28e 爬塔动画：tryGarrison 记录的塔脚起点（tickEnter 按 enterT 线性爬到瞭望台）。
+  climbX = 0;
+  climbY = 0;
+  climbZ = 0;
 
   constructor(id: number, team: Owner, x: number, z: number, y: number, hp: number, maxHp = hp, str = 1) {
     super(id, team, x, z, y, hp, maxHp);
