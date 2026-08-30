@@ -118,12 +118,14 @@ export const UNIT_ATK_CD: Record<UnitKind, number> = {
 
 // 自动索敌半径（格）；0 = 不主动索敌、只还手。v0.8 生效；v0.19 武士 10 步、间谍 4 步；
 // v0.23 武士 13、牛头人 8（射程 4.5 的 ~1.8 倍）——用户要求"范围广一点才能主动扑过去"。
+// v0.27-2 再扩：武士 13→20（≥1.5×，追击才有意义）、牛头人 8→12（1.5×，站桩锁敌圈）、
+// 传教士 3→4.5（窄范围但必须追得上）。
 export const UNIT_SIGHT: Record<UnitKind, number> = {
   shaman: 0,
   walker: 0,
-  warrior: 13,
-  preacher: 3.0,
-  firewarrior: 8,
+  warrior: 20,
+  preacher: 4.5,
+  firewarrior: 12,
   spy: 4,
   wildman: 0,
 };
@@ -134,8 +136,12 @@ export const COUNTER_MULT: Partial<Record<UnitKind, Partial<Record<UnitKind, num
 };
 
 // 自动索敌/还手的追击拴绳（格）：自动获得的目标离锚点超过该距离就放弃；玩家手动指令不受拴绳限制。
-// v0.19 8→10；v0.23 10→13：与武士 13 步索敌半径匹配。
-export const AGRO_LEASH = 13;
+// v0.27-2 拴绳与视野挂钩（原全局 13 与视野脱钩，武士视野 20 会被 13 拴绳提前掐断追击）：
+// 追出自身锁敌圈 +2 格才放弃；不索敌的兵种返回 0（本就不会有自动锁）。
+export function agroLeash(kind: UnitKind): number {
+  const s = UNIT_SIGHT[kind];
+  return s > 0 ? s + 2 : 0;
+}
 
 // v0.9/v0.12 火球参数：弹速、暴击击飞（落地即死）与默认击退倒地。
 export const FIREBALL_SPEED = 4;

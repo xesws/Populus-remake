@@ -1,5 +1,5 @@
 import {
-  AGRO_LEASH,
+  agroLeash,
   attackInterval,
   BLUE,
   Building,
@@ -56,8 +56,48 @@ export class CombatSystem implements ISystem {
     if (this.acquireAcc < 0.25) return;
     this.acquireAcc = 0;
     for (const u of sim.units) {
-      if (u.job === "move" || u.job === "train") continue;
+      if (u.job === "train") continue;
+      // v0.27-2 锁敌刷新：自动锁（agroX≥0）的近战兵种目标超出攻击距离就重新追击。
+      // 旧实现只靠一次性 chaseAttack——路径走完/目标移开后单位拿着过期 atkId 原地发呆，
+      // 也不重新索敌（acquireTarget 对已有 atkId 直接 return），这正是"感觉没有自动攻击"的根源。
+      if (u.atkId && u.agroX >= 0 && u.kind !== "firewarrior" && u.isSoldier()) {
+        this.refreshChase(sim, u);
+        continue;
+      }
+      if (u.job === "move") continue; // 玩家移动令优先，不被索敌抢走（v0.8 语义）
       this.acquireTarget(sim, u); // 内部自带 atkId/在屋/倒地/腾空/非士兵守卫
+    }
+  }
+
+  /**
+   * v0.27-2 自动锁追击刷新：目标活着且未进攻击距离 → 重新 chaseAttack。
+   * think/path 节流（chaseAttack 自置 think=0.55s）避免每个索敌轮全量重算 A*。
+   */
+  private refreshChase(sim: Sim, u: Unit): void {
+    if (u.path.length && u.think > 0) return;
+    const tu = sim.unitById(u.atkId);
+    if (tu) {
+      const reach = unitRange(u.kind);
+      if (dist2(u.x, u.z, tu.x, tu.z) <= reach * reach) return; // 已进刀距，交给 combat 出刀
+      sim.chaseAttack(u);
+      return;
+    }
+    const b = sim.buildingById(u.atkId);
+    if (!b) return; // 目标没了：combat 主循环负责清 atkId
+    const edge = padSupportRadius({ x: b.x, z: b.z, w: b.padW, d: b.padD, yaw: b.yaw }, u.x, u.z);
+    const d = Math.hypot(b.x - u.x, b.z - u.z) - edge;
+    if (d > PAD_STAND_INFLATE + unitRange(u.kind) - 0.2) sim.chaseAttack(u);
+  }
+
+  /** v0.27-2 清自动锁：目标死亡/放弃时连带停步，不再走向陈旧目的地（手动指令不走此出口）。 */
+  private clearAutoLock(u: Unit): void {
+    u.atkId = 0;
+    if (u.agroX >= 0) {
+      u.job = "idle";
+      u.path = [];
+      u.pathI = 0;
+      u.agroX = -1;
+      u.agroZ = -1;
     }
   }
 
@@ -76,11 +116,10 @@ export class CombatSystem implements ISystem {
       if (this.autoPreach(sim, u, dt)) continue;
       if (!u.atkId) continue;
       // v0.8 自动索敌拴绳：agroX = -1 表示玩家手动指令，不受拴绳限制。
-      if (u.agroX >= 0 && dist2(u.x, u.z, u.agroX, u.agroZ) > AGRO_LEASH * AGRO_LEASH) {
-        u.atkId = 0;
-        u.agroX = -1;
-        u.agroZ = -1;
-        u.job = "idle";
+      // v0.27-2 拴绳按兵种视野取（视野+2），不再全局一刀切 13。
+      const leash = agroLeash(u.kind);
+      if (u.agroX >= 0 && leash > 0 && dist2(u.x, u.z, u.agroX, u.agroZ) > leash * leash) {
+        this.clearAutoLock(u);
         continue;
       }
 
@@ -111,7 +150,7 @@ export class CombatSystem implements ISystem {
           }
           u.atkCd = attackInterval(u.kind);
           if (tu.hp <= 0) {
-            u.atkId = 0;
+            this.clearAutoLock(u);
           } else {
             this.retaliate(sim, tu, u);
           }
@@ -121,7 +160,7 @@ export class CombatSystem implements ISystem {
 
       const b = sim.buildingById(u.atkId);
       if (!b) {
-        u.atkId = 0;
+        this.clearAutoLock(u);
         continue;
       }
       // v0.24 拆屋射程的几何修正：地基是**旋转矩形**，中心到边缘的距离随接近方向在
@@ -145,7 +184,7 @@ export class CombatSystem implements ISystem {
       if (u.atkCd > 0 || dist2(u.x, u.z, b.x, b.z) > reach * reach) continue;
       applyBuildingDamage(sim, b, unitDamageToBuilding(u.kind));
       u.atkCd = attackInterval(u.kind);
-      if (b.hp <= 0) u.atkId = 0;
+      if (b.hp <= 0) this.clearAutoLock(u);
     }
   }
 
@@ -265,7 +304,15 @@ export class CombatSystem implements ISystem {
    * 索敌命中会打断守卫舞（order: guard → fight，被打断的单位战后不自动回篝火）。
    */
   acquireTarget(sim: Sim, u: Unit): void {
-    if (u.atkId) return;
+    if (u.atkId) {
+      // v0.27-2 牛头人站桩锁不"粘"：自动锁每轮重选最近目标——它不追击，换锁无副作用，
+      // 还能避免"锁着一个射程外的远目标，放着进射程的近目标不管"。
+      // 手动锁（agroX=-1）与其他兵种照旧（近战追击由 refreshChase 维持）。
+      if (u.kind !== "firewarrior" || u.agroX < 0) return;
+      u.atkId = 0;
+      u.agroX = -1;
+      u.agroZ = -1;
+    }
     if (u.hp <= 0 || u.homeId > 0) return;
     if (!isTribe(u.team)) return;
     if (u.job === "train") return;
@@ -294,7 +341,9 @@ export class CombatSystem implements ISystem {
     u.atkId = target.id;
     u.agroX = u.x;
     u.agroZ = u.z;
-    sim.chaseAttack(u);
+    // v0.27-2 远程站桩：牛头人自动锁敌后不移动、不追击，原地等目标进射程再开火；
+    // 手动攻击令仍走 sim.chaseAttack 的"拉近到射程沿 → rangedHold 站定开火"。
+    if (u.kind !== "firewarrior") sim.chaseAttack(u);
   }
 
   /**

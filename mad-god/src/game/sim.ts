@@ -1231,6 +1231,16 @@ export class Sim {
     // v0.8 自动索敌：在 order/job 分派之前尝试拿一个最近敌人；失败再走原逻辑。
     this.combatSystem.acquireTarget(this, u);
 
+    // v0.27-2 已有【自动】攻击目标的待机单位不再游荡：近战追击由 CombatSystem 的锁敌刷新维持，
+    // 牛头人站桩等目标进射程。旧实现靠 chaseAttack 把 job 设成 move 才绕开了 wander；
+    // 远程站桩化后 job 保持 idle，会掉进游荡分支带着目标乱走。
+    // 手动指令（agroX=-1）不受此限，照旧走 fight 谕令分支主动压向目标。
+    if (u.atkId && u.agroX >= 0) {
+      u.path = [];
+      u.pathI = 0;
+      return;
+    }
+
     if (u.job === "train" && u.targetId) {
       const camp = this.buildingById(u.targetId);
       if (camp) {
