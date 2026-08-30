@@ -3,6 +3,7 @@
 
 import { Sim } from "./sim";
 import { BLUE, RED, TOWER_PAD, woodNeedFor } from "./types";
+import type { Unit } from "./types";
 import { World } from "./world";
 
 function assert(cond: boolean, msg: string): void {
@@ -193,10 +194,74 @@ function testGarrisonImmuneToDirectFire(): void {
   console.log("testGarrisonImmuneToDirectFire ok");
 }
 
+/**
+ * g. v0.27f 四面八方可射 + 永不伤自家塔：
+ * 东南西北四个方向各站一个钉桩敌人（3 格，均在射程 9 内），塔上驻军必须全部命中；
+ * 弹道从窗口高度俯冲而出，全程不得击中/摧毁自家塔（自家塔血量恒满）。
+ */
+function testOmniFireAndTowerSafe(): void {
+  const sim = new Sim(new World(42));
+  const pad = sim.world.startPad(BLUE);
+  const t = sim.placeComplete(BLUE, pad.x - 3, pad.z, 0, "tower", 1);
+  const f = sim.addUnit(BLUE, "firewarrior", pad.x - 3, pad.z + 2);
+  f.selected = true;
+  sim.orderMove(BLUE, t.x, t.z);
+  for (let i = 0; i < 120; i++) {
+    sim.tick(0.05);
+    if (f.homeId === t.id) break;
+  }
+  assert(f.homeId === t.id, "omni: 牛战士已上塔");
+
+  const dirs: [number, number][] = [
+    [3, 0],
+    [-3, 0],
+    [0, 3],
+    [0, -3],
+  ];
+  // 普通村民（6 血，两发火球即死）：塔会先杀最近者再转向下一个——四个方向都能轮到，
+  // 才能证明火球穿窗而出、没有任何方向被自家塔体挡住。
+  const foes: Unit[] = [];
+  const hp0s: number[] = [];
+  for (const [dx, dz] of dirs) {
+    const foe = sim.addUnit(RED, "walker", t.x + dx, t.z + dz);
+    hp0s.push(foe.hp);
+    foes.push(foe);
+  }
+  const hitFlags = [false, false, false, false];
+  for (let i = 0; i < 600; i++) {
+    sim.tick(0.05); // 30 秒：攻击间隔 1.8s、每个目标约两发，四个方向逐一击杀
+    for (let k = 0; k < foes.length; k++) {
+      const foe = foes[k]!;
+      if (foe.hp > 0) {
+        const [dx, dz] = dirs[k]!;
+        foe.x = t.x + dx;
+        foe.z = t.z + dz;
+        foe.path = [];
+        foe.pathI = 0;
+      }
+      if (foe.hp < hp0s[k]! || foe.downT > 0 || foe.flyVy !== 0 || foe.hp <= 0) hitFlags[k] = true;
+    }
+  }
+  for (let k = 0; k < hitFlags.length; k++) {
+    assert(hitFlags[k], `omni: ${["东", "西", "南", "北"][k]}方向的敌人被命中（火球穿窗而出，四面八方通畅）`);
+  }
+  assert(t.hp === t.maxHp, `omni: 自家火球永不伤自家塔（hp=${t.hp}/${t.maxHp}）`);
+  assert(t.hp > 0, "omni: 塨未因自身射击被摧毁");
+  console.log("testOmniFireAndTowerSafe ok");
+}
+
+/** h. v0.27f 瘦身：占地缩为 0.9（直径 ≈ 旧边长 1.8 的一半）。 */
+function testTowerSlimFootprint(): void {
+  assert(TOWER_PAD === 0.9, "slim: 哨塔占地直径 0.9（旧 1.8 的一半）");
+  console.log("testTowerSlimFootprint ok");
+}
+
 testTowerCostAndCompletion();
 testGarrisonFlow();
 testTowerFire();
 testTowerSight();
 testEjectOnDestroy();
 testGarrisonImmuneToDirectFire();
-console.log("tower-garrison-check 全部通过（v0.27-3 哨塔建造/驻扎/塔上射击/弹出）");
+testOmniFireAndTowerSafe();
+testTowerSlimFootprint();
+console.log("tower-garrison-check 全部通过（v0.27-3 建造/驻扎/射击/弹出 + v0.27f 瘦身魔法塔/全方位射击/不伤自家塔）");

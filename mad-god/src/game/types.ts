@@ -184,10 +184,13 @@ export const HOUSE_WALL = [0, 2.2, 2.2, 2.2] as const;
 export const HOUSE_ROOF = [0, 2.2, 2.2, 2.2] as const;
 export const HOUSE_PAD = [0, 2.6, 2.6, 2.6] as const;
 
-// v0.27-3 哨塔：占地小（1.8，塔身 1.2×1.2），驻 1 名牛战士从塔顶发射火球。
-// 塔上射程与视野都是地面 2 倍：射程 4.5→9、锁敌 12→24（用户口径"哨塔上最远 3 倍距离"）。
-export const TOWER_PAD = 1.8;
-export const TOWER_TOP = 2.75; // 塔顶平台高度（火球发射原点 / 驻军站位）
+// v0.27-3 哨塔 → v0.27f 瘦身加高：占地缩为小圆口径（TOWER_PAD 0.9，直径 ≈ 旧边长 1.8 的一半），
+// 外观改为"魔法哨塔"——细高石柱 + 瞭望台 + 四面栅栏（栏间即窗口，驻塔牛战士可见/开火）+ 队色尖顶。
+// 塔上射程与视野都是地面 2 倍：射程 4.5→9、锁敌 12→24（用户口径"哨塔上最远 3 倍距离"）；
+// 火球发射原点在窗口高度（TOWER_TOP），弹道俯冲而出、永不与自家塔体判撞。
+export const TOWER_PAD = 0.9;
+export const TOWER_DECK_Y = 3.38; // 瞭望台面高度（驻军站位 / 渲染基准）
+export const TOWER_TOP = 3.9; // 火球发射原点（窗口高度，尖顶之下）
 export const TOWER_RANGE_MULT = 2;
 export const TOWER_SIGHT_MULT = 2;
 export const TOWER_GARRISON_MAX = 1;

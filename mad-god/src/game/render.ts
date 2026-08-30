@@ -1,6 +1,6 @@
 import * as THREE from "three";
 import { Sim } from "./sim";
-import { BLUE, clamp, FIRE_DOWN_TIME, FxBolt, houseMaxPop, isCampKind, SAMPLES, STEP, Team, TOWER_TOP, TRAIN_TIME, WATER, WORLD } from "./types";
+import { BLUE, clamp, FIRE_DOWN_TIME, FxBolt, houseMaxPop, isCampKind, SAMPLES, STEP, Team, TOWER_DECK_Y, TRAIN_TIME, WATER, WORLD } from "./types";
 import { World } from "./world";
 import { TornadoFX } from "./render-parts/tornado-fx";
 import { LavaFX } from "./render-parts/lava-fx";
@@ -637,7 +637,7 @@ export class View {
       if (u.homeId > 0 && u.enterT <= 0) {
         const home = sim.buildingById(u.homeId);
         if (!home || home.kind !== "tower") continue;
-        towerTop = { x: home.x, z: home.z, y: home.y + TOWER_TOP - 0.2 };
+        towerTop = { x: home.x, z: home.z, y: home.y + TOWER_DECK_Y }; // 站在瞭望台面上，栏间可见
       }
       live.add(u.id);
       let g = this.unitMeshes.get(u.id);
@@ -797,9 +797,35 @@ export class View {
       return g;
     }
     if (kind === "tower") {
-      const wall = new THREE.MeshLambertMaterial({ color: 0x8a8478 });
-      this.box(g, 1.2, 2.4, 1.2, wall, 0, 1.2, 0);
-      this.box(g, 1.4, 0.2, 1.4, teamMat, 0, 2.45, 0);
+      // v0.27f 魔法哨塔：细高石柱 + 瞭望台 + 四面栅栏窗口（栏间敞开，驻塔牛战士可见）+ 四柱撑起的队色尖顶。
+      const stone = new THREE.MeshLambertMaterial({ color: 0x8a8478 });
+      const wood = new THREE.MeshLambertMaterial({ color: 0x6a4a28 });
+      this.box(g, 0.5, 3.2, 0.5, stone, 0, 1.6, 0); // 塔柱（细高）
+      this.box(g, 1.0, 0.12, 1.0, stone, 0, 3.3, 0); // 瞭望台地板（台面 3.36）
+      // 四面扶手横杆：栏间即窗口，火球与视线四面八方通畅。
+      for (const [x, z, w, d] of [
+        [0, 0.47, 1.0, 0.05],
+        [0, -0.47, 1.0, 0.05],
+        [0.47, 0, 0.05, 1.0],
+        [-0.47, 0, 0.05, 1.0],
+      ] as const) {
+        this.box(g, w, 0.07, d, wood, x, 3.72, z);
+      }
+      // 四角栏柱 + 天棚支柱（撑起尖顶，头顶留窗口空间）。
+      for (const [x, z] of [
+        [0.45, 0.45],
+        [-0.45, 0.45],
+        [0.45, -0.45],
+        [-0.45, -0.45],
+      ] as const) {
+        this.box(g, 0.07, 0.42, 0.07, wood, x, 3.56, z); // 栏柱（3.36→3.77）
+        this.box(g, 0.05, 0.4, 0.05, wood, x, 3.95, z); // 天棚支柱（3.77→4.15）
+      }
+      // 队色四棱尖顶（尖尖的魔法塔尖）。
+      const spire = new THREE.Mesh(new THREE.ConeGeometry(0.62, 1.1, 4), teamMat);
+      spire.position.set(0, 4.7, 0);
+      spire.rotation.y = Math.PI / 4;
+      g.add(spire);
       return g;
     }
 
