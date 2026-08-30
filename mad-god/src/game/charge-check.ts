@@ -10,6 +10,8 @@
  *  e) 多槽独立：火山的槽消耗/充能不影响闪电的槽；
  *  f) 回满的颗数在满槽后不再累积（封顶）。
  */
+// @ts-expect-error node:fs 只在 tsx 检查脚本里用（不进浏览器 bundle），项目无 @types/node
+import { readFileSync } from "node:fs";
 import { Sim } from "./sim";
 import { BLUE } from "./types";
 import { World } from "./world";
@@ -80,12 +82,31 @@ function testSlotsIndependent(): void {
   console.log("  ✓ 多槽独立：闪电 12s/颗 与火山 45s/颗 互不干扰");
 }
 
+/**
+ * v0.26b UI 回归：每个技能按钮必须带充能徽标与进度条元素。
+ * 起因：v0.26-1 的补丁脚本把正则结果写错变量，7 个旧按钮（提升/降低/闪电/地震/
+ * 沼泽/火山/龙卷风）的徽标从未写进 index.html——后端扣颗正常但玩家看不到颗数，
+ * 误以为"充能机制没生效"。
+ */
+function testUiChargeBadges(): void {
+  const html = readFileSync(new URL("../../index.html", import.meta.url), "utf8");
+  const btns = html.match(/<button[^>]*data-tool="[a-z]+"[^>]*>.*?<\/button>/g) ?? [];
+  assert(btns.length === 11, `神迹按钮应 11 个（got ${btns.length}）`);
+  for (const b of btns) {
+    const tool = /data-tool="([a-z]+)"/.exec(b)![1]!;
+    assert(b.includes('class="charge"'), `按钮 ${tool} 缺充能颗数徽标`);
+    assert(b.includes('class="charge-fill"'), `按钮 ${tool} 缺充能进度条`);
+  }
+  console.log("  ✓ UI：11 个技能按钮全部带颗数徽标 + 充能进度条");
+}
+
 function main(): void {
   console.log("v0.26 充能槽机制检查");
   testDiscreteCharge();
   testSpendAtomic();
   testContinuousCharge();
   testSlotsIndependent();
+  testUiChargeBadges();
   console.log("PASS: 离散/连续槽、原子扣费、多槽独立、封顶");
 }
 
