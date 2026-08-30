@@ -132,7 +132,7 @@ function testAgroLeash(): void {
   const sim = new Sim(new World(42));
   const warrior = sim.addUnit(BLUE, "warrior", 20, 20);
   const foe = sim.addUnit(RED, "walker", 21.5, 20);
-  // 靶子血量拉满：武士一刀就砍死 6 血村民（v0.19 数值克制的设计），而本用例要验的是
+  // 靶子血量拉满：v0.28b 武士 4 攻两刀才砍死 6 血村民，而本用例要验的是
   // 「自动获得目标 → 拉开锚点距离 → 自动放弃」两段判定，目标中途阵亡就没得判了。
   foe.hp = 999;
 
@@ -185,7 +185,7 @@ function testWarriorClosesToMelee(): void {
   const warrior = sim.addUnit(BLUE, "warrior", 20, 20);
   warrior.order = "fight";
   const foe = sim.addUnit(RED, "walker", 24, 20);
-  // 靶子血量拉满：村民只有 6 血，武士一刀就砍死，循环立刻 break，minDist 量到的其实是
+  // 靶子血量拉满：村民 6 血两刀死（v0.28b），若不拉满循环立刻 break，minDist 量到的其实是
   // "敌人暴毙前武士还没走完的路"（实测 1.12），而不是近战贴身能力。这条要测的是
   // 「远程手动下令后武士会一路贴到近战判定内」，所以敌人必须活得够久。
   foe.hp = 999;

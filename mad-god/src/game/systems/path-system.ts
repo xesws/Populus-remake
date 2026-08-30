@@ -57,7 +57,7 @@ export class PathSystem implements ISystem {
       }
       const swamp = sim.world.swamp[sim.world.sampleAt(u.x, u.z)]! > 0;
       let spd = 2.4;
-      if (u.kind === "warrior") spd = 3.3;
+      if (u.kind === "warrior") spd = 2.8; // v0.28b 平衡回调：3.3→2.8（仍快于村民 2.4）
       else if (u.kind === "preacher") spd = 2.55;
       else if (u.kind === "firewarrior") spd = 2.7;
       else if (u.kind === "shaman") spd = 2.1;

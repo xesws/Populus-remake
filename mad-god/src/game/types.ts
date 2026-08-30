@@ -79,7 +79,7 @@ export const UNIT_RADIUS: Record<UnitKind, number> = {
 export const UNIT_ATTACK: Record<UnitKind, number> = {
   shaman: 3,
   walker: 2,
-  warrior: 6,
+  warrior: 4, // v0.28b 平衡回调：6→4（原一刀带走村民太超模）
   preacher: 3,
   firewarrior: 5,
   spy: 3,
@@ -397,10 +397,11 @@ export function dist2(ax: number, az: number, bx: number, bz: number): number {
 
 export function unitHp(kind: UnitKind, str: number): number {
   if (kind === "shaman") return 14;
-  // v0.12：武士（盾+刀）恒为火战士（无甲远程脆皮）的 3 倍血量：24+3s = 3×(8+s)。
-  if (kind === "warrior") return 24 + str * 3;
+  // v0.28b 平衡回调（用户拍板）：武士 27→15（12+3s，原 3× 火战士太强）；
+  // 火战士 9→10（9+s，脆皮略微加强）。武士对牛头人从两刀变三刀。
+  if (kind === "warrior") return 12 + str * 3;
   if (kind === "preacher") return 7 + str;
-  if (kind === "firewarrior") return 8 + str;
+  if (kind === "firewarrior") return 9 + str;
   if (kind === "spy") return 4 + str;
   if (kind === "wildman") return 3 + str * 2;
   return 3 + str * 3;

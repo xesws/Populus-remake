@@ -29,13 +29,15 @@ function testWarriorTwoHitsKillFirewarrior(): void {
       Math.abs(foe.hp - (full - damageAfterArmor("warrior", "firewarrior"))) < 1e-6,
       "首刀伤害 = 攻击 - 护甲（经统一结算入口）"
     );
-    assert(foe.hp > 0, "火战士（9 血）第一刀不死");
+    assert(foe.hp > 0, "火战士（10 血）第一刀不死");
 
+    sim.combat(attackInterval("warrior") + 0.01);
+    assert(foe.hp > 0, "第二刀后仍存活（4×2 = 8 < 10，v0.28b 数值）");
     sim.combat(attackInterval("warrior") + 0.01);
   } finally {
     Math.random = orig;
   }
-  assert(foe.hp <= 0, "武士两刀解决火战士（克制关系）");
+  assert(foe.hp <= 0, "武士三刀解决火战士（v0.28b：4 攻 vs 10 血）");
   assert(warrior.atkId === 0, "击杀后清 atkId");
 
   console.log("testWarriorTwoHitsKillFirewarrior ok");
@@ -48,8 +50,16 @@ function testWarriorOneHitKillsWalker(): void {
   warrior.atkId = villager.id;
   warrior.order = "fight";
 
-  sim.combat(0.05);
-  assert(villager.hp <= 0, "武士攻击远高于平民：一刀带走村民（6 血）");
+  // 钉无暴击：武士 50% 暴击两段 4+4=8 会一刀带走，普攻口径才是本用例要测的数值。
+  const orig = stubRandom(0.99);
+  try {
+    sim.combat(0.05);
+    assert(villager.hp > 0, "v0.28b：武士 4 攻，村民（6 血）第一刀不死（剩 2）");
+    sim.combat(attackInterval("warrior") + 0.01);
+  } finally {
+    Math.random = orig;
+  }
+  assert(villager.hp <= 0, "武士两刀带走村民");
 
   console.log("testWarriorOneHitKillsWalker ok");
 }
@@ -130,11 +140,12 @@ function testHutDamageSkeletonAndDestruction(): void {
   warrior.selected = true;
   sim.orderAttackTarget(BLUE, hut!);
   const hit = unitDamageToBuilding("warrior");
-  assert(hit === 4, "拆屋伤害 = 攻击 × 0.6（武士 4/刀）");
+  assert(hit === 2, "拆屋伤害 = 攻击 × 0.6（v0.28b 武士 4 攻 → round(2.4) = 2/刀）");
 
   // Simulate combat ticks until hut reaches skeleton (shell) stage
+  // v0.28b 武士拆屋 4→2/刀（18 血 L1 要 9 刀 × 1.1s + 行军），预算放宽到 30s。
   let reachedSkeleton = false;
-  for (let i = 0; i < 150; i++) {
+  for (let i = 0; i < 600; i++) {
     sim.tick(0.05);
     if (hut!.shell) {
       reachedSkeleton = true;
@@ -149,7 +160,7 @@ function testHutDamageSkeletonAndDestruction(): void {
 
   // Continue combat until hut is fully destroyed (hp <= 0)
   let destroyed = false;
-  for (let i = 0; i < 200; i++) {
+  for (let i = 0; i < 400; i++) {
     sim.tick(0.05);
     if (hut!.hp <= 0) {
       destroyed = true;
@@ -180,11 +191,10 @@ function testOrderAttackTarget(): void {
   console.log("testOrderAttackTarget ok");
 }
 
-// v0.12：武士血量恒为牛头人 3 倍（盾+刀 vs 无甲脆皮）。
+// v0.28b 平衡回调：武士 15（12+3s）/ 牛头人 10（9+s），武士约为牛头人 1.5×（原 3× 太强）。
 function testWarriorHpTripleFirewarrior(): void {
-  assert(unitHp("warrior", 1) === 27 && unitHp("firewarrior", 1) === 9, "基础血量 武士 27 / 牛头人 9");
-  assert(unitHp("warrior", 1) === 3 * unitHp("firewarrior", 1), "武士血量 = 牛头人 ×3（str=1）");
-  assert(unitHp("warrior", 2) === 3 * unitHp("firewarrior", 2), "武士血量 = 牛头人 ×3（str=2，公式恒等）");
+  assert(unitHp("warrior", 1) === 15 && unitHp("firewarrior", 1) === 10, "基础血量 武士 15 / 牛头人 10");
+  assert(unitHp("walker", 1) === 6, "村民血量保持 6");
 
   console.log("testWarriorHpTripleFirewarrior ok");
 }
@@ -193,7 +203,7 @@ function testWarriorHpTripleFirewarrior(): void {
 function testWarriorCrit(): void {
   const sim = new Sim(new World(42));
   const warrior = sim.addUnit(BLUE, "warrior", 20, 20);
-  const foe = sim.addUnit(RED, "warrior", 20.5, 20); // 27 血甲 2：普通 4/刀，暴击 8/刀
+  const foe = sim.addUnit(RED, "warrior", 20.5, 20); // 15 血甲 2：普通 2/刀（4−2），暴击 4/刀
   warrior.atkId = foe.id;
   warrior.order = "fight";
   const full = foe.hp;
@@ -204,7 +214,7 @@ function testWarriorCrit(): void {
   } finally {
     Math.random = orig;
   }
-  assert(Math.abs(foe.hp - (full - 8)) < 1e-6, "暴击伤害 = 普通 ×2（4×2 = 8）");
+  assert(Math.abs(foe.hp - (full - 4)) < 1e-6, "暴击伤害 = 普通 ×2（2×2 = 4）");
   const knocked = Math.hypot(foe.x - 20.5, foe.z - 20);
   assert(knocked >= 2, `暴击沿攻击方向击退 2~3 格（d=${knocked.toFixed(2)}）`);
 
@@ -216,7 +226,7 @@ function testWarriorCrit(): void {
   } finally {
     Math.random = orig;
   }
-  assert(Math.abs(foe.hp - (full - 12)) < 1e-6, "无暴击只扣普通伤害（累计 8 + 4）");
+  assert(Math.abs(foe.hp - (full - 6)) < 1e-6, "无暴击只扣普通伤害（累计暴击 4 + 普通 2）");
   assert(Math.abs(foe.x - 20.5) < 1e-6 && Math.abs(foe.z - 20) < 1e-6, "普攻无位移无特效");
 
   console.log("testWarriorCrit ok");
