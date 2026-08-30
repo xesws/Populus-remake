@@ -40,9 +40,9 @@ function testRedPopulationGrows(): void {
   dir.attach(sim);
   const pop0 = sim.countPop(RED);
   play(sim, dir, 90);
-  // v0.27-1 红方生产 ×0.75 后，90 秒内"人口净增"的余量会被 mergeWalkers 合并
-  //（合并永久 -1 人口）与边境战斗的随机波动吃掉，偶发净减——断言改为直接测
-  // 生产闭环本身（茅屋出生数 > 0），人口只兜底"不崩盘"。
+  // v0.27-1 红方生产 ×0.75 后，90 秒内"人口净增"的余量会被随机波动（边境战斗等）
+  // 吃掉，偶发净减——断言改为直接测生产闭环本身（茅屋出生数 > 0），人口只兜底"不崩盘"。
+  //（v0.27e 合并系统已移除，合并吞人这一波动源不复存在。）
   const born = sim.buildings
     .filter((b) => b.team === RED && b.kind === "hut")
     .reduce((n, b) => n + b.born, 0);

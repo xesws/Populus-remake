@@ -464,7 +464,6 @@ export class Game {
     if (this.paused) return;
     this.shotDirector.shotHeld = true;
     this.sim.freezeProd = false;
-    this.sim.freezeMerge = false;
     this.sim.review = false;
   }
 

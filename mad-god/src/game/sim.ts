@@ -48,7 +48,6 @@ import { ForestSeeder } from "./world-gen/forests";
 import {
   CombatSystem,
   HazardSystem,
-  MergeSystem,
   PathSystem,
   ProductionSystem,
   TrainingSystem,
@@ -86,7 +85,6 @@ export class Sim {
   toastGen = 0;
   armageddon = false;
   review = false;
-  freezeMerge = false;
   freezeProd = false;
   lockWin = false;
   fxBolts: FxBolt[] = [];
@@ -172,7 +170,6 @@ export class Sim {
   readonly pathSystem = new PathSystem();
   readonly combatSystem = new CombatSystem();
   readonly hazardSystem = new HazardSystem();
-  readonly mergeSystem = new MergeSystem();
   readonly winSystem = new WinSystem();
   readonly blastSpell = new BlastSpell();
   readonly lightningSpell = new LightningSpell();
@@ -967,7 +964,6 @@ export class Sim {
     this.projectiles(dt);
     this.hazards(dt);
     this.tickBurns(dt);
-    this.mergeWalkers();
     this.respawnShamans(dt);
     this.cull();
     this.tickGuardFires(dt);
@@ -1821,10 +1817,6 @@ export class Sim {
 
   tickVolcano(dt: number): void {
     this.volcanoSpell.tick(this, dt);
-  }
-
-  mergeWalkers(): void {
-    this.mergeSystem.mergeWalkers(this);
   }
 
   respawnShamans(dt: number): void {

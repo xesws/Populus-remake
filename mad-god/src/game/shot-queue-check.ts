@@ -4,7 +4,6 @@ import { World } from "./world";
 
 function setupLikeShot(): Sim {
   const sim = new Sim(new World(1989));
-  sim.freezeMerge = true;
   sim.lockWin = true;
   let hutN = 0;
   for (const b of sim.buildings) {

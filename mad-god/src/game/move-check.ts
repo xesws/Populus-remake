@@ -137,9 +137,9 @@ function testGroupRally(): void {
   const starts = walkers.map((w) => ({ x: w.x, z: w.z }));
   for (const w of walkers) sim.sendMove(w, dest.x, dest.z);
   tickFor(sim, 10);
-  // Merging absorbs nearby walkers (absorbed ones drop to hp 0 pending cull) — assert on survivors only.
+  // v0.27e 合并系统已移除：按全员存活断言（保留 hp 过滤以防万一的意外死亡）。
   const alive = walkers.filter((w) => w.hp > 0);
-  assert(alive.length >= 2, `rally: survivors after merge (${alive.length})`);
+  assert(alive.length >= 2, `rally: survivors (${alive.length})`);
   let sum = 0;
   let maxFinal = 0;
   alive.forEach((w, i) => {

@@ -157,7 +157,6 @@ export class ShotDirector {
   }
 
   applyShotSetup(): void {
-    this.sim.freezeMerge = true;
     this.sim.lockWin = true;
     this.host.clearPlace();
     let hutN = 0;
@@ -273,7 +272,6 @@ export class ShotDirector {
   }
 
   applySwampSetup(): void {
-    this.sim.freezeMerge = true;
     this.sim.freezeProd = true;
     this.sim.lockWin = true;
     this.sim.review = true;
@@ -427,7 +425,6 @@ export class ShotDirector {
   }
 
   applyFightSetup(startBeat = 0): void {
-    this.sim.freezeMerge = true;
     this.sim.freezeProd = true;
     this.sim.lockWin = true;
     this.host.clearPlace();
@@ -627,7 +624,6 @@ export class ShotDirector {
   }
 
   applyLiveSetup(startBeat = 0): void {
-    this.sim.freezeMerge = true;
     this.sim.freezeProd = true;
     this.sim.lockWin = true;
     this.sim.review = true;
@@ -730,7 +726,6 @@ export class ShotDirector {
   }
 
   applyHouseSetup(startBeat = 0): void {
-    this.sim.freezeMerge = true;
     this.sim.freezeProd = true;
     this.sim.lockWin = true;
     this.sim.review = true;
@@ -942,7 +937,6 @@ export class ShotDirector {
   }
 
   applyPathSetup(startBeat = 0): void {
-    this.sim.freezeMerge = true;
     this.sim.freezeProd = true;
     this.sim.lockWin = true;
     this.sim.review = true;
@@ -1286,7 +1280,6 @@ export class ShotDirector {
   }
 
   applyBlastSetup(): void {
-    this.sim.freezeMerge = true;
     this.sim.freezeProd = true;
     this.sim.lockWin = true;
     this.sim.review = true;
@@ -1478,7 +1471,6 @@ export class ShotDirector {
   }
 
   applyLightningSetup(): void {
-    this.sim.freezeMerge = true;
     this.sim.freezeProd = true;
     this.sim.lockWin = true;
     this.sim.review = true;
@@ -1631,7 +1623,6 @@ export class ShotDirector {
   }
 
   applyTornadoSetup(): void {
-    this.sim.freezeMerge = true;
     this.sim.freezeProd = true;
     this.sim.lockWin = true;
     this.sim.review = true;
@@ -1777,7 +1768,6 @@ export class ShotDirector {
   }
 
   applySkelSetup(): void {
-    this.sim.freezeMerge = true;
     this.sim.freezeProd = true;
     this.sim.lockWin = true;
     this.sim.review = true;
@@ -1880,7 +1870,6 @@ export class ShotDirector {
   }
 
   applyVolcanoSetup(): void {
-    this.sim.freezeMerge = true;
     this.sim.freezeProd = true;
     this.sim.lockWin = true;
     this.sim.review = true;
@@ -1944,7 +1933,6 @@ export class ShotDirector {
   }
 
   applyQuakeSetup(): void {
-    this.sim.freezeMerge = true;
     this.sim.freezeProd = true;
     this.sim.lockWin = true;
     this.sim.review = true;

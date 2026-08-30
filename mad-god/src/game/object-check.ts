@@ -99,7 +99,6 @@ function settleAfterTrainCheck(): void {
 
 function shotQueueCheck(): void {
   const sim = new Sim(new World(1989));
-  sim.freezeMerge = true;
   sim.lockWin = true;
   let hutN = 0;
   for (const b of sim.buildings) {
