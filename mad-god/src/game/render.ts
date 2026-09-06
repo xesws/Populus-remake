@@ -7,7 +7,9 @@ import { LavaFX } from "./render-parts/lava-fx";
 import { SculptIndicatorFX } from "./render-parts/sculpt-indicator-fx";
 import { GuardFireFX } from "./render-parts/guard-fire-fx";
 import { ConvertRangeFX } from "./render-parts/convert-range-fx";
+import { DragonFX } from "./render-parts/dragon-fx";
 import { TerrainMesh } from "./render-parts/terrain-mesh";
+import { DRAGON_GARRISON_MAX } from "./types";
 
 const RT_W = 800;
 const RT_H = 600;
@@ -87,6 +89,12 @@ export class View {
   /** v0.26 转化技能范围圈（选中 convert 工具时在鼠标处显示，超距变红灰）。 */
   convertRange = new ConvertRangeFX();
   guardFireFX = new GuardFireFX();
+  /** v0.30 大龙特效：吐息弹体 + 燃烧地块。 */
+  dragonFX = new DragonFX();
+  /** v0.30 大龙训练营双进度条（进驻条 + 生产条）。 */
+  dragonBarGroup = new THREE.Group();
+  dragonGarrisonBars = new Map<number, THREE.Group>();
+  dragonProdBars = new Map<number, THREE.Group>();
   blastGroup = new THREE.Group();
   /** v0.27f 天降火球：坠落的发光陨石（核心 + 光晕 + 尾焰），撞击冲击波复用 blast 环。 */
   meteorGroup = new THREE.Group();
@@ -191,6 +199,8 @@ export class View {
       this.sculptIndicator.group,
       this.convertRange.group,
       this.guardFireFX.group,
+      this.dragonFX.group,
+      this.dragonBarGroup,
       this.blastGroup,
       this.meteorGroup,
     );
@@ -428,7 +438,14 @@ export class View {
         continue;
       }
       ring.visible = true;
-      ring.position.set(u.x, u.y + 0.05, u.z);
+      // v0.30 大龙：选中环画在龙体正下方地面（影环），放大到龙体尺度。
+      if (u.isFlying()) {
+        ring.position.set(u.x, this.world.heightAt(u.x, u.z) + 0.05, u.z);
+        ring.scale.setScalar(2.2);
+      } else {
+        ring.position.set(u.x, u.y + 0.05, u.z);
+        ring.scale.setScalar(1);
+      }
     }
   }
 
@@ -483,6 +500,7 @@ export class View {
     this.syncHouses(sim);
     this.syncTrainBars(sim);
     this.syncProdBars(sim);
+    this.syncDragonBars(sim); // v0.30 大龙训练营：进驻条 + 生产条
     this.syncRoofIcons(sim);
     this.syncDwellPips(sim);
     this.syncTrees(sim);
@@ -491,6 +509,7 @@ export class View {
     this.syncTornado(sim, dt);
     this.lavaFX.sync(sim, dt); // v0.18 岩浆物理粒子（火山喷发 + 顺坡流动）
     this.guardFireFX.sync(sim, dt); // v0.19 守卫篝火
+    this.dragonFX.sync(sim, dt); // v0.30 大龙：吐息弹体 + 燃烧地块
     this.syncBlast(sim);
     this.syncMeteors(sim); // v0.27f 天降火球
     this.syncAnkhs(sim);
@@ -618,6 +637,61 @@ export class View {
       return g;
     }
 
+    if (kind === "dragon") {
+      // v0.30 大龙（飞龙）：低多边形机械怪风格——鳞甲体节 + 一对小机械翅膀 + 骨角 + 队色鞍甲。
+      // 前向为 +z（与 yaw=atan2(dx,dz)、rotation.y=yaw 的地面单位同一约定）：尾在 -z，头在 +z。
+      const scale = new THREE.MeshLambertMaterial({ color: 0x6b2a1a });
+      const belly = new THREE.MeshLambertMaterial({ color: 0x8a4a2a });
+      const horn = new THREE.MeshLambertMaterial({ color: 0xe8d4a0 });
+      const metal = new THREE.MeshLambertMaterial({ color: 0x8a8f96 });
+      const eye = new THREE.MeshBasicMaterial({ color: 0xffa030 });
+      // 体节：尾尖 → 躯干 → 颈 → 头
+      this.box(g, 0.14, 0.14, 0.5, scale, 0, 0.42, -1.05);
+      this.box(g, 0.24, 0.24, 0.6, scale, 0, 0.46, -0.6);
+      this.box(g, 0.38, 0.36, 0.9, scale, 0, 0.52, 0);
+      this.box(g, 0.3, 0.18, 0.88, belly, 0, 0.36, 0);
+      this.box(g, 0.26, 0.24, 0.5, scale, 0, 0.6, 0.6);
+      this.box(g, 0.34, 0.28, 0.44, scale, 0, 0.66, 1.0); // 头
+      this.box(g, 0.1, 0.08, 0.3, scale, 0, 0.62, 1.3); // 吻
+      this.box(g, 0.06, 0.16, 0.06, horn, -0.1, 0.86, 0.92);
+      this.box(g, 0.06, 0.16, 0.06, horn, 0.1, 0.86, 0.92);
+      this.box(g, 0.07, 0.07, 0.07, eye, -0.14, 0.74, 1.08);
+      this.box(g, 0.07, 0.07, 0.07, eye, 0.14, 0.74, 1.08);
+      // 队色鞍甲（阵营识别：任何角度可见）
+      this.box(g, 0.42, 0.1, 0.6, teamMat, 0, 0.74, -0.1);
+      // 机械双翅（肩关节枢轴，syncUnits 每帧拍动）——"机械怪物"风格的骨架 + 膜翼
+      const wing = (side: 1 | -1) => {
+        const pivot = new THREE.Group();
+        pivot.name = side === 1 ? "wingR" : "wingL";
+        pivot.position.set(side * 0.16, 0.66, 0.15);
+        const bone = new THREE.Mesh(new THREE.BoxGeometry(0.9, 0.06, 0.1), metal);
+        bone.position.set(side * 0.5, 0.06, 0);
+        pivot.add(bone);
+        const membrane = new THREE.Mesh(new THREE.BoxGeometry(0.84, 0.03, 0.62), teamMat);
+        membrane.position.set(side * 0.52, 0.02, -0.24);
+        pivot.add(membrane);
+        const tip = new THREE.Mesh(new THREE.BoxGeometry(0.3, 0.05, 0.4), metal);
+        tip.position.set(side * 1.02, 0.1, 0.06);
+        pivot.add(tip);
+        g.add(pivot);
+      };
+      wing(1);
+      wing(-1);
+      // 尾鳍
+      const fin = new THREE.Mesh(new THREE.BoxGeometry(0.06, 0.3, 0.36), teamMat);
+      fin.position.set(0, 0.56, -1.32);
+      g.add(fin);
+      // 地面投影影子（syncUnits 每帧按对地高度放置/缩放）
+      const shadow = new THREE.Mesh(
+        new THREE.CircleGeometry(0.95, 14),
+        new THREE.MeshBasicMaterial({ color: 0x0a1408, transparent: true, opacity: 0.3 }),
+      );
+      shadow.name = "shadow";
+      shadow.rotation.x = -Math.PI / 2;
+      g.add(shadow);
+      return g;
+    }
+
     // v0.25d 村民（walker）头巾：头顶一块 + 脑后垂尾，任何角度都能看到阵营色（蓝/红）。
     // 头巾顶略宽于头(0.14)盖住头顶（头顶 y=0.41，中心放 0.435 微微隆起）；
     // 垂尾贴后脑勺（头半深 0.07，尾巴厚 0.02 → 外缘 -0.105 不悬空）。若实测 -z 是脸的方向，把 z 改 +0.095。
@@ -659,6 +733,21 @@ export class View {
         g.rotation.z = f * 1.4;
       } else if (g.rotation.z !== 0) {
         g.rotation.z = 0;
+      }
+      // v0.30 大龙：拍翅 + 地面影子（影子随对地高度缩放，制造"悬在半空"的读感）。
+      if (u.kind === "dragon") {
+        const flap = Math.sin(this.t * 6 + u.phase) * 0.55;
+        const wl = g.getObjectByName("wingL");
+        const wr = g.getObjectByName("wingR");
+        if (wl) wl.rotation.z = flap;
+        if (wr) wr.rotation.z = -flap;
+        const gy = this.world.heightAt(u.x, u.z);
+        const shadow = g.getObjectByName("shadow");
+        if (shadow) {
+          shadow.position.y = gy - (u.y + bob) + 0.04;
+          const k = THREE.MathUtils.clamp(1.25 - (u.y - gy) * 0.16, 0.55, 1.15);
+          shadow.scale.setScalar(k);
+        }
       }
       let pack = g.getObjectByName("woodpack") as THREE.Mesh | undefined;
       if (!pack) {
@@ -844,6 +933,29 @@ export class View {
       return g;
     }
 
+    if (kind === "dragonFactory") {
+      // v0.30 大龙训练营：工厂风格大厂房——宽体厂房 + 双烟囱 + 大门 + 队色旗，高 ~1.9。
+      const wall = new THREE.MeshLambertMaterial({ color: 0x5a5450 });
+      const roof = new THREE.MeshLambertMaterial({ color: 0x3a3634 });
+      const stack = new THREE.MeshLambertMaterial({ color: 0x7a4432 });
+      const glow = new THREE.MeshBasicMaterial({ color: 0xff8830 });
+      this.box(g, 3.0, 1.1, 2.4, wall, 0, 0.55, 0);
+      this.box(g, 3.1, 0.16, 2.5, roof, 0, 1.18, 0);
+      // 双烟囱（顶部火光 = 厂房在"炼制"的读感）
+      this.box(g, 0.34, 1.0, 0.34, stack, -0.9, 1.7, -0.6);
+      this.box(g, 0.34, 0.8, 0.34, stack, 0.7, 1.6, -0.75);
+      this.box(g, 0.24, 0.1, 0.24, glow, -0.9, 2.22, -0.6);
+      this.box(g, 0.24, 0.1, 0.24, glow, 0.7, 2.02, -0.75);
+      // 大门 + 侧窗
+      this.box(g, 0.7, 0.8, 0.1, new THREE.MeshLambertMaterial({ color: 0x2a2018 }), 0, 0.4, 1.22);
+      this.box(g, 0.3, 0.3, 0.08, glow, -1.05, 0.62, 1.21);
+      this.box(g, 0.3, 0.3, 0.08, glow, 1.05, 0.62, 1.21);
+      // 队色旗
+      this.box(g, 0.07, 0.7, 0.07, new THREE.MeshLambertMaterial({ color: 0x6a4a28 }), 1.35, 1.5, 1.05);
+      this.box(g, 0.34, 0.22, 0.04, teamMat, 1.53, 1.74, 1.05);
+      return g;
+    }
+
     if (level <= 1) {
       // v0.28c 茅屋缩半：水平尺寸 2.2→1.1（高度不变，只瘦身）。
       const wallCol = team === 0 ? 0x8a6a40 : 0x7a4a32;
@@ -995,8 +1107,74 @@ export class View {
     }
   }
 
-  makeRoofIcon(): THREE.Group {
-    const g = new THREE.Group();
+  /**
+   * v0.30 大龙训练营双进度条：上方进驻条（dwell/20 + 20 格刻度，进驻即显示），
+   * 满 20 后下方出现生产条（prod 0..1）——对应"先进驻满格、再开工生产"的读法。
+   */
+  syncDragonBars(sim: SimClient): void {
+    const live = new Set<number>();
+    for (const b of sim.buildings) {
+      if (b.kind !== "dragonFactory" || b.team !== BLUE || b.hp <= 0 || b.level < 1) continue;
+      live.add(b.id);
+      let g = this.dragonGarrisonBars.get(b.id);
+      if (!g) {
+        g = this.makeTrainBar();
+        this.dragonGarrisonBars.set(b.id, g);
+        this.dragonBarGroup.add(g);
+      }
+      g.visible = b.dwell > 0;
+      if (g.visible) {
+        const t = clamp(b.dwell / DRAGON_GARRISON_MAX, 0, 1);
+        g.position.set(b.x, b.y + 2.5, b.z);
+        const dx = this.camera.position.x - g.position.x;
+        const dz = this.camera.position.z - g.position.z;
+        g.rotation.y = Math.atan2(dx, dz);
+        const fill = g.getObjectByName("fill") as THREE.Mesh;
+        fill.scale.x = Math.max(0.001, t);
+        fill.position.x = (t - 1) * 0.6;
+        const marks = g.getObjectByName("marks") as THREE.Group;
+        while (marks.children.length > DRAGON_GARRISON_MAX) marks.remove(marks.children[marks.children.length - 1]!);
+        while (marks.children.length < DRAGON_GARRISON_MAX) {
+          marks.add(new THREE.Mesh(new THREE.BoxGeometry(0.05, 0.09, 0.09), this.trainBarMarkMat));
+        }
+        for (let i = 0; i < marks.children.length; i++) {
+          marks.children[i]!.position.set(-0.6 + ((i + 0.5) / DRAGON_GARRISON_MAX) * 1.2, 0, 0.1);
+        }
+      }
+      let p = this.dragonProdBars.get(b.id);
+      if (!p) {
+        p = this.makeProdBar();
+        this.dragonProdBars.set(b.id, p);
+        this.dragonBarGroup.add(p);
+      }
+      const producing = b.dwell >= DRAGON_GARRISON_MAX;
+      p.visible = producing;
+      if (producing) {
+        const t = clamp(b.prod, 0, 1);
+        p.position.set(b.x, b.y + 2.14, b.z);
+        const dx = this.camera.position.x - p.position.x;
+        const dz = this.camera.position.z - p.position.z;
+        p.rotation.y = Math.atan2(dx, dz);
+        const fill = p.getObjectByName("fill") as THREE.Mesh;
+        fill.scale.x = Math.max(0.001, t);
+        fill.position.x = (t - 1) * 0.6;
+      }
+    }
+    for (const [id, g] of this.dragonGarrisonBars) {
+      if (!live.has(id)) {
+        this.dragonBarGroup.remove(g);
+        this.dragonGarrisonBars.delete(id);
+      }
+    }
+    for (const [id, g] of this.dragonProdBars) {
+      if (!live.has(id)) {
+        this.dragonBarGroup.remove(g);
+        this.dragonProdBars.delete(id);
+      }
+    }
+  }
+
+  makeRoofIcon(): THREE.Group {    const g = new THREE.Group();
     const wood = new THREE.MeshLambertMaterial({ color: 0x6a4a22 });
     const mark = new THREE.MeshLambertMaterial({ color: 0xf0d878 });
     const post = new THREE.Mesh(new THREE.BoxGeometry(0.07, 0.28, 0.07), wood);

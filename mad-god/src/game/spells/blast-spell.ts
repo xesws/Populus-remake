@@ -21,6 +21,15 @@ export class BlastSpell extends Spell {
       if (u.hp <= 0) continue;
       const d = Math.hypot(u.x - x, u.z - z);
       if (d > 1.7) continue;
+      // v0.30 魔法必中大龙：气浪照样命中，但飞龙不被击飞（只掉血）。
+      if (u.isFlying()) {
+        u.hp = Math.max(0, u.hp - 6);
+        sim.blastHit = true;
+        sim.blastHitX = u.x;
+        sim.blastHitZ = u.z;
+        if (u.team === BLUE) sim.toast("大龙被气浪命中");
+        continue;
+      }
       let dx = u.x - x;
       let dz = u.z - z;
       const len = Math.hypot(dx, dz) || 1;

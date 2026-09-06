@@ -112,6 +112,7 @@ export class QuakeSpell extends Spell {
     if (!q || q.t < 0.12) return;
     for (const u of sim.units) {
       if (u.hp <= 0) continue;
+      if (u.isFlying()) continue; // v0.30 大龙在半空，地缝滑不到它
       const n = this.nearestOpenCrack(sim, u.x, u.z);
       if (n.d > 0.9) continue;
       if (n.d > 0.02) {

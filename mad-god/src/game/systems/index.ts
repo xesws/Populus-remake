@@ -3,5 +3,6 @@ export * from "./production-system";
 export * from "./training-system";
 export * from "./path-system";
 export * from "./combat-system";
+export * from "./dragon-system";
 export * from "./hazard-system";
 export * from "./win-system";

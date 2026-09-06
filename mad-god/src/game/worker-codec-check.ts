@@ -182,7 +182,9 @@ function testSoAIndices(): void {
   }
   assert(mirror.unitsById.get(spy.id)!.disguise === RED, "spy 伪装 = RED");
   assert(mirror.unitsById.get(walker.id)!.job === "haul", "walker job = haul");
-  assert(JOBS.length === 5 && UNIT_KINDS.length === 7, "索引表规模符合预期（追加新值只能 push 到末尾）");
+  // v0.30 大龙：UNIT_KINDS 末尾追加 "dragon"，7 → 8。
+  assert(JOBS.length === 5 && UNIT_KINDS.length === 8, "索引表规模符合预期（追加新值只能 push 到末尾）");
+  assert(UNIT_KINDS[UNIT_KINDS.length - 1] === "dragon", "v0.30 大龙枚举在表尾（跨端序号稳定）");
   console.log("testSoAIndices ok（SoA 不越界 + kind/team/job/trainKind/disguise/carry 映射稳定）");
 }
 

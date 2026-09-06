@@ -126,6 +126,7 @@ export class TornadoSpell extends Spell {
     const liftScale = tw.waterspout ? 0.6 : 1;
     for (const u of sim.units) {
       if (u.hp <= 0) continue;
+      if (u.isFlying()) continue; // v0.30 大龙在半空，龙卷风卷不到
       if (u.flyVy !== 0) continue; // 已被甩飞在空中：抛物线飞行交给 path-system，不再重复吸入
       const d = Math.hypot(u.x - tw.x, u.z - tw.z);
       if (d > suckR) continue;

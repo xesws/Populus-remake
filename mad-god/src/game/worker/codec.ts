@@ -15,6 +15,8 @@ import type { SmoothReport } from "../map-smoother";
 import type { FeatureStat } from "../world-gen/terrain-features";
 import {
   Building,
+  Dragon,
+  DragonFactory,
   FireHut,
   Firewarrior,
   Hut,
@@ -74,6 +76,8 @@ export const UNIT_KINDS: readonly UnitKind[] = [
   "firewarrior",
   "spy",
   "wildman",
+  // v0.30 大龙：只许末尾追加（跨端序号必须稳定）。
+  "dragon",
 ];
 export const JOBS: readonly Job[] = ["idle", "chop", "haul", "train", "move"];
 export const TRAIN_KINDS: readonly TrainKind[] = ["warrior", "preacher", "firewarrior", "spy"];
@@ -145,6 +149,7 @@ const UNIT_PROTOS: Record<UnitKind, object> = {
   firewarrior: Firewarrior.prototype,
   spy: Spy.prototype,
   wildman: Wildman.prototype,
+  dragon: Dragon.prototype, // v0.30 大龙（零新增字段，复用 Unit 基类默认值表）
 };
 
 const BUILDING_PROTOS: Record<BuildingKind, object> = {
@@ -155,6 +160,7 @@ const BUILDING_PROTOS: Record<BuildingKind, object> = {
   spyHut: SpyHut.prototype,
   tower: Tower.prototype,
   rebirth: Rebirth.prototype,
+  dragonFactory: DragonFactory.prototype, // v0.30 大龙训练营（dwell=进驻数、prod=生产进度，字段复用）
 };
 
 /** 与 entities/unit.ts 的字段初始化器对齐（BaseEntity 的 id/team/x/z/y/hp/maxHp 由消息赋）。 */
@@ -271,6 +277,9 @@ export interface SimMirror {
   shots: Projectile[];
   meteors: MeteorSnap[];
   guardFires: GuardFireSnap[];
+  /** v0.30 大龙：吐息弹/燃烧地块镜像（普通对象，只读渲染）。 */
+  breaths: SnapMsg["breaths"];
+  fires: SnapMsg["fires"];
   teams: [TeamState, TeamState];
   volcano: VolcanoSnap | null;
   quake: QuakeSnap | null;
@@ -355,6 +364,8 @@ export function createSimMirror(): SimMirror {
     shots: [],
     meteors: [],
     guardFires: [],
+    breaths: [],
+    fires: [],
     teams: [
       {
         manaCap: 0,
@@ -592,6 +603,17 @@ export function encodeSnapshot(sim: Sim, terrainDirty = false): SnapMsg {
     shots: sim.shots.map((p) => ({ ...p })),
     meteors: sim.meteors.map((m) => ({ ...m })),
     guardFires: sim.guardFires.map((f) => ({ ...f })),
+    // v0.30 大龙：吐息弹/火 patch 随快照过消息边界（镜像只读渲染）。
+    breaths: sim.breaths.map((p) => ({ ...p })),
+    fires: sim.fires.map((f) => ({
+      x: f.x,
+      z: f.z,
+      r: f.r,
+      life: f.life,
+      maxLife: f.maxLife,
+      dps0: f.dps0,
+      team: f.team,
+    })),
     teams: [encodeTeam(sim.teams[0]), encodeTeam(sim.teams[1])],
     volcano: encodeVolcano(sim.volcano),
     quake,
@@ -764,6 +786,8 @@ export function applySnapshot(mirror: SimMirror, msg: SnapMsg): void {
   mirror.shots = msg.shots.map((p) => ({ ...p }));
   mirror.meteors = msg.meteors.map((m) => ({ ...m }));
   mirror.guardFires = msg.guardFires.map((f) => ({ ...f }));
+  mirror.breaths = msg.breaths;
+  mirror.fires = msg.fires;
   mirror.teams = [encodeTeam(msg.teams[0]), encodeTeam(msg.teams[1])];
   mirror.volcano = msg.volcano ? { ...msg.volcano } : null;
   mirror.quake = msg.quake

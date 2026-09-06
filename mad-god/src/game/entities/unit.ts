@@ -66,6 +66,14 @@ export abstract class Unit extends BaseEntity {
     return false;
   }
 
+  /**
+   * v0.30 飞行单位（大龙）：不参与地面寻路/碰撞/驻扎/普通索敌，
+   * 位置与战斗全部由所属系统（DragonSystem）接管。
+   */
+  isFlying(): boolean {
+    return false;
+  }
+
   canConvert(): boolean {
     return true;
   }

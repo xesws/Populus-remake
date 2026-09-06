@@ -8,10 +8,12 @@ import { Firewarrior } from "./units/firewarrior";
 import { Spy } from "./units/spy";
 import { Shaman } from "./units/shaman";
 import { Wildman } from "./units/wildman";
+import { Dragon } from "./units/dragon";
 
 import { Building } from "./building";
 import { Hut } from "./buildings/hut";
 import { TrainingCamp, WarriorHut, Temple, FireHut, SpyHut, Tower, Rebirth } from "./buildings/camp";
+import { DragonFactory } from "./buildings/dragon-factory";
 import { Tree } from "./tree";
 
 export function createUnit(id: number, team: Owner, kind: UnitKind, x: number, z: number, y: number, str = 1): Unit {
@@ -31,6 +33,8 @@ export function createUnit(id: number, team: Owner, kind: UnitKind, x: number, z
       return new Shaman(id, team, x, z, y, hp, hp, str);
     case "wildman":
       return new Wildman(id, team, x, z, y, hp, hp, str);
+    case "dragon":
+      return new Dragon(id, team, x, z, y, hp, hp, str);
   }
 }
 
@@ -76,6 +80,9 @@ export function createBuilding(
       break;
     case "rebirth":
       b = new Rebirth(id, team, x, z, y, finalHp, finalMaxHp, level, yaw, padW, padD, finalNeed);
+      break;
+    case "dragonFactory":
+      b = new DragonFactory(id, team, x, z, y, finalHp, finalMaxHp, level, yaw, padW, padD, finalNeed);
       break;
   }
   return b;

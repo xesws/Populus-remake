@@ -15,6 +15,9 @@ export class PathSystem implements ISystem {
 
   moveUnits(sim: Sim, dt: number): void {
     for (const u of sim.units) {
+      // v0.30 飞行单位（大龙）不走地面移动：位置由 DragonSystem 直接积分，
+      // 否则下方 !path 分支会把它每帧拍回地面。
+      if (u.isFlying()) continue;
       if (u.homeId > 0) continue;
       if (u.fireT > 0) u.fireT = Math.max(0, u.fireT - dt);
       if (u.ghostT > 0) u.ghostT = Math.max(0, u.ghostT - dt);
@@ -390,6 +393,7 @@ export class PathSystem implements ISystem {
     }
     for (const u of sim.units) {
       if (u.hp <= 0 || u.homeId > 0) continue;
+      if (u.isFlying()) continue; // v0.30 大龙不参与地面卡死看门狗
       if (u.flyVy !== 0 || u.y > sim.world.heightAt(u.x, u.z) + 0.08) continue;
       const going =
         u.path.length > 0 ||
@@ -438,6 +442,7 @@ export class PathSystem implements ISystem {
   resolveCollisions(sim: Sim): void {
     for (const u of sim.units) {
       if (u.homeId > 0) continue;
+      if (u.isFlying()) continue; // v0.30 大龙在空中，不参与地面推挤/水域纠偏
       if (u.flyVy !== 0 || u.y > sim.world.heightAt(u.x, u.z) + 0.08) continue;
       const r = UNIT_RADIUS[u.kind];
       const holdTrain = u.job === "train" && u.channel > 0;
@@ -492,6 +497,7 @@ export class PathSystem implements ISystem {
     const grid = new Map<number, Unit[]>();
     for (const u of sim.units) {
       if (u.homeId > 0) continue;
+      if (u.isFlying()) continue; // v0.30 大龙不与地面单位对撞
       const k = (Math.floor(u.x / CELL) + 8) * 4096 + (Math.floor(u.z / CELL) + 8);
       const arr = grid.get(k);
       if (arr) arr.push(u);

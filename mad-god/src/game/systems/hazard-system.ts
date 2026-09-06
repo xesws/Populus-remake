@@ -10,6 +10,8 @@ export class HazardSystem implements ISystem {
   hazards(sim: Sim, dt: number): void {
     if (sim.review) return;
     for (const u of sim.units) {
+      // v0.30 大龙在半空飞行：溺水/岩浆/沼泽都是地面危害，不波及。
+      if (u.isFlying()) continue;
       if (!inMap(u.x, u.z) || sim.world.heightAt(u.x, u.z) <= WATER) {
         u.hp -= 4 * dt;
         continue;

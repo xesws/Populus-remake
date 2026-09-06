@@ -3,6 +3,7 @@ import {
   clamp,
   houseBaseRate,
   BUILD_RATE_BASE,
+  DRAGON_GARRISON_MAX,
   HOUSE_ROOF_Y,
   POP_CAP,
   sitePad,
@@ -102,8 +103,8 @@ export class ProductionSystem implements ISystem {
       if (b.shell || sim.lavaOnPad(b)) continue;
       if (b.kind === "hut") {
         if (sim.world.houseLevelAt(b.x, b.z, b.yaw) === 0) b.hp = 0;
-      } else if (isCampKind(b.kind) || b.kind === "tower") {
-        // v0.27-3 哨塔与营地同款地基校验（塔更小，同样不能悬空/泡水）。
+      } else if (isCampKind(b.kind) || b.kind === "tower" || b.kind === "dragonFactory") {
+        // v0.27-3 哨塔与营地同款地基校验（塔更小，同样不能悬空/泡水）；v0.30 大龙训练营同规。
         const s = sim.world.padStats(b.x, b.z, b.padW, b.padD, b.yaw);
         if (s.n === 0 || s.land < 0.55 || s.mean <= WATER) b.hp = 0;
       }
@@ -237,6 +238,25 @@ export class ProductionSystem implements ISystem {
         u.enterT = Math.max(0, u.enterT - dt);
         continue;
       }
+      // v0.30 走入大龙训练营：从门口直线走到厂房中心，随后被渲染层隐藏（厂内驻员不画）。
+      if (home && home.kind === "dragonFactory") {
+        const dest = { x: home.x, z: home.z };
+        const dx = dest.x - u.x;
+        const dz = dest.z - u.z;
+        const len = Math.hypot(dx, dz);
+        if (len > 0.02) {
+          const step = Math.min(len, 2.6 * dt);
+          u.x += (dx / len) * step;
+          u.z += (dz / len) * step;
+          u.yaw = Math.atan2(dx, dz);
+        }
+        u.y = sim.world.heightAt(u.x, u.z);
+        u.enterT -= dt;
+        if (u.enterT <= 0 && u.team === BLUE) {
+          sim.toast(`牛战士走进大龙训练营（${home.dwell}/${DRAGON_GARRISON_MAX}）`);
+        }
+        continue;
+      }
       const hut = home;
       const dest = hut ? sim.padLocalToWorld(hut, 0, hut.padD * 0.12) : { x: u.x, z: u.z };
       const dx = dest.x - u.x;
@@ -339,7 +359,9 @@ export class ProductionSystem implements ISystem {
       return;
     }
     // v0.27-3 哨塔与营地同款完工：送满木头即落成（塔只需 1 捆，落成最快）。
-    if ((isCampKind(b.kind) || b.kind === "tower") && b.level === 0) this.upgradeBuilding(sim, b, 1);
+    if ((isCampKind(b.kind) || b.kind === "tower" || b.kind === "dragonFactory") && b.level === 0) {
+      this.upgradeBuilding(sim, b, 1);
+    }
   }
 
   upgradeBuilding(sim: Sim, b: Building, level: number): void {
@@ -369,6 +391,9 @@ export class ProductionSystem implements ISystem {
       sim.toast(b.team === BLUE ? "训练营落成" : "敌方训练营落成");
     } else if (b.kind === "tower") {
       sim.toast(b.team === BLUE ? "哨塔落成" : "敌方哨塔落成");
+    } else if (b.kind === "dragonFactory") {
+      // v0.30 大龙训练营落成：接下来等 20 名牛战士进驻。
+      sim.toast(b.team === BLUE ? "大龙训练营落成——凑齐 20 名牛战士即可开工" : "敌方大龙训练营落成");
     }
   }
 

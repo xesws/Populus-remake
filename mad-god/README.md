@@ -20,6 +20,12 @@ Train warriors with T, preachers with Y, firewarriors with G, spies with H.
 If the shaman is lost, send a follower to the ankh (order V).
 Win when the other side has no people and no houses.
 Enemy planner ticks about once a second.
+Dragon den (factory look, 6 wood): garrison 20 firewarriors via right-click,
+then a 60s forge spawns a dragon above the base. The dragon has 100 villagers'
+HP, flies slow, auto-strafes anything within 10 tiles with decaying fire
+patches; spells always hit it (damage only), melee cannot reach it, and
+firewarriors/towers shoot up at it. Picking uses a screen-space silhouette so
+the cursor never mis-picks ground units behind the flying body (design/DRAGON.md).
 
 ## Controls
 Left click or drag: raise land or selected spell. Right click: lower.
@@ -32,7 +38,9 @@ Lightning 20. Earthquake 50 (cap 120). Swamp 36 (cap 140).
 Volcano 80 (cap 160). Armageddon 100 (cap 200).
 
 ## 中文摘要
+
 你是蓝方神明，对阵红方敌神。提升土地让子民筑屋，屋宇升级只长高、不扩地。
 法力随人口与屋宇增长。数字键选神迹，Z X C V 谕令，T Y G H 征召武士 / 传教士 / 火战士 / 间谍。空格暂停。
+大龙训练营凑齐 20 名牛战士炼出大龙（600 血飞行单位，10 格吐息），详见 design/DRAGON.md。
 消灭对方全部子民与屋宇即胜。项目入口：index.html 与 src/main.ts。
 Use the package scripts named dev, build, and preview.

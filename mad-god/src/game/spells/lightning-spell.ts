@@ -23,6 +23,16 @@ export class LightningSpell extends Spell {
       if (u.hp <= 0) continue;
       const d = Math.hypot(u.x - x, u.z - z);
       if (d > 1.7) continue;
+      // v0.30 魔法必中大龙：闪电照样劈它，但飞龙不会被击飞（只掉血 + 燃烧视觉）。
+      if (u.isFlying()) {
+        u.hp = Math.max(0, u.hp - 8);
+        u.fireT = Math.max(u.fireT, 3.6);
+        sim.lightningHit = true;
+        sim.lightningHitX = u.x;
+        sim.lightningHitZ = u.z;
+        if (u.team === BLUE) sim.toast("大龙被天雷劈中");
+        continue;
+      }
       let dx = u.x - x;
       let dz = u.z - z;
       const len = Math.hypot(dx, dz) || 1;

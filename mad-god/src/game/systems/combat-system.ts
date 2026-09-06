@@ -88,6 +88,8 @@ export class CombatSystem implements ISystem {
     const t0 = performance.now();
     this.rebuildGrid(sim);
     for (const u of sim.units) {
+      // v0.30 大龙的索敌/开火由 DragonSystem 全权接管，普通索敌跳过。
+      if (u.isFlying()) continue;
       if (u.job === "train") continue;
       // v0.28 锁敌刷新（只对"跟随"角色）：自动锁的目标超出攻击距离就重新追击——
       // "锁了就追，直到目标逃出牵引范围"。站桩角色（牛头人）永不刷新路径。
@@ -177,6 +179,8 @@ export class CombatSystem implements ISystem {
     this.acquirePass(sim, dt); // v0.23 任何状态的高频索敌
     for (const u of sim.units) {
       if (!isTribe(u.team) || u.hp <= 0 || u.homeId > 0) continue;
+      // v0.30 大龙的攻击结算走 DragonSystem，普通战斗循环跳过飞行单位。
+      if (u.isFlying()) continue;
       if (u.atkCd > 0) u.atkCd = Math.max(0, u.atkCd - dt);
       // v0.9 腾空中的单位不能出刀（冷却照常走）；v0.12 倒地单位同样不能行动。
       if (u.flyVy !== 0 || u.y > sim.world.heightAt(u.x, u.z) + 0.08 || u.downT > 0) continue;
@@ -194,7 +198,23 @@ export class CombatSystem implements ISystem {
           this.clearAutoLock(u);
           continue;
         }
-        // v0.9 被击飞腾空的目标近战/火球都打不到，攻击者原地等它落地。
+        // v0.30 飞行单位（大龙永不落地）：近战够不着 → 放弃锁，绝不站桩仰望；
+        // 远程兵种（火战士）对空开火，弹道瞄准龙身实际高度（无视地形遮挡）。
+        if (tu.isFlying()) {
+          if (unitRange(u.kind) < 2) {
+            this.clearAutoLock(u);
+            continue;
+          }
+          if (u.kind === "firewarrior") {
+            const range = unitRange(u.kind);
+            if (u.atkCd <= 0 && dist2(u.x, u.z, tu.x, tu.z) <= range * range) {
+              this.launchFireball(sim, u, tu.x, tu.z, undefined, tu.y + 0.3);
+              u.atkCd = attackInterval(u.kind);
+            }
+          }
+          continue;
+        }
+        // v0.9 被击飞腾空的目标（会落地的地面单位）近战/火球都打不到，攻击者原地等它落地。
         if (tu.flyVy !== 0 || tu.y > sim.world.heightAt(tu.x, tu.z) + 0.08) continue;
         const range = unitRange(u.kind);
         const d2 = dist2(u.x, u.z, tu.x, tu.z);
@@ -314,7 +334,8 @@ export class CombatSystem implements ISystem {
           const range = unitRange("firewarrior") * TOWER_RANGE_MULT;
           const d2 = dist2(b.x, b.z, tu.x, tu.z);
           if (g.atkCd <= 0 && d2 <= range * range) {
-            this.launchFireball(sim, g, tu.x, tu.z, { x: b.x, z: b.z, y: b.y + TOWER_TOP });
+            // v0.30 对空：目标是大龙则瞄准龙身高度（俯冲/仰射弹道自适应）。
+            this.launchFireball(sim, g, tu.x, tu.z, { x: b.x, z: b.z, y: b.y + TOWER_TOP }, tu.isFlying() ? tu.y + 0.3 : undefined);
             g.atkCd = attackInterval(g.kind);
           }
           continue;
@@ -523,6 +544,8 @@ export class CombatSystem implements ISystem {
     if (sight <= 0) return;
     const enemy: Team = u.team === BLUE ? RED : BLUE;
     let foe = this.closestEnemyUnit(sim, u, enemy, sight);
+    // v0.30 近战够不着飞行单位（大龙永不落地）：不锁、不站桩仰望；远程兵种可对空。
+    if (foe && foe.isFlying() && unitRange(u.kind) < 2) foe = null;
     // v0.27g 火战士优先锁"射程内且视线通畅"的目标：起伏地形上最近的敌人可能被山体
     // 遮挡（站桩不追击就永远打不到），优先挑真正打得着的，没有再退回视野内最近者。
     if (u.kind === "firewarrior" && foe) {
@@ -592,6 +615,15 @@ export class CombatSystem implements ISystem {
       for (const u of sim.units) {
         if (u.team !== enemy || u.hp <= 0 || u.homeId > 0) continue;
         if (u.flyVy !== 0) continue; // 腾空中的单位不被水平火球命中
+        // v0.30 对空命中（大龙）：按 3D 距离判定，弹道瞄准龙身高度。
+        if (u.isFlying()) {
+          if (dist2(p.x, p.z, u.x, u.z) < 0.6 * 0.6 && Math.abs(p.y - u.y) < 1.6) {
+            this.fireballHit(sim, u, p);
+            hit = true;
+            break;
+          }
+          continue;
+        }
         if (dist2(p.x, p.z, u.x, u.z) < 0.28 && Math.abs(p.y - u.y) < 1.2) {
           this.fireballHit(sim, u, p);
           hit = true;
@@ -600,7 +632,8 @@ export class CombatSystem implements ISystem {
       }
       if (!hit && p.life > 0) {
         const b = sim.buildingAt(p.x, p.z);
-        if (b && b.team === enemy) {
+        // v0.30 高空弹道（对空射击/塔顶俯冲）不再误伤脚下穿过的屋顶：只有弹高贴近建筑才结算。
+        if (b && b.team === enemy && p.y < b.y + 2.8) {
           applyBuildingDamage(sim, b, unitDamageToBuilding("firewarrior"));
           p.life = 0;
         }
@@ -612,6 +645,7 @@ export class CombatSystem implements ISystem {
   /**
    * v0.9 火球发射：平飞高度取两端地形较高者 +0.6（与 world.losBlocked 同一条基准线），弹速恒定。
    * v0.27-3 origin：哨塔驻军从塔顶发射（起点/高度/弹道寿命都按塔顶算），地面单位不传。
+   * v0.30 ty：对空射击时传目标实际高度（大龙 y），弹道直奔龙身；缺省落点仍是地面 +0.6。
    */
   launchFireball(
     sim: Sim,
@@ -619,20 +653,21 @@ export class CombatSystem implements ISystem {
     tx: number,
     tz: number,
     origin?: { x: number; z: number; y: number },
+    ty?: number,
   ): void {
     const ox = origin?.x ?? u.x;
     const oz = origin?.z ?? u.z;
     const oy = origin?.y ?? Math.max(sim.world.heightAt(ox, oz), sim.world.heightAt(tx, tz)) + 0.6;
+    const targetY = ty ?? sim.world.heightAt(tx, tz) + 0.6;
     const dx = tx - ox;
     const dz = tz - oz;
     const dist = Math.hypot(dx, dz) || 1;
-    // v0.27-3 塔顶发射：弹道从塔顶匀速俯冲到目标脚下 +0.6（与地面弹同一命中高度），
+    // v0.27-3 塔顶发射：弹道从塔顶匀速到目标高度（地面目标脚下 +0.6 / 对空直奔龙身），
     // 否则平飞 2.75 高度永远够不到命中判据的 |Δy|<1.2。地面发射 vy 不填（平飞）。
     const flight = dist / FIREBALL_SPEED + 0.4;
     let vy: number | undefined;
-    if (origin) {
-      const ty = sim.world.heightAt(tx, tz) + 0.6;
-      vy = (ty - oy) / (dist / FIREBALL_SPEED);
+    if (origin || ty !== undefined) {
+      vy = (targetY - oy) / (dist / FIREBALL_SPEED);
     }
     sim.shots.push({
       x: ox,
@@ -659,6 +694,12 @@ export class CombatSystem implements ISystem {
    */
   fireballHit(sim: Sim, u: Unit, p: Projectile): void {
     p.life = 0;
+    // v0.30 大龙不被击退/击坠：中弹只掉血（经护甲与克制）+ 点燃视觉。
+    if (u.isFlying()) {
+      applyUnitDamage(u, "firewarrior");
+      u.fireT = Math.max(u.fireT, 2.5);
+      return;
+    }
     if (Math.random() < FIRE_CRIT_CHANCE) {
       const len = Math.hypot(p.vx, p.vz) || 1;
       u.flyVx = (p.vx / len) * (4.4 + Math.random() * 0.6);

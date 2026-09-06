@@ -193,6 +193,12 @@ export class WorkerSimClient implements SimClient {
   get meteors(): { x: number; z: number; y: number; vy: number; team: Team }[] {
     return this.mirror.meteors;
   }
+  get breaths(): Sim["breaths"] {
+    return this.mirror.breaths as unknown as Sim["breaths"];
+  }
+  get fires(): Sim["fires"] {
+    return this.mirror.fires as unknown as Sim["fires"];
+  }
   get teams(): [TeamState, TeamState] {
     return this.mirror.teams;
   }

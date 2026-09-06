@@ -198,6 +198,10 @@ html, body, #app {
 /* v0.27-3 哨塔：窄塔身 + 顶台 */
 .ico.tower { background: #8a8478; clip-path: polygon(30% 0, 70% 0, 85% 100%, 15% 100%); }
 .ico.tower::after { left: 8px; right: 8px; top: 0; height: 7px; background: #c9a227; }
+/* v0.30 大龙训练营：厂房图标（横宽厂房 + 烟囱 + 炉火） */
+.ico.factory { background: #5a5450; width: 18px; margin-left: -2px; }
+.ico.factory::before { left: auto; right: 3px; top: -3px; width: 4px; height: 5px; background: #7a4432; }
+.ico.factory::after { left: 3px; right: 8px; top: 5px; height: 4px; background: #ff8830; }
 .ico.raise { background: linear-gradient(#c9a227, #4e8d3b); clip-path: polygon(50% 0, 100% 100%, 0 100%); }
 .ico.lower { background: linear-gradient(#4e8d3b, #1e5a88); clip-path: polygon(0 0, 100% 0, 50% 100%); }
 .ico.bolt { background: #f2e08a; clip-path: polygon(60% 0, 20% 50%, 48% 50%, 40% 100%, 80% 45%, 52% 45%); }

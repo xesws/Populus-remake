@@ -14,9 +14,10 @@ export const NEUTRAL = 2 as const;
 export type Team = 0 | 1;
 export type Owner = 0 | 1 | 2;
 
-export type UnitKind = "shaman" | "walker" | "warrior" | "preacher" | "firewarrior" | "spy" | "wildman";
+// v0.30 大龙（飞龙）：新作战单位 kind；dragonFactory = 大龙训练营（外观类似工厂）。
+export type UnitKind = "shaman" | "walker" | "warrior" | "preacher" | "firewarrior" | "spy" | "wildman" | "dragon";
 export type TrainKind = "warrior" | "preacher" | "firewarrior" | "spy";
-export type BuildingKind = "hut" | "warriorHut" | "temple" | "fireHut" | "spyHut" | "tower" | "rebirth";
+export type BuildingKind = "hut" | "warriorHut" | "temple" | "fireHut" | "spyHut" | "tower" | "rebirth" | "dragonFactory";
 
 export const TRAIN_COST: Record<TrainKind, number> = {
   warrior: 28,
@@ -50,6 +51,8 @@ export function woodNeedFor(kind: BuildingKind, level: number): number {
   if (kind === "hut") return level >= 1 ? 0 : 2;
   // v0.27-3 哨塔：1 捆木头（比茅屋的 2 捆还少）——定位是速起的防御工事。
   if (kind === "tower") return level >= 1 ? 0 : 1;
+  // v0.30 大龙训练营：大厂房，6 捆木头。
+  if (kind === "dragonFactory") return level >= 1 ? 0 : DRAGON_FACTORY_WOOD;
   return 0;
 }
 
@@ -65,7 +68,8 @@ export function isSoldier(kind: UnitKind): boolean {
 }
 
 export function canConvert(kind: UnitKind): boolean {
-  return kind !== "shaman" && kind !== "preacher";
+  // v0.30 大龙是战争兵器，传教士/转化术说不动人。
+  return kind !== "shaman" && kind !== "preacher" && kind !== "dragon";
 }
 
 export const UNIT_RADIUS: Record<UnitKind, number> = {
@@ -76,6 +80,7 @@ export const UNIT_RADIUS: Record<UnitKind, number> = {
   firewarrior: 0.25,
   spy: 0.22,
   wildman: 0.22,
+  dragon: 0.9, // v0.30 龙体地面投影半径（命中/影环基准）
 };
 
 // v0.7 战斗数值表：伤害 = max(1, round(攻击 × 克制系数 − 受击护甲))，集中在此调参。
@@ -87,6 +92,7 @@ export const UNIT_ATTACK: Record<UnitKind, number> = {
   firewarrior: 5,
   spy: 3,
   wildman: 2,
+  dragon: 0, // v0.30 大龙无直接攻击数值：伤害全部走吐息火 patch（衰减 DoT）
 };
 
 export const UNIT_ARMOR: Record<UnitKind, number> = {
@@ -97,6 +103,7 @@ export const UNIT_ARMOR: Record<UnitKind, number> = {
   firewarrior: 0,
   spy: 0,
   wildman: 0,
+  dragon: 2, // v0.30 龙鳞：轻甲（对火战士 5 攻 → 3/发）
 };
 
 // 攻击距离（格）。火战士 v0.9 起为远程火球；v0.27g 4.5→7（×1.5，用户口径
@@ -110,6 +117,7 @@ export const UNIT_RANGE: Record<UnitKind, number> = {
   firewarrior: 7,
   spy: 0.95,
   wildman: 0.95,
+  dragon: 10, // v0.30 喷火射程 = 索敌/脱锁半径
 };
 
 // 攻击间隔（秒）：atkCd 归零才能出刀。
@@ -121,6 +129,7 @@ export const UNIT_ATK_CD: Record<UnitKind, number> = {
   firewarrior: 1.8,
   spy: 1.0,
   wildman: 1.2,
+  dragon: 2.4, // v0.30 吐息间隔
 };
 
 // 自动索敌半径（格）；0 = 不主动索敌、只还手。v0.8 生效；v0.19 武士 10 步、间谍 4 步；
@@ -128,6 +137,7 @@ export const UNIT_ATK_CD: Record<UnitKind, number> = {
 // v0.27-2 扩过一轮：武士 13→20、牛头人 8→12、传教士 3→4.5。
 // v0.27h 用户拍板回调：武士 20→8（近战索敌不该比远程牛头人 12 还大）。
 // v0.28 大祭司入列近战索敌（跟随牵引）：0→6。
+// v0.30 大龙 10（= 喷火射程；实际索敌由 DragonSystem 自己做，此值仅供数值表完整性）。
 export const UNIT_SIGHT: Record<UnitKind, number> = {
   shaman: 6,
   walker: 0,
@@ -136,6 +146,7 @@ export const UNIT_SIGHT: Record<UnitKind, number> = {
   firewarrior: 12,
   spy: 4,
   wildman: 0,
+  dragon: 10,
 };
 
 // 克制系数（攻击方 → 受击方，缺省 1）。
@@ -228,6 +239,31 @@ export const TOWER_SIGHT_MULT = 2;
 export const TOWER_GARRISON_MAX = 3; // v0.28e 塔上最多驻 3 名牛战士
 export const TOWER_CLIMB_T = 1.1; // 爬塔动画时长（秒）：从塔脚走到瞭望台
 
+// ---------------------------------------------------------------------------
+// v0.30 大龙（飞龙）与大龙训练营：全部数值集中在此调参。
+// 训练链路：建 dragonFactory → 20 名牛战士（firewarrior）进驻（dwell 计数）→
+// 满 20 开始生产（prod 0..1，60s）→ 完成后 20 名进驻者移除、大龙在工厂上空空降。
+// ---------------------------------------------------------------------------
+export const DRAGON_GARRISON_MAX = 20; // 进驻满员数（进驻条满格阈值）
+export const DRAGON_PROD_T = 60; // 生产时长（秒）
+export const DRAGON_HP = 600; // = 100 × 村民 6 血
+export const DRAGON_SPEED = 1.5; // 飞行速度（村民 2.4，"偏慢"）
+export const DRAGON_RANGE = 10; // 喷火射程 = 索敌半径 = 脱锁距离（格）
+export const DRAGON_CRUISE = 2.2; // 巡航高度（贴地表上空）
+export const DRAGON_ACQUIRE_INTERVAL = 0.4; // 索敌节流（秒）
+export const DRAGON_SPAWN_DROP_Y = 6; // 空降初始高度（高于地表）
+export const DRAGON_DROP_SPEED = 3; // 空降下降速度（格/秒）
+export const DRAGON_FACTORY_PAD = 3.2; // 工厂地基（比训练营 2.6 大一圈）
+export const DRAGON_FACTORY_WOOD = 6; // 工厂建造成本（木）
+export const DRAGON_FACTORY_DOOR_REACH = 3.4; // 到门口该距离内即触发走进工厂（覆盖地基斜角站位 ~2.9~3.14）
+export const DRAGON_FACTORY_ENTER_T = 0.6; // 走入动画时长（秒）
+// 吐息：落地生成火 patch，持续燃烧一小会儿、伤害随剩余寿命线性衰减。
+export const FIRE_PATCH_R = 1.2;
+export const FIRE_PATCH_LIFE = 4.5;
+export const FIRE_PATCH_DPS0 = 8; // 起始每秒伤害（不经过护甲，火烧）
+export const FIRE_IMPACT_DMG = 2; // 吐息对点名目标的直接伤害
+export const DRAGON_BREATH_SPEED = 9; // 吐息弹速（格/秒）
+
 export function houseHalf(level: number): number {
   const lv = level >= 3 ? 3 : level === 2 ? 2 : 1;
   return Math.max(HOUSE_WALL[lv], HOUSE_ROOF[lv]) / 2;
@@ -243,6 +279,8 @@ export function padSize(level: number): { w: number; d: number } {
 export function sitePad(kind: BuildingKind): { w: number; d: number } {
   if (isCampKind(kind)) return { w: CAMP_PAD, d: CAMP_PAD };
   if (kind === "tower") return { w: TOWER_PAD, d: TOWER_PAD };
+  // v0.30 大龙训练营：独立大厂房占地。
+  if (kind === "dragonFactory") return { w: DRAGON_FACTORY_PAD, d: DRAGON_FACTORY_PAD };
   return padSize(1);
 }
 
@@ -418,6 +456,8 @@ export function dist2(ax: number, az: number, bx: number, bz: number): number {
 
 export function unitHp(kind: UnitKind, str: number): number {
   if (kind === "shaman") return 14;
+  // v0.30 大龙：血量 = 100 个村民（6 血）= 600。
+  if (kind === "dragon") return DRAGON_HP;
   // v0.28b 平衡回调（用户拍板）：武士 27→15（12+3s，原 3× 火战士太强）；
   // 火战士 9→10（9+s，脆皮略微加强）。武士对牛头人从两刀变三刀。
   if (kind === "warrior") return 12 + str * 3;

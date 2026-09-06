@@ -16,6 +16,8 @@ export type SimClient = Pick<
   | "trees"
   | "shots"
   | "meteors"
+  | "breaths"
+  | "fires"
   | "teams"
   // —— 对局状态 ——
   | "winner"

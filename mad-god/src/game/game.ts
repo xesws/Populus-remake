@@ -2,11 +2,20 @@ import { AIDirector, AIProfile } from "./ai";
 import { SimClient } from "./client/sim-client";
 import type { WorkerSimClient } from "./client/worker-sim-client";
 import { bindInput, InputState, maybeStartSculpt, ndcCell, tickCamera } from "./input";
+import {
+  DRAGON_PICK_RADIUS,
+  DRAGON_PICK_TOLERANCE,
+  DRAGON_SPINE_OFFSETS,
+  dragonSpinePoint,
+  pickDragonAt,
+  type DragonPickItem,
+} from "./picking";
 import { View } from "./render";
 import { Sim } from "./sim";
 import { ShotDirector } from "./shot-director";
 import { canUnlock, cast } from "./spells";
-import { BLUE, BuildingKind, FxBolt, inMap, isCampKind, Order, RED, snapYaw, Tool, TrainKind } from "./types";
+import { BLUE, BuildingKind, FxBolt, inMap, isCampKind, Order, RED, snapYaw, Team, Tool, TrainKind } from "./types";
+import * as THREE from "three";
 import type { AiLevel } from "./worker/protocol";
 import { HUD, showEnd } from "./ui";
 import { World } from "./world";
@@ -215,6 +224,7 @@ export class Game {
       spyHut: "间谍营",
       tower: "哨塔",
       rebirth: "重生",
+      dragonFactory: "大龙训练营",
     };
     this.sim.toast(`建造：${names[kind] ?? kind}`);
   }
@@ -335,9 +345,10 @@ export class Game {
         this.view.showMoveMark(b.x, b.z);
         return;
       }
-      if (b.kind === "hut" || isCampKind(b.kind) || b.kind === "tower") {
+      if (b.kind === "hut" || isCampKind(b.kind) || b.kind === "tower" || b.kind === "dragonFactory") {
         // v0.28e 修游戏内实锤断链：哨塔此前落不进 orderMove，右键只会让牛战士走到塔边傻站
         //（检查脚本直调 sim.orderMove 测不到这层）。塔的进/出驻扎分支在 sim.orderMove 内。
+        // v0.30 大龙训练营同路：右键自家工厂 = 选中牛战士前往进驻。
         this.sim.orderMove(BLUE, b.x, b.z);
         return;
       }
@@ -358,15 +369,56 @@ export class Game {
       firewarrior: "选中火战士",
       spy: "选中间谍",
       walker: "选中勇士",
+      dragon: "选中大龙",
     };
     return pick[kind] ?? "选中子民";
   }
 
+  /**
+   * v0.30 龙体剪影（屏幕空间）：沿龙体脊线取 5 个采样点投影成圆，
+   * 屏幕半径按"沿相机右向偏移命中半径"的像素距估算（含容差）。
+   */
+  private dragonSilhouettes(team: Team): DragonPickItem[] {
+    const items: DragonPickItem[] = [];
+    const right = new THREE.Vector3().setFromMatrixColumn(this.view.camera.matrixWorld, 0).normalize();
+    for (const u of this.sim.units) {
+      if (u.team !== team || u.hp <= 0 || !u.isFlying()) continue;
+      const circles = DRAGON_SPINE_OFFSETS.map((off) => {
+        const p = dragonSpinePoint(u.x, u.y, u.z, u.yaw, off);
+        const c = this.view.worldToCanvas(p.x, p.y, p.z, this.canvas);
+        const e = this.view.worldToCanvas(
+          p.x + right.x * DRAGON_PICK_RADIUS,
+          p.y + right.y * DRAGON_PICK_RADIUS,
+          p.z + right.z * DRAGON_PICK_RADIUS,
+          this.canvas,
+        );
+        return { x: c.x, y: c.y, r: Math.max(6, Math.hypot(e.x - c.x, e.y - c.y) * DRAGON_PICK_TOLERANCE) };
+      });
+      const c = this.view.worldToCanvas(u.x, u.y + 0.55, u.z, this.canvas);
+      items.push({ id: u.id, cx: c.x, cy: c.y, circles });
+    }
+    return items;
+  }
+
+  /**
+   * v0.30 剪影命中大龙：半空单位**绝对优先**于一切地面单位——
+   * 光标落在龙身上时永远选/攻大龙，修复 3D 视角下误选龙体身后地面单位的问题。
+   */
+  private pickDragon(team: Team, sx: number, sy: number) {
+    const hit = pickDragonAt(this.dragonSilhouettes(team), sx, sy);
+    if (!hit) return undefined;
+    return this.sim.units.find((u) => u.id === hit.id && u.hp > 0 && u.isFlying());
+  }
+
   closestRed(sx: number, sy: number, cell: { x: number; z: number } | null) {
+    // v0.30 敌方大龙优先：拳头光标 + 右键指定攻击都走这里。
+    const dragon = this.pickDragon(RED, sx, sy);
+    if (dragon) return dragon;
     let best = undefined as (typeof this.sim.units)[number] | undefined;
     let bestD = 28 * 28;
     for (const u of this.sim.units) {
       if (u.team !== RED || u.homeId > 0 || u.hp <= 0) continue;
+      if (u.isFlying()) continue; // 地面锚点屏距判定不适用于飞龙（剪影已接管）
       const p = this.view.worldToCanvas(u.x, u.y + 0.28, u.z, this.canvas);
       const d = (p.x - sx) * (p.x - sx) + (p.y - sy) * (p.y - sy);
       if (d <= bestD) {
@@ -383,12 +435,20 @@ export class Game {
   }
 
   closestBlue(sx: number, sy: number, cell: { x: number; z: number } | null) {
+    // v0.30 己方大龙优先（同 closestRed 的剪影规则）。
+    const dragon = this.pickDragon(BLUE, sx, sy);
+    if (dragon) return dragon;
     let best = undefined as (typeof this.sim.units)[number] | undefined;
     let bestD = 28 * 28;
     for (const u of this.sim.units) {
       // v0.27h 屋顶村民/塔上牛战士可点选（坐标已在建筑上，屏幕投影正确）；
       // 进屋动画中（enterT>0）的不选。
       if (u.team !== BLUE || u.enterT > 0) continue;
+      // v0.30 大龙训练营厂内驻员锁定不可点选（旧宿主白名单：茅屋/哨塔之外不参与拾取）。
+      if (u.homeId > 0) {
+        const home = this.sim.buildingById(u.homeId);
+        if (!home || (home.kind !== "hut" && home.kind !== "tower")) continue;
+      }
       const p = this.view.worldToCanvas(u.x, u.y + 0.28, u.z, this.canvas);
       const d = (p.x - sx) * (p.x - sx) + (p.y - sy) * (p.y - sy);
       if (d <= bestD) {

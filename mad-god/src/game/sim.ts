@@ -10,6 +10,7 @@ import {
   CHOP_TIME,
   clamp,
   dist2,
+  DRAGON_GARRISON_MAX,
   FxBolt,
   GUARD_DANCE_R,
   GUARD_HEAL,
@@ -54,8 +55,11 @@ import {
 } from "./types";
 import { inDoorSlit, inPad, Pad, padsOverlap, PAD_STAND_INFLATE, worldOnPad, World } from "./world";
 import { ForestSeeder } from "./world-gen/forests";
+import type { FirePatch } from "./entities/fire-patch";
+import type { BreathShot } from "./systems/dragon-system";
 import {
   CombatSystem,
+  DragonSystem,
   HazardSystem,
   PathSystem,
   ProductionSystem,
@@ -84,6 +88,9 @@ export class Sim {
   buildings: Building[] = [];
   trees: Tree[] = [];
   shots: Projectile[] = [];
+  /** v0.30 大龙吐息弹（追踪弹，落地生成火 patch）与燃烧地块；归 DragonSystem 所有。 */
+  breaths: BreathShot[] = [];
+  fires: FirePatch[] = [];
   /**
    * v0.27f 天降火球（陨石）：cast 时入列，tickMeteors 下落、落地结算 AoE 点燃。
    * 跨帧状态必须挂 sim 而非 Spell 实例字段（v0.26b 火山双实例教训）。
@@ -183,6 +190,7 @@ export class Sim {
   readonly trainingSystem = new TrainingSystem();
   readonly pathSystem = new PathSystem();
   readonly combatSystem = new CombatSystem();
+  readonly dragonSystem = new DragonSystem();
   readonly hazardSystem = new HazardSystem();
   readonly winSystem = new WinSystem();
   readonly blastSpell = new BlastSpell();
@@ -641,6 +649,16 @@ export class Sim {
       u.trainKind = null;
     }
     this.clearOrders(u);
+    // v0.30 飞行单位（大龙）：不走 A*、不受地形阻挡，只记飞行令（DragonSystem 直接积分）。
+    if (u.isFlying()) {
+      u.job = "move";
+      u.moveX = clamp(x, 0.6, WORLD - 0.6);
+      u.moveZ = clamp(z, 0.6, WORLD - 0.6);
+      u.think = 40;
+      u.path = [];
+      u.pathI = 0;
+      return;
+    }
     let dest = this.world.walkableAt(x, z) ? { x, z } : nearestLand(this.world, x, z);
     if (!dest) {
       // Deep unreachable target (open sea): walk as close as possible instead of dropping the order.
@@ -714,6 +732,22 @@ export class Sim {
         return;
       }
       this.ejectTower(b, "（玩家下令撤出）");
+      return;
+    }
+    // v0.30 大龙训练营：选中牛战士右键自家工厂 = 前往进驻（满 20 后由 DragonSystem 开工）。
+    if (b && b.team === team && b.hp > 0 && b.level >= 1 && b.kind === "dragonFactory") {
+      const fires = selected.filter((u) => u.kind === "firewarrior" && u.homeId === 0 && !this.inSwamp(u));
+      if (fires.length) {
+        for (const f of fires) {
+          const edge = this.padEdge(b.x, b.z, b.padW, b.padD, b.yaw, f.x, f.z);
+          this.sendMove(f, edge.x, edge.z);
+          f.targetId = b.id;
+          f.atkId = 0;
+        }
+        if (team === BLUE) this.toast("牛战士前往大龙训练营");
+      } else if (team === BLUE) {
+        this.toast("选牛战士进驻");
+      }
       return;
     }
     for (const u of selected) {
@@ -1000,6 +1034,7 @@ export class Sim {
     this.thinkUnits(dt);
     this.moveUnits(dt);
     this.tickEnter(dt);
+    this.dragonSystem.tick(this, dt); // v0.30 大龙：飞行/索敌/吐息/工厂生产
     this.watchStuck();
     this.tickBlast(dt);
     this.tickMeteors(dt);
@@ -1097,9 +1132,12 @@ export class Sim {
   thinkUnits(dt: number): void {
     for (const u of this.units) {
       if (u.homeId > 0) continue;
+      // v0.30 大龙：地面 AI（寻路/漫游/索敌钩子）整体不参与，DragonSystem 全权接管。
+      if (u.isFlying()) continue;
       u.think -= dt;
       if (this.tryOccupy(u)) continue;
       if (this.tryGarrison(u)) continue; // v0.27-3 哨塔驻扎（牛战士走到塔边自动上塔）
+      if (this.dragonSystem.tryEnterFactory(this, u)) continue; // v0.30 牛战士进驻大龙训练营
       if (this.inSwamp(u)) {
         u.path = [];
         u.pathI = 0;
@@ -1251,6 +1289,8 @@ export class Sim {
       u.x = door.x;
       u.z = door.z;
     } else {
+      // v0.30 大龙训练营驻员同样走这里（主动走出/被弹出）：释放 dwell 名额，弹到厂边。
+      if (b.kind === "dragonFactory") b.dwell = Math.max(0, b.dwell - 1);
       const spot = this.spawnNear(b) ?? { x: b.x, z: b.z };
       u.x = spot.x;
       u.z = spot.z;
@@ -1433,6 +1473,22 @@ export class Sim {
           this.pathToSlot(u, dest);
         }
         return;
+      }
+    }
+
+    // v0.30 进厂等待：被指派进驻大龙训练营（targetId 指向工厂）的牛战士，到门口后
+    // 原地站住等 tryEnterFactory（thinkUnits 每 tick 判定进厂距离），绝不漫游走远；
+    // 工厂满员则放弃指派（targetId 清零，回归正常分派）。与 repathSettle 的"入住等待"同型。
+    if (u.job === "idle" && u.targetId > 0) {
+      const factory = this.buildingById(u.targetId);
+      if (factory && factory.kind === "dragonFactory" && factory.hp > 0 && factory.level >= 1 && factory.team === u.team) {
+        if (factory.dwell >= DRAGON_GARRISON_MAX) {
+          u.targetId = 0;
+        } else {
+          u.path = [];
+          u.pathI = 0;
+          return;
+        }
       }
     }
 

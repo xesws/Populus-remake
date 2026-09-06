@@ -308,6 +308,8 @@ function makeMinimalSnap(): Omit<Extract<WorkerMsg, { t: "snapshot" }>, "t"> {
     shots: [],
     meteors: [],
     guardFires: [],
+    breaths: [],
+    fires: [],
     teams: [
       { manaCap: 100, charges: {}, order: "settle", magnetX: 0, magnetZ: 0, hasShaman: true, shamanRevive: 0, wanted: [] },
       { manaCap: 100, charges: {}, order: "settle", magnetX: 0, magnetZ: 0, hasShaman: true, shamanRevive: 0, wanted: [] },

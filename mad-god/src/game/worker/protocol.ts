@@ -209,6 +209,23 @@ export interface SnapMsg {
   shots: Projectile[];
   meteors: MeteorSnap[];
   guardFires: GuardFireSnap[];
+  /** v0.30 大龙吐息弹与燃烧地块（FirePatch 拍平成普通对象；镜像只读渲染）。 */
+  breaths: {
+    x: number;
+    y: number;
+    z: number;
+    vx: number;
+    vy: number;
+    vz: number;
+    team: Team;
+    targetUnitId: number;
+    targetBuildingId: number;
+    tx: number;
+    ty: number;
+    tz: number;
+    life: number;
+  }[];
+  fires: { x: number; z: number; r: number; life: number; maxLife: number; dps0: number; team: Team }[];
   teams: [TeamState, TeamState];
   volcano: VolcanoSnap | null;
   quake: QuakeSnap | null;

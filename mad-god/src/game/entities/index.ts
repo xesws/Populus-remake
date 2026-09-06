@@ -7,9 +7,12 @@ export * from "./units/firewarrior";
 export * from "./units/spy";
 export * from "./units/shaman";
 export * from "./units/wildman";
+export * from "./units/dragon";
 
 export * from "./building";
 export * from "./buildings/hut";
 export * from "./buildings/camp";
+export * from "./buildings/dragon-factory";
+export * from "./fire-patch";
 export * from "./tree";
 export * from "./factory";
