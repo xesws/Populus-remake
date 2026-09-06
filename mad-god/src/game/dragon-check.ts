@@ -357,7 +357,45 @@ function testFactoryDestroyedMidProduction(): void {
   console.log("testFactoryDestroyedMidProduction ok");
 }
 
-/** m. 系统冒烟：DragonSystem.update 直调不抛（ISystem 接口一致性）。 */
+/** m. 飞行物理：视觉火焰按时熄灭（moveUnits 跳过飞行单位的补偿）+ 飞越海面不沉水下。 */
+function testFlightPhysics(): void {
+  const sim = new Sim(new World(42));
+  const pad = sim.world.startPad(BLUE);
+  const dragon = sim.addUnit(BLUE, "dragon", pad.x + 2, pad.z);
+  dragon.y = sim.world.heightAt(dragon.x, dragon.z) + 2.2;
+
+  // 闪电点燃的视觉火焰必须会熄灭：fireT 衰减在地面 moveUnits 里，飞行单位靠 DragonSystem 补。
+  sim.lightningSpell.strikeLightning(sim, dragon.x, dragon.z);
+  assert(dragon.fireT > 0, "flight: 闪电点燃大龙（视觉火焰）");
+  for (let i = 0; i < 100; i++) sim.tick(0.05); // 5s > fireT 3.6s
+  assert(dragon.fireT === 0, "flight: 视觉火焰按时熄灭（不会永远 burning）");
+
+  // 飞越海面：巡航高度恒在水面之上。注：世界生成与 sculpt 都对高度场做了 ≥0 钳制
+  //（实测海床最低 ≈0.04），所以"沉到水下"当前不可达——flyStep 里的 max(地表, WATER)
+  // 是防御性兜底（未来地形改动若放开负高度仍然安全）。这里验证水面巡航不变量。
+  let water: { x: number; z: number } | null = null;
+  for (let x = 1; x < 72 && !water; x += 2) {
+    for (let z = 1; z < 72; z += 2) {
+      if (sim.world.heightAt(x, z) <= 0.2) {
+        water = { x, z };
+        break;
+      }
+    }
+  }
+  assert(!!water, "flight: 地图上存在水面点");
+  for (let i = 0; i < 80; i++) {
+    dragon.x = water!.x;
+    dragon.z = water!.z;
+    sim.tick(0.05);
+  }
+  assert(
+    dragon.y >= 0.2 + 1.5,
+    `flight: 大龙飞越水面恒在水面之上（y=${dragon.y.toFixed(2)} ≥ 水面+1.5）`,
+  );
+  console.log("testFlightPhysics ok");
+}
+
+/** n. 系统冒烟：DragonSystem.update 直调不抛（ISystem 接口一致性）。 */
 function testSystemContract(): void {
   const sim = new Sim(new World(42));
   const sys = new DragonSystem();
@@ -378,5 +416,6 @@ testAirCombatCounters();
 testNoConvert();
 testPickingSilhouette();
 testFactoryDestroyedMidProduction();
+testFlightPhysics();
 testSystemContract();
-console.log("dragon-check 全部通过（v0.30 大龙：建造/进驻/生产空降/索敌脱锁/吐息衰减/魔法必中/对空克制/剪影拾取）");
+console.log("dragon-check 全部通过（v0.30 大龙：建造/进驻/生产空降/索敌脱锁/吐息衰减/魔法必中/对空克制/剪影拾取/飞行物理）");

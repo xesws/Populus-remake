@@ -23,6 +23,7 @@ import {
   Team,
   UNIT_ATK_CD,
   Unit,
+  WATER,
   WORLD,
 } from "../types";
 import type { Sim } from "../sim";
@@ -75,6 +76,7 @@ export class DragonSystem implements ISystem {
   // ---------------------------------------------------------------------------
 
   private tickFactories(sim: Sim, dt: number): void {
+    if (sim.freezeProd) return; // 与茅屋 produce() 同规：导演摆拍冻结期不生产
     for (const b of sim.buildings) {
       if (b.kind !== "dragonFactory" || b.hp <= 0 || b.level < 1) continue;
       if (b.dwell < DRAGON_GARRISON_MAX) continue;
@@ -131,6 +133,9 @@ export class DragonSystem implements ISystem {
   private tickDragons(sim: Sim, dt: number): void {
     for (const u of sim.units) {
       if (!u.isFlying() || u.hp <= 0) continue;
+      // 视觉火焰衰减：地面单位在 path-system.moveUnits 里递减 fireT，飞行单位被整体跳过——
+      // 这里补上，否则大龙被闪电/火球点燃后火焰永不熄灭。
+      if (u.fireT > 0) u.fireT = Math.max(0, u.fireT - dt);
       u.atkCd = Math.max(0, u.atkCd - dt);
       u.think = Math.max(0, u.think - dt);
       this.resolveTarget(sim, u);
@@ -223,7 +228,9 @@ export class DragonSystem implements ISystem {
       }
     }
     // 高度：空降/翻山先按下降速率落，再平滑贴"地表 + 巡航高度"。
-    const cruise = sim.world.heightAt(u.x, u.z) + DRAGON_CRUISE;
+    // 海面基准：heightAt 在深海返回海床高度（负值），必须以 WATER 兜底，否则大龙沉到水下。
+    const ground = Math.max(sim.world.heightAt(u.x, u.z), WATER);
+    const cruise = ground + DRAGON_CRUISE;
     if (u.y > cruise + 0.3) {
       u.y = Math.max(cruise, u.y - DRAGON_DROP_SPEED * dt);
     } else {
