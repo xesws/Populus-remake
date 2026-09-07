@@ -994,7 +994,8 @@ export class Sim {
     u.think = 0;
     u.path = [];
     u.pathI = 0;
-    const site = this.findCampSite(u);
+    // v0.31 营地落在自家后方、哨塔顶向敌方前沿（选址轴向见 findCampSite）；kind 透传保证占地判定一致。
+    const site = this.findCampSite(u, campKind === "tower", campKind);
     if (!site) {
       u.foundKind = null;
       return;
@@ -1013,8 +1014,8 @@ export class Sim {
     u.path = astar(this.world, u.x, u.z, edge.x, edge.z);
   }
 
-  train(team: Team, kind: TrainKind): boolean {
-    return this.trainingSystem.train(this, team, kind);
+  train(team: Team, kind: TrainKind, maxWalkers = Infinity): boolean {
+    return this.trainingSystem.train(this, team, kind, maxWalkers);
   }
 
   tick(dt: number): void {
@@ -1657,7 +1658,15 @@ export class Sim {
     return this.canFound(x, z, 1, yaw, 0, kind);
   }
 
-  findCampSite(u: Unit): Cell | null {
+  /**
+   * 营地/哨塔选址：以最近自家建筑为原点，沿"家↔地图中心"轴向网格试距。
+   * v0.31 加朝向参数：towardEnemy=false（默认，训练营）取反方向落在自家后方——
+   * 旧实现固定朝地图中心（= 敌方前线），营地反复被拆（日志 warriorHut 重建 30 次）；
+   * 哨塔传 true，塔就该顶在前沿。
+   * v0.31 加 kind 透传：预整地/间距必须按目标建筑的真实占地（营地 2.6 ≠ 茅屋 1.3），
+   * 否则选出的点 foundSite 落不了基，退化为"走过去再落基"的脆弱长链路。
+   */
+  findCampSite(u: Unit, towardEnemy = false, kind: BuildingKind = "hut"): Cell | null {
     const home = isTribe(u.team) ? this.nearestHouse(u.team, u.x, u.z) : null;
     const ox = home ? home.x : u.x;
     const oz = home ? home.z : u.z;
@@ -1665,8 +1674,9 @@ export class Sim {
     const toCx = WORLD * 0.5 - ox;
     const toCz = WORLD * 0.5 - oz;
     const len = Math.hypot(toCx, toCz) || 1;
-    const fx = toCx / len;
-    const fz = toCz / len;
+    const dir = towardEnemy ? 1 : -1;
+    const fx = (toCx / len) * dir;
+    const fz = (toCz / len) * dir;
     const px = -fz;
     const pz = fx;
     const dists = [6.2, 7.6, 5.4, 9.0];
@@ -1675,14 +1685,14 @@ export class Sim {
       for (const side of sides) {
         const x = clamp(ox + fx * dist + px * side * 2.4, 3, WORLD - 3);
         const z = clamp(oz + fz * dist + pz * side * 2.4, 3, WORLD - 3);
-        if (this.tryPrepFound(x, z, yaw)) {
+        if (this.tryPrepFound(x, z, yaw, kind)) {
           u.settleYaw = yaw;
           return { x, z };
         }
       }
     }
     const site = this.findSettleSite(u);
-    if (site && this.tryPrepFound(site.x, site.z, u.settleYaw)) return site;
+    if (site && this.tryPrepFound(site.x, site.z, u.settleYaw, kind)) return site;
     return site;
   }
 
@@ -1745,8 +1755,9 @@ export class Sim {
     const wantCamp = u.foundKind && u.moveX < 0 && u.job === "idle" ? u.foundKind : null;
     if (wantCamp && this.mayFoundCamp(u, wantCamp)) {
       let site: Cell | null = null;
-      if (u.settleX >= 0 && this.tryPrepFound(u.settleX, u.settleZ, u.settleYaw)) site = { x: u.settleX, z: u.settleZ };
-      if (!site) site = this.findCampSite(u);
+      // v0.31 重落基同样按 wantCamp 真实占地预整地（与首次指派同一套几何）。
+      if (u.settleX >= 0 && this.tryPrepFound(u.settleX, u.settleZ, u.settleYaw, wantCamp)) site = { x: u.settleX, z: u.settleZ };
+      if (!site) site = this.findCampSite(u, wantCamp === "tower", wantCamp);
       if (site) {
         const made = this.foundSite(u.team as Team, site.x, site.z, u.settleYaw, wantCamp);
         u.settleX = -1;
@@ -2100,13 +2111,20 @@ export class Sim {
   }
 
   damageArea(cx: number, cz: number, r: number, dmg: number, team?: Team): void {
+    // v0.31 面积杀伤（闪电/陨石/震爆等）同样上报受袭，AI 不再对法术轰炸装死。
     for (const u of this.units) {
       if (team !== undefined && u.team === team) continue;
-      if (dist2(u.x, u.z, cx, cz) <= r * r) u.hp -= dmg;
+      if (dist2(u.x, u.z, cx, cz) <= r * r) {
+        u.hp -= dmg;
+        if (isTribe(u.team)) this.onTeamHurt?.(u.team, u.x, u.z);
+      }
     }
     for (const b of this.buildings) {
       if (team !== undefined && b.team === team) continue;
-      if (dist2(b.x, b.z, cx, cz) <= r * r) b.hp -= dmg;
+      if (dist2(b.x, b.z, cx, cz) <= r * r) {
+        b.hp -= dmg;
+        if (isTribe(b.team)) this.onTeamHurt?.(b.team, b.x, b.z);
+      }
     }
   }
 }

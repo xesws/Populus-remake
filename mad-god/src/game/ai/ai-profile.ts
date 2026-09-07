@@ -21,6 +21,10 @@ export class AIProfile {
   expandDrive = 0.5;
   /** 施法激进度 0~1：越高施法冷却越短、越敢砸大法术 */
   spellAggro = 0.6;
+  /** v0.31 同时存在的哨塔上限（含 L0 地基）：0 = 不造塔 */
+  towerCap = 2;
+  /** v0.31 两次落塔之间的最小间隔（秒） */
+  towerGapSec = 45;
 
   static easy(): AIProfile {
     const p = new AIProfile();
@@ -33,6 +37,8 @@ export class AIProfile {
     p.reactSec = 3.0;
     p.expandDrive = 0.3;
     p.spellAggro = 0.35;
+    p.towerCap = 1;
+    p.towerGapSec = 90;
     return p;
   }
 
@@ -51,6 +57,8 @@ export class AIProfile {
     p.reactSec = 0.6;
     p.expandDrive = 0.75;
     p.spellAggro = 0.9;
+    p.towerCap = 3;
+    p.towerGapSec = 30;
     return p;
   }
 }

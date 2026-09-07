@@ -50,7 +50,8 @@ export class PathSystem implements ISystem {
             u.hp = 0;
           } else if (u.flyDmg > 0) {
             // v0.9 落地伤害：击飞来源（火球）写入的 flyDmg 在落地瞬间结算；法术击飞 flyDmg=0 不受影响。
-            applyUnitDamage(u, "firewarrior", u.flyDmg);
+            // v0.31 传 sim 上报受袭：这是延迟结算的攻击伤害，AI 防御响应需要感知。
+            applyUnitDamage(u, "firewarrior", u.flyDmg, sim);
             u.flyDmg = 0;
           }
         }

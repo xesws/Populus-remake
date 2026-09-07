@@ -295,6 +295,12 @@ export class ProductionSystem implements ISystem {
     u.atkId = 0;
     u.carry = 0;
     u.channel = 0;
+    // v0.31 建营者保护：入住即卸任。不清 foundKind 会永久占死 train 重试的"已有建营者"
+    // 名额，训练营请求悬空（敌方出不了火战士的根因之一）；settle 坐标一并作废，
+    // 防止日后出屋时按残留坐标误落一座 hut。
+    u.foundKind = null;
+    u.settleX = -1;
+    u.settleZ = -1;
     logger.info("produce", `村民#${u.id} 入住茅屋#${hut.id}`, {
       dwell: `${hut.dwell}/${houseMaxPop(hut.level)}`,
       pop: sim.countPop(u.team),

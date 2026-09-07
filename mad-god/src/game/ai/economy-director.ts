@@ -57,6 +57,9 @@ export class EconomyDirector implements IEconomyDirector {
         u.homeId === 0 &&
         u.targetId === 0 &&
         u.carry === 0 &&
+        // v0.31 建营者保护：带建设任务（foundKind）的村民不拉去入住，
+        // 否则训练营工地永远没人起（旧实现 here 被吸走 + occupy 不清 foundKind 双重锁死）。
+        u.foundKind === null &&
         u.job !== "train" &&
         u.job !== "move",
     );
@@ -111,14 +114,27 @@ export class EconomyDirector implements IEconomyDirector {
     const walkers = sim.countKind(this.team, "walker");
     if (walkers < this.profile.armyCap + 2) return;
     const soldiers = this.armyCount(sim);
-    if (soldiers >= this.profile.armyCap) return;
     const kind = this.pickTrainKind(sim);
+    // v0.31 兵种阶梯不被 armyCap 冻结：常备军满员时只停"补座武士"（filler 档），
+    // 缺传教士/火战士/间谍这类编成缺口仍放行——否则满员后阶梯永远走不到特种兵。
+    const special = kind !== "warrior" || sim.countKind(this.team, "warrior") < 2;
+    if (soldiers >= this.profile.armyCap && !special) return;
     // 参考旧 ai.ts:46 的 find：得有可派出的空闲村民才训练。
+    // v0.31 口径与 sim.train 红方分支对齐（homeId===0）且不计建营者，消除"看着有人、
+    // 训练必败"的 12s 空转冷却。
     const trainee = sim.units.find(
-      (u) => u.team === this.team && u.kind === "walker" && u.carry === 0 && u.job !== "train",
+      (u) =>
+        u.team === this.team &&
+        u.kind === "walker" &&
+        u.homeId === 0 &&
+        u.carry === 0 &&
+        u.job !== "train" &&
+        u.foundKind === null,
     );
     if (!trainee) return;
-    const ok = sim.train(this.team, kind);
+    // v0.31 队列限量：补座武士最多补到 cap+2；特种兵一次至多 2 名（配合 train 的切片）。
+    const maxWalkers = kind === "warrior" ? Math.max(0, this.profile.armyCap + 2 - soldiers) : 2;
+    const ok = sim.train(this.team, kind, maxWalkers);
     this.trainCd = ok ? this.profile.trainGapSec : Math.max(2, this.profile.trainGapSec * 1.5);
     if (ok) {
       logger.info("ai-economy", `训练 ${kind}：村民#${trainee.id} 前往营地`, {

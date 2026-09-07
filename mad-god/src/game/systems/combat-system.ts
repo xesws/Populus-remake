@@ -227,10 +227,11 @@ export class CombatSystem implements ISystem {
           continue;
         }
         if (u.atkCd <= 0 && d2 <= range * range) {
-          applyUnitDamage(tu, u.kind);
+          // v0.31 近战伤害也上报 onTeamHurt（改由 applyUnitDamage 内统一结算，传 sim 即报）。
+          applyUnitDamage(tu, u.kind, undefined, sim);
           // v0.12 武士暴击：50% 沿攻击方向击退 2~3 格，并追加伤害（合计 = 普通 ×2）；普攻无特效。
           if (u.kind === "warrior" && tu.hp > 0 && Math.random() < WARRIOR_CRIT_CHANCE) {
-            applyUnitDamage(tu, u.kind);
+            applyUnitDamage(tu, u.kind, undefined, sim);
             if (tu.hp > 0) {
               const knock =
                 WARRIOR_CRIT_KNOCK_MIN + Math.random() * (WARRIOR_CRIT_KNOCK_MAX - WARRIOR_CRIT_KNOCK_MIN);
@@ -690,13 +691,13 @@ export class CombatSystem implements ISystem {
    * - 暴击（FIRE_CRIT_CHANCE）：照抄闪电参数真正打飞（沿弹道方向），落地直接死亡（flyKill）。
    * - 默认：随机方向击退半格并倒地，伤害延到站起瞬间（path-system 结算 downDmg）。
    * v0.17 还手补洞：两种分支（被击飞/被击倒）都落到尾部结算——存活的部落受害者立即还手、
-   * 超视距无目标则朝发射点冲锋，并上报 onTeamHurt 供 AI 防御响应。
+   * 超视距无目标则朝发射点冲锋。v0.31 受袭上报（旧 ③）并入 applyUnitDamage 统一结算。
    */
   fireballHit(sim: Sim, u: Unit, p: Projectile): void {
     p.life = 0;
     // v0.30 大龙不被击退/击坠：中弹只掉血（经护甲与克制）+ 点燃视觉。
     if (u.isFlying()) {
-      applyUnitDamage(u, "firewarrior");
+      applyUnitDamage(u, "firewarrior", undefined, sim);
       u.fireT = Math.max(u.fireT, 2.5);
       return;
     }
@@ -723,8 +724,8 @@ export class CombatSystem implements ISystem {
     // v0.17 还手补洞：被击者只要还活着（含被击飞/被击倒分支）就——
     // ① 立即还手：源头为幽灵 {team, id: -1}（射手可能已阵亡/已移动，不锁具体单位，atkId 被
     //    chaseAttack 清空后由自动索敌接管）；② 超视距又无目标：沿 astar 朝发射点 (p.ox,p.oz)
-    //    冲锋（写 path/pathI/think，thinkUnits 见 path 即放行，不打断玩家移动/训练令）；
-    // ③ 上报 onTeamHurt 供 AI 防御响应。野人（NEUTRAL）不触发。
+    //    冲锋（写 path/pathI/think，thinkUnits 见 path 即放行，不打断玩家移动/训练令）。
+    //    v0.31 受袭上报由 applyUnitDamage（即时/落地延迟结算处）统一完成，此处不再手动报。
     if (u.hp > 0 && isTribe(u.team)) {
       this.retaliate(sim, u, { team: p.team as Team, id: -1 });
       if (
@@ -737,7 +738,6 @@ export class CombatSystem implements ISystem {
         u.pathI = 0;
         u.think = 1.5;
       }
-      sim.onTeamHurt?.(u.team as Team, u.x, u.z);
     }
   }
 }

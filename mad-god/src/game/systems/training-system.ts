@@ -197,7 +197,7 @@ export class TrainingSystem implements ISystem {
     return dist2(x, z, dest.x, dest.z) <= 0.55 * 0.55;
   }
 
-  train(sim: Sim, team: Team, kind: TrainKind): boolean {
+  train(sim: Sim, team: Team, kind: TrainKind, maxWalkers = Infinity): boolean {
     const selected = sim.selectedOf(team);
     let walkers: Unit[];
     if (team === 0) { // BLUE
@@ -220,10 +220,15 @@ export class TrainingSystem implements ISystem {
       if (team !== 0) {
         const t = sim.teams[team];
         if (!t.wanted.includes(campKind)) t.wanted.push(campKind);
-        const already = sim.units.find((u) => u.team === team && u.kind === "walker" && u.foundKind === campKind);
-        if (!already) {
-          const idle = walkers.find((u) => u.carry === 0 && u.job !== "train" && u.job !== "haul" && u.job !== "chop")
-            ?? walkers.find((u) => u.carry === 0 && u.job !== "train");
+        // v0.31 "已有人管"口径扩展：该营地已有 L0 地基/L1 建筑也算覆盖——否则地基落成后
+        // （assignCampFounder 落基即清 foundKind）每次重试都会再派一名营者重复落基。
+        const covered =
+          sim.buildings.some((b) => b.team === team && b.kind === campKind && b.hp > 0) ||
+          sim.units.some((u) => u.team === team && u.kind === "walker" && u.foundKind === campKind);
+        if (!covered) {
+          // v0.31 候选排除已有建设任务（foundKind 非空）的村民：不把别处的营者改派过来。
+          const idle = walkers.find((u) => u.carry === 0 && !u.foundKind && u.job !== "train" && u.job !== "haul" && u.job !== "chop")
+            ?? walkers.find((u) => u.carry === 0 && !u.foundKind && u.job !== "train");
           if (idle) sim.assignCampFounder(idle, campKind);
         }
       }
@@ -231,7 +236,12 @@ export class TrainingSystem implements ISystem {
       return false;
     }
     const queued = walkers.filter((w) => w.job === "train");
-    const ready = walkers.filter((w) => w.job !== "train");
+    // v0.31 建营者不入队：ready 不排除 foundKind 会把正在建营的村民直接训成兵，
+    // 营地请求随之悬空（训练/建营抢人的另一处根因）。
+    // v0.31 队列限量（AI 专用）：旧实现一次成功就全量送人（实测 40+ 村民一次入队），
+    // 无视 armyCap 涌成兵海，还会把兵种阶梯点名的特种兵冲成一大批。
+    let ready = walkers.filter((w) => w.job !== "train" && !w.foundKind);
+    if (Number.isFinite(maxWalkers)) ready = ready.slice(0, Math.max(0, maxWalkers));
     if (!ready.length) return true;
     let camp = camps[0]!;
     const follow = queued[0] ? sim.buildingById(queued[0].targetId) : undefined;

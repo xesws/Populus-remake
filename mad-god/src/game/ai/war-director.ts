@@ -1,10 +1,11 @@
-// v0.17 敌方 AI：军事子脑（WarDirector）——进攻波次编成与受袭防御响应。
-// 波次节奏（waveSize/waveGapSec/reactSec）全部取自 AIProfile；
-// 只通过 Sim 既有接口（setOrder/setMagnet/sendMove/atkId）下发意图，不侵入寻路/战斗系统内部。
+// v0.17 敌方 AI：军事子脑（WarDirector）——进攻波次编成、受袭防御响应、哨塔防御工事。
+// 波次节奏（waveSize/waveGapSec/reactSec）与塔防节奏（towerCap/towerGapSec）全部取自 AIProfile；
+// 只通过 Sim 既有接口（setOrder/setMagnet/sendMove/atkId/assignCampFounder/targetId）下发意图，
+// 不侵入寻路/战斗/生产系统内部。
 
 import { logger } from "../logger";
 import type { Sim } from "../sim";
-import { BLUE, Cell, dist2, RED, Team, UnitKind } from "../types";
+import { BLUE, Cell, dist2, RED, Team, TOWER_GARRISON_MAX, UnitKind } from "../types";
 import { AIProfile } from "./ai-profile";
 import type { IWarDirector } from "./types";
 
@@ -27,6 +28,10 @@ export class WarDirector implements IWarDirector {
   waves = 0;
   /** 受袭事件队列：按 profile.reactSec 延迟后就近派兵，处理完出队 */
   private hurtQueue: HurtEvent[] = [];
+  /** v0.31 受袭上报节流：DoT 类伤害（龙焰/火山等逐帧结算）1s 至多入队一条 */
+  private lastHurtT = -1e9;
+  /** v0.31 上一次落塔（派建塔营者）的游戏时刻；-1e9 表示从未建塔 */
+  private lastTowerTime = -1e9;
 
   constructor(team: Team, profile: AIProfile) {
     this.team = team;
@@ -59,7 +64,7 @@ export class WarDirector implements IWarDirector {
     const foeUnits = sim.units.filter((u) => u.team === foe && u.hp > 0 && u.homeId === 0);
     const focus = this.cluster(foeHouses, foeUnits);
     if (!focus) return false; // 敌方已无建筑/单位，无目标可打
-    // 先收集可参战士兵：无人可发（全员训练/战损）则整波取消，避免空放波次。
+    // 先收集可参战士兵：无人可发（全员训练/战损/驻塔）则整波取消，避免空放波次。
     const marchers = sim.units.filter(
       (u) =>
         u.team === this.team &&
@@ -110,14 +115,18 @@ export class WarDirector implements IWarDirector {
     if (hx >= 0) sim.setMagnet(this.team, hx, hz);
   }
 
-  /** 防御响应入口：sim.onTeamHurt 按 team 分发调用；事件入队，由 update 按 reactSec 延迟派兵。 */
+  /** 防御响应入口：sim.onTeamHurt 按 team 分发调用；事件入队，由 update 按 reactSec 延迟派兵。
+   *  v0.31 加 1s 节流：受袭上报已覆盖全部伤害源（近战/火球/法术/龙焰），DoT 类逐帧结算
+   *  会以 60Hz 刷队列——每秒至多入队一条足够驱动防御响应。 */
   onHurt(sim: Sim, x: number, z: number): void {
+    if (sim.time - this.lastHurtT < 1.0) return;
+    this.lastHurtT = sim.time;
     this.hurtQueue.push({ x, z, t: sim.time });
     // 队列上限：极端高频受袭时丢弃最旧事件，避免无限膨胀。
     if (this.hurtQueue.length > 8) this.hurtQueue.shift();
   }
 
-  /** 每帧驱动：按 tickSec 节流，处理受袭队列（事件过 reactSec 触发防御波次）。
+  /** 每帧驱动：按 tickSec 节流，处理受袭队列（事件过 reactSec 触发防御波次）+ 塔防维护。
    *  波次冷却无需在此维护——waveReady 由 sim.time 纯计算；
    *  attack 状态的兵耗尽检测归 TribeBrain，本类只提供 armySize/waveReady。 */
   update(sim: Sim, dt: number): void {
@@ -126,6 +135,8 @@ export class WarDirector implements IWarDirector {
     this.acc = 0;
     if (sim.winner !== null) return;
     this.processHurt(sim);
+    this.tryBuildTower(sim);
+    this.tryGarrisonTowers(sim);
   }
 
   /** 受袭事件到期处理：事件在队列中待满 reactSec（防御响应超时）即派兵，处理完出队。 */
@@ -166,6 +177,86 @@ export class WarDirector implements IWarDirector {
         x: +x.toFixed(1),
         z: +z.toFixed(1),
       });
+    }
+  }
+
+  /**
+   * v0.31 防御工事：存量未满（含 L0 地基）、冷却已过、且本队有活火战士（塔要有弹药才有意义）
+   * 时，派一名空闲村民朝敌方向落哨塔地基。复用 assignCampFounder 的泛型落基链路
+   * （foundSite 落 L0、1 捆木起升、completeStep 完工），零新系统。
+   */
+  private tryBuildTower(sim: Sim): void {
+    if (this.profile.towerCap <= 0) return;
+    const towers = sim.buildings.filter((b) => b.team === this.team && b.kind === "tower" && b.hp > 0);
+    if (towers.length >= this.profile.towerCap) return;
+    if (sim.time - this.lastTowerTime < this.profile.towerGapSec) return;
+    if (sim.countKind(this.team, "firewarrior") < 1) return;
+    if (sim.units.some((u) => u.team === this.team && u.kind === "walker" && u.foundKind === "tower")) return;
+    const founder = sim.units.find(
+      (u) =>
+        u.team === this.team &&
+        u.kind === "walker" &&
+        u.homeId === 0 &&
+        u.targetId === 0 &&
+        u.atkId === 0 &&
+        u.carry === 0 &&
+        u.job === "idle" &&
+        u.foundKind === null,
+    );
+    if (!founder) return;
+    sim.assignCampFounder(founder, "tower");
+    // 落基成功（地基已出现）或营者已领命（foundKind 挂上、走向工地）才起冷却；
+    // 选址全失败（assignCampFounder 内部清 foundKind）则下个决策周期重试。
+    const placed =
+      founder.foundKind === "tower" ||
+      sim.buildings.some((b) => b.team === this.team && b.kind === "tower" && b.hp > 0);
+    if (placed) {
+      this.lastTowerTime = sim.time;
+      logger.info("ai-war", `派村民#${founder.id} 前往修建哨塔`, {
+        team: this.team,
+        towers: towers.length + 1,
+        cap: this.profile.towerCap,
+      });
+    }
+  }
+
+  /**
+   * v0.31 驻塔：把空闲牛战士分配到有空位的自家 L1 哨塔——sendMove 到塔边 + targetId 指塔，
+   * 与玩家右键路径完全同构，thinkUnits 既有 tryGarrison 在 2.6 格内自动爬塔。
+   * 名额计算含在途者（targetId 已指向该塔），避免超派后堵在塔脚。
+   */
+  private tryGarrisonTowers(sim: Sim): void {
+    const towers = sim.buildings.filter(
+      (b) => b.team === this.team && b.kind === "tower" && b.level >= 1 && b.hp > 0,
+    );
+    if (!towers.length) return;
+    for (const t of towers) {
+      const garrison = sim.towerGarrison(t).length;
+      const inbound = sim.units.filter(
+        (u) => u.team === this.team && u.kind === "firewarrior" && u.homeId === 0 && u.targetId === t.id,
+      ).length;
+      let free = TOWER_GARRISON_MAX - garrison - inbound;
+      if (free <= 0) continue;
+      const idle = sim.units
+        .filter(
+          (u) =>
+            u.team === this.team &&
+            u.kind === "firewarrior" &&
+            u.hp > 0 &&
+            u.homeId === 0 &&
+            u.targetId === 0 &&
+            u.atkId === 0 &&
+            u.job === "idle",
+        )
+        .sort((a, b) => dist2(a.x, a.z, t.x, t.z) - dist2(b.x, b.z, t.x, t.z));
+      for (const f of idle) {
+        if (free <= 0) break;
+        const edge = sim.padEdge(t.x, t.z, t.padW, t.padD, t.yaw, f.x, f.z);
+        sim.sendMove(f, edge.x, edge.z);
+        f.targetId = t.id;
+        f.atkId = 0;
+        free--;
+      }
     }
   }
 
