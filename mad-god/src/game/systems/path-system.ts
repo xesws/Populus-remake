@@ -1,5 +1,5 @@
 import { astar, nearestLand, pullString } from "../path";
-import { Cell, clamp, dist2, sitePad, UNIT_RADIUS, Unit, WORLD } from "../types";
+import { Cell, clamp, dist2, isTribe, sitePad, UNIT_RADIUS, Unit, WORLD } from "../types";
 import { applyUnitDamage } from "../damage";
 import { inDoorSlit, inPad, pushCircleFromPad, TREE_BLOCK_R } from "../world";
 import type { Sim } from "../sim";
@@ -45,11 +45,13 @@ export class PathSystem implements ISystem {
           u.flyVz = 0;
           if (u.flyKill) {
             // v0.12 暴击击飞：摔下来直接死亡。
+            // v0.31.1 击坠致死不经 applyUnitDamage，在此补报受袭（火球暴击链路的唯一上报点）。
+            if (isTribe(u.team)) sim.onTeamHurt?.(u.team, u.x, u.z);
             u.flyKill = false;
             u.flyDmg = 0;
             u.hp = 0;
           } else if (u.flyDmg > 0) {
-            // v0.9 落地伤害：击飞来源（火球）写入的 flyDmg 在落地瞬间结算；法术击飞 flyDmg=0 不受影响。
+            // v0.9 落地伤害：击飞来源（火球/龙卷）写入的 flyDmg 在落地瞬间结算。
             // v0.31 传 sim 上报受袭：这是延迟结算的攻击伤害，AI 防御响应需要感知。
             applyUnitDamage(u, "firewarrior", u.flyDmg, sim);
             u.flyDmg = 0;
@@ -59,9 +61,10 @@ export class PathSystem implements ISystem {
       }
       if (u.downT > 0) {
         // v0.12 倒地：不移动，倒计时；站起瞬间结算火球默认命中的延迟伤害。
+        // v0.31.1 补传 sim：这里是火球默认命中的唯一伤害结算点，漏传 = 火球压制对 AI 完全隐身。
         u.downT = Math.max(0, u.downT - dt);
         if (u.downT === 0 && u.downDmg > 0) {
-          applyUnitDamage(u, "firewarrior", u.downDmg);
+          applyUnitDamage(u, "firewarrior", u.downDmg, sim);
           u.downDmg = 0;
         }
         u.y = sim.world.heightAt(u.x, u.z);

@@ -5,6 +5,7 @@ import {
   Building,
   clamp,
   dist2,
+  isTribe,
   DRAGON_ACQUIRE_INTERVAL,
   DRAGON_BREATH_SPEED,
   DRAGON_CRUISE,
@@ -316,6 +317,8 @@ export class DragonSystem implements ISystem {
     const tu = p.targetUnitId ? sim.unitById(p.targetUnitId) : null;
     if (tu && tu.hp > 0) {
       tu.hp -= FIRE_IMPACT_DMG;
+      // v0.31.1 龙焰对单位伤害同样上报（建筑侧本就走 applyBuildingDamage）。
+      if (isTribe(tu.team)) sim.onTeamHurt?.(tu.team, tu.x, tu.z);
       tu.fireT = Math.max(tu.fireT, 2.5);
       if (tu.hp <= 0 && tu.team === BLUE) sim.toast("一名子民被大龙烧死");
     }
@@ -339,6 +342,8 @@ export class DragonSystem implements ISystem {
         if (u.hp <= 0 || u.team === f.team || u.isFlying() || u.homeId > 0) continue;
         if (dist2(u.x, u.z, f.x, f.z) > f.r * f.r) continue;
         u.hp -= dps * dt;
+        // v0.31.1 火海对单位逐帧伤害同样上报（1s 节流在 WarDirector 侧压平）。
+        if (isTribe(u.team)) sim.onTeamHurt?.(u.team, u.x, u.z);
         u.fireT = Math.max(u.fireT, 0.5);
         if (u.hp <= 0 && u.team === BLUE) sim.toast("一名子民被烈焰吞噬");
       }

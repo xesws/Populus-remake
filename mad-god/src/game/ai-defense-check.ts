@@ -6,6 +6,7 @@
 
 import { AIDirector, AIProfile, TribeBrain } from "./ai";
 import { WarDirector } from "./ai/war-director";
+import { CombatSystem } from "./systems/combat-system";
 import { applyBuildingDamage, applyUnitDamage } from "./damage";
 import { Sim } from "./sim";
 import { BLUE, dist2, RED, Unit } from "./types";
@@ -34,7 +35,9 @@ function walkableNear(sim: Sim, cx: number, cz: number): { x: number; z: number 
   throw new Error("找不到可走点");
 }
 
-/** test 1（D）：近战伤害（applyUnitDamage 传 sim）必须触发防御响应——reactSec 后派兵驰援。 */
+/** test 1（D）：近战伤害（applyUnitDamage 传 sim）必须触发防御响应——reactSec 后派兵驰援。
+ *  前提：3.5s 窗口内 economyScore<0.6、状态机停在 develop，不会 launchWave 抢先改道驰援者
+ * （开局入住率≈0，余量充足；若未来改 economyScore 公式，先核对本前提）。 */
 function testMeleeHurtDispatchesDefenders(): void {
   const sim = new Sim(new World(42));
   const dir = new AIDirector([[RED, AIProfile.normal()]]);
@@ -74,11 +77,51 @@ function testBuildingDamageReports(): void {
   dir.attach(sim);
   const hut = sim.buildings.find((b) => b.team === RED && b.kind === "hut")!;
   applyBuildingDamage(sim, hut, 3);
-  const war = (dir as any).brains[0].war;
-  assert(war.hurtQueue.length === 1, "建筑被打应入队受袭事件");
-  applyBuildingDamage(sim, hut, 3);
+  const war = dir.brains[0].war as any; // hurtQueue 为私有，测试经 any 观测（brains 本身 public）
+  assert(war.hurtQueue.length === 1, "建筑被打应入队受袭事件");  applyBuildingDamage(sim, hut, 3);
   assert(war.hurtQueue.length === 1, "1s 节流窗内的重复上报不重复入队");
   console.log("testBuildingDamageReports ok");
+}
+
+/** test 3b（D 回归锁）：火球命中也必须上报受袭。
+ *  v0.31 曾把 fireballHit 尾部的手动上报随"统一走 applyUnitDamage"移除，但地面单位的
+ *  火球伤害实际延迟到 path-system 落地/起身才结算——漏传导致火球/塔弹压制对 AI 隐身。 */
+function testFireballHitReports(): void {
+  const sim = new Sim(new World(42));
+  const dir = new AIDirector([[RED, AIProfile.normal()]]);
+  dir.attach(sim);
+  // 靶位必须可走：深水点会瞬间溺亡（hp<=0 时 applyUnitDamage 早退、不上报，测不到目标链路）。
+  const post = walkableNear(sim, sim.world.startPad(RED).x + 14, sim.world.startPad(RED).z + 4);
+  const victim: Unit = sim.addUnit(RED, "walker", post.x, post.z);
+  const hp0 = victim.hp;
+  const combat = new CombatSystem();
+  const origRandom = Math.random;
+  Math.random = () => 0.99; // 关闭暴击，走默认击倒（伤害延付路径）
+  combat.fireballHit(sim, victim, {
+    x: victim.x,
+    z: victim.z,
+    y: victim.y + 1,
+    vx: 4,
+    vz: 0,
+    team: BLUE,
+    dmg: 2,
+    life: 1,
+    knock: 0,
+    ox: 22,
+    oz: 26,
+  });
+  Math.random = origRandom;
+  // 轮询"曾入队"口径：事件到期（reactSec=1.5s）后会被 processHurt 消费出队，
+  // 固定时刻断言会和消费时机赛跑。
+  let everQueued = false;
+  for (let t = 0; t < 3 * 20; t++) {
+    sim.tick(0.05);
+    dir.update(sim, 0.05);
+    if (!everQueued && (dir.brains[0].war as any).hurtQueue.length >= 1) everQueued = true;
+  }
+  assert(victim.hp < hp0 || victim.downDmg > 0, "火球延迟伤害应已结算");
+  assert(everQueued, "火球命中应上报受袭（事件曾入队）");
+  console.log("testFireballHitReports ok");
 }
 
 /** test 4（C）：AI 自主建塔——有火战士 + 空闲村民时落塔地基并完工；塔 cap 生效。 */
@@ -186,6 +229,7 @@ function testGarrisonFireEject(): void {
 testMeleeHurtDispatchesDefenders();
 testHurtThrottle();
 testBuildingDamageReports();
+testFireballHitReports();
 testAITowerBuiltWithCap();
 testGarrisonFireEject();
 console.log("ai-defense-check ok (v0.31 受袭感知全覆盖 + 节流 + AI 建塔/驻塔/塔击/弹出)");

@@ -1,4 +1,4 @@
-import { BLUE, clamp, inMap, Team, TREE_REGEN, WATER, WORLD } from "../types";
+import { BLUE, clamp, inMap, isTribe, Team, TREE_REGEN, WATER, WORLD } from "../types";
 import type { Sim } from "../sim";
 import { inPad } from "../world";
 import { Spell, SpellResult } from "./spell";
@@ -130,6 +130,8 @@ export class QuakeSpell extends Spell {
       const here = sim.world.heightAt(u.x, u.z);
       if (q.t > 1.38 && n.d < 0.28 && (here < WATER + 0.06 || rim - here > 0.22)) {
         u.hp = 0;
+        // v0.31.1 地震致死补报受袭（坠缝致死不经 applyUnitDamage）。
+        if (isTribe(u.team)) sim.onTeamHurt?.(u.team, u.x, u.z);
         sim.quakeKill = true;
         sim.quakeKillX = u.x;
         sim.quakeKillZ = u.z;
@@ -157,6 +159,8 @@ export class QuakeSpell extends Spell {
       }
       if (!hit) continue;
       b.hp = 0;
+      // v0.31.1 地震拆房补报受袭。
+      if (isTribe(b.team)) sim.onTeamHurt?.(b.team, b.x, b.z);
       sim.quakeHutDown = true;
     }
   }

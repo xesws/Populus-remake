@@ -1,4 +1,4 @@
-import { BLUE, inMap, Team } from "../types";
+import { BLUE, inMap, isTribe, Team } from "../types";
 import type { Sim } from "../sim";
 import { Spell, SpellResult } from "./spell";
 
@@ -24,6 +24,8 @@ export class BlastSpell extends Spell {
       // v0.30 魔法必中大龙：气浪照样命中，但飞龙不被击飞（只掉血）。
       if (u.isFlying()) {
         u.hp = Math.max(0, u.hp - 6);
+        // v0.31.1 魔法伤害补报受袭。地面分支纯位移不掉血，无需上报。
+        if (isTribe(u.team)) sim.onTeamHurt?.(u.team, u.x, u.z);
         sim.blastHit = true;
         sim.blastHitX = u.x;
         sim.blastHitZ = u.z;

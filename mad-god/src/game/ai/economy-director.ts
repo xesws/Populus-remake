@@ -30,6 +30,8 @@ export class EconomyDirector implements IEconomyDirector {
     this.acc += dt;
     if (this.acc < this.profile.tickSec) return;
     this.acc = 0;
+    // v0.31.1 建营者看门狗：防极端态下 foundKind 永久占死 covered 名额。
+    this.watchdogFounders(sim);
     this.assignHomes(sim);
     this.tryTrain(sim);
     this.expand(sim);
@@ -133,7 +135,14 @@ export class EconomyDirector implements IEconomyDirector {
     );
     if (!trainee) return;
     // v0.31 队列限量：补座武士最多补到 cap+2；特种兵一次至多 2 名（配合 train 的切片）。
-    const maxWalkers = kind === "warrior" ? Math.max(0, this.profile.armyCap + 2 - soldiers) : 2;
+    // v0.31.1 补员档（special 武士）固定派 2：旧公式在特种兵把 soldiers 顶过 cap+2 后
+    // 算出 0，曾把武士线卡成"每 8s 假成功一次"的静默空转。
+    const maxWalkers =
+      kind === "warrior"
+        ? sim.countKind(this.team, "warrior") < 2
+          ? 2
+          : Math.max(0, this.profile.armyCap + 2 - soldiers)
+        : 2;
     const ok = sim.train(this.team, kind, maxWalkers);
     this.trainCd = ok ? this.profile.trainGapSec : Math.max(2, this.profile.trainGapSec * 1.5);
     if (ok) {
@@ -158,6 +167,31 @@ export class EconomyDirector implements IEconomyDirector {
       sim.countKind(this.team, "firewarrior") +
       sim.countKind(this.team, "spy")
     );
+  }
+
+  /** v0.31.1 建营者看门狗：营者挂 foundKind 超 90s 仍未落基（聚落被水域/建筑围死等
+   *  极端态）则卸任回归可指派池——covered 判定不再被永久占住，兵种线保留自愈通道。
+   *  营者常态是"当场落基、foundKind 同帧清空"，锁定窗口极短，90s 阈值只兜真卡死。 */
+  private founderSeen = new Map<number, number>();
+
+  private watchdogFounders(sim: Sim): void {
+    for (const [id, since] of this.founderSeen) {
+      const u = sim.unitById(id);
+      if (!u || u.foundKind === null) {
+        this.founderSeen.delete(id);
+        continue;
+      }
+      if (sim.time - since > 90) {
+        logger.info("ai-economy", `建营者#${id} 长期未落基，看门狗卸任`, { foundKind: u.foundKind });
+        u.foundKind = null;
+        this.founderSeen.delete(id);
+      }
+    }
+    for (const u of sim.units) {
+      if (u.team === this.team && u.kind === "walker" && u.foundKind !== null && !this.founderSeen.has(u.id)) {
+        this.founderSeen.set(u.id, sim.time);
+      }
+    }
   }
 
   /** 兵种优先级（迁移自旧 ai.ts 第 38-45 行）：先武士、视敌方村民补传教士、再火战士/间谍。 */

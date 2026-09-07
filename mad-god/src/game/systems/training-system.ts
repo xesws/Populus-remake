@@ -227,8 +227,10 @@ export class TrainingSystem implements ISystem {
           sim.units.some((u) => u.team === team && u.kind === "walker" && u.foundKind === campKind);
         if (!covered) {
           // v0.31 候选排除已有建设任务（foundKind 非空）的村民：不把别处的营者改派过来。
-          const idle = walkers.find((u) => u.carry === 0 && !u.foundKind && u.job !== "train" && u.job !== "haul" && u.job !== "chop")
-            ?? walkers.find((u) => u.carry === 0 && !u.foundKind && u.job !== "train");
+          // v0.31.1 同时排除在途指派（targetId>0）：assignHomes 刚下过入住令的村民被
+          // 半路改派建营，路过茅屋门口会被 tryOccupy 吸走、当场卸任。
+          const idle = walkers.find((u) => u.carry === 0 && u.targetId === 0 && !u.foundKind && u.job !== "train" && u.job !== "haul" && u.job !== "chop")
+            ?? walkers.find((u) => u.carry === 0 && u.targetId === 0 && !u.foundKind && u.job !== "train");
           if (idle) sim.assignCampFounder(idle, campKind);
         }
       }
@@ -240,9 +242,12 @@ export class TrainingSystem implements ISystem {
     // 营地请求随之悬空（训练/建营抢人的另一处根因）。
     // v0.31 队列限量（AI 专用）：旧实现一次成功就全量送人（实测 40+ 村民一次入队），
     // 无视 armyCap 涌成兵海，还会把兵种阶梯点名的特种兵冲成一大批。
-    let ready = walkers.filter((w) => w.job !== "train" && !w.foundKind);
-    if (Number.isFinite(maxWalkers)) ready = ready.slice(0, Math.max(0, maxWalkers));
-    if (!ready.length) return true;
+    // v0.31.1 限量截空显式拒绝（返回 false）：空切片曾返回 true，economy 误记"训练
+    // 成功"吃满 8s 冷却静默空转——"没人可训"与"训练成功"必须分开。
+    const pool = walkers.filter((w) => w.job !== "train" && !w.foundKind);
+    if (!pool.length) return true; // 全员已在队列/建营：维持旧"已在训"语义
+    const ready = Number.isFinite(maxWalkers) ? pool.slice(0, Math.max(0, maxWalkers)) : pool;
+    if (!ready.length) return false;
     let camp = camps[0]!;
     const follow = queued[0] ? sim.buildingById(queued[0].targetId) : undefined;
     if (follow && follow.hp > 0 && follow.level >= 1) {

@@ -1,4 +1,4 @@
-import { BLUE, inMap, isCampKind, Team } from "../types";
+import { BLUE, inMap, isCampKind, isTribe, Team } from "../types";
 import { inPad } from "../world";
 import type { Sim } from "../sim";
 import { Spell, SpellResult } from "./spell";
@@ -31,6 +31,8 @@ export class LightningSpell extends Spell {
         sim.lightningHitX = u.x;
         sim.lightningHitZ = u.z;
         if (u.team === BLUE) sim.toast("大龙被天雷劈中");
+        // v0.31.1 魔法伤害补报受袭：AI 不再对闪电装死。
+        if (isTribe(u.team)) sim.onTeamHurt?.(u.team, u.x, u.z);
         continue;
       }
       let dx = u.x - x;
@@ -44,6 +46,8 @@ export class LightningSpell extends Spell {
       u.flyVy = 5.6;
       u.y = sim.world.heightAt(u.x, u.z) + 1.55;
       u.hp = Math.max(1, u.hp - 8);
+      // v0.31.1 魔法伤害补报受袭：AI 不再对闪电装死。
+      if (isTribe(u.team)) sim.onTeamHurt?.(u.team, u.x, u.z);
       u.path = [];
       u.pathI = 0;
       u.think = 1.2;
@@ -65,6 +69,8 @@ export class LightningSpell extends Spell {
         b.hp = 0;
         sim.lightningHouse = true;
       }
+      // v0.31.1 魔法伤害补报受袭（骨架/拆没都算被打）。
+      if (isTribe(b.team)) sim.onTeamHurt?.(b.team, b.x, b.z);
     }
   }
 }

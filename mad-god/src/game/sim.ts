@@ -994,6 +994,10 @@ export class Sim {
     u.think = 0;
     u.path = [];
     u.pathI = 0;
+    // v0.31.1 清在途指令：同一决策周期内 assignHomes 可能刚给该村民下过入住令
+    // （targetId 指向茅屋），不清会在路过门口时被 tryOccupy 吸进屋、按新规则当场卸任。
+    u.targetId = 0;
+    u.atkId = 0;
     // v0.31 营地落在自家后方、哨塔顶向敌方前沿（选址轴向见 findCampSite）；kind 透传保证占地判定一致。
     const site = this.findCampSite(u, campKind === "tower", campKind);
     if (!site) {
@@ -1692,8 +1696,11 @@ export class Sim {
       }
     }
     const site = this.findSettleSite(u);
+    // v0.31.1 prep 失败返回 null：返回一个落不了基的点只会让营者带着 foundKind
+    // 随机走位空转（附带每轮 20 点采样的整地副作用）；返回 null 让上层卸任、
+    // 下个训练冷却周期重新选址。
     if (site && this.tryPrepFound(site.x, site.z, u.settleYaw, kind)) return site;
-    return site;
+    return null;
   }
 
   repathSettle(u: Unit): void {

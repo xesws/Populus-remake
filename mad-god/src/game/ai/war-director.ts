@@ -38,14 +38,16 @@ export class WarDirector implements IWarDirector {
     this.profile = profile;
   }
 
-  /** 当前士兵总数（warrior/preacher/firewarrior/spy）。 */
+  /** 当前士兵总数（warrior/preacher/firewarrior/spy）。
+   *  v0.31.1 口径改为野战军（homeId===0）：驻塔牛战士被塔永久吸收、不参与波次与驰援，
+   *  计入门槛会让 waveReady 虚高（塔满即恒真）、波次缩成 1~2 人迷你队。 */
   armySize(sim: Sim): number {
-    return (
-      sim.countKind(this.team, "warrior") +
-      sim.countKind(this.team, "preacher") +
-      sim.countKind(this.team, "firewarrior") +
-      sim.countKind(this.team, "spy")
-    );
+    let n = 0;
+    for (const u of sim.units) {
+      if (u.team !== this.team || u.hp <= 0 || u.homeId > 0) continue;
+      if (this.isFighter(u.kind) || u.kind === "spy") n++;
+    }
+    return n;
   }
 
   /** 波次就绪：兵力 ≥ waveSize 且距上一波 ≥ waveGapSec（纯 sim.time 计算，无内部计时器）。 */
@@ -139,22 +141,26 @@ export class WarDirector implements IWarDirector {
     this.tryGarrisonTowers(sim);
   }
 
-  /** 受袭事件到期处理：事件在队列中待满 reactSec（防御响应超时）即派兵，处理完出队。 */
+  /** 受袭事件到期处理：v0.31.1 每个决策周期只派**一个**最早到期事件——旧实现对同批
+   *  到期事件逐个派兵，后一发会把前一发的驰援者原地改道，两点游击时防御者永远在路上
+   *  折返。未到期事件保留，其余到期事件顺延到后续周期依次处理（决策周期 1s，足够密集）。 */
   private processHurt(sim: Sim): void {
     if (!this.hurtQueue.length) return;
     const due = sim.time - this.profile.reactSec;
-    const keep: HurtEvent[] = [];
-    for (const e of this.hurtQueue) {
-      if (e.t > due) {
-        keep.push(e); // 尚未到反应延迟，留到下一个决策周期
-        continue;
+    let idx = -1;
+    for (let i = 0; i < this.hurtQueue.length; i++) {
+      if (this.hurtQueue[i]!.t <= due) {
+        idx = i;
+        break;
       }
-      this.dispatchDefenders(sim, e.x, e.z);
     }
-    this.hurtQueue = keep;
+    if (idx < 0) return;
+    const e = this.hurtQueue.splice(idx, 1)[0]!;
+    this.dispatchDefenders(sim, e.x, e.z);
   }
 
-  /** 就近派兵：取事发点最近的 min(waveSize, armySize) 名空闲士兵，sendMove 冲向事发点。 */
+  /** 就近派兵：取事发点最近的 min(waveSize, armySize) 名空闲士兵，sendMove 冲向事发点。
+   *  v0.31.1 池子排除 job==="move"：在途驰援者（sendMove 已清 atkId）不再被后续事件改道。 */
   private dispatchDefenders(sim: Sim, x: number, z: number): void {
     const pool = sim.units.filter(
       (u) =>
@@ -163,7 +169,8 @@ export class WarDirector implements IWarDirector {
         u.homeId === 0 &&
         this.isFighter(u.kind) &&
         u.atkId === 0 &&
-        u.job !== "train",
+        u.job !== "train" &&
+        u.job !== "move",
     );
     pool.sort((a, b) => dist2(a.x, a.z, x, z) - dist2(b.x, b.z, x, z));
     const n = Math.min(this.profile.waveSize, this.armySize(sim), pool.length);
@@ -205,11 +212,10 @@ export class WarDirector implements IWarDirector {
     );
     if (!founder) return;
     sim.assignCampFounder(founder, "tower");
-    // 落基成功（地基已出现）或营者已领命（foundKind 挂上、走向工地）才起冷却；
-    // 选址全失败（assignCampFounder 内部清 foundKind）则下个决策周期重试。
-    const placed =
-      founder.foundKind === "tower" ||
-      sim.buildings.some((b) => b.team === this.team && b.kind === "tower" && b.hp > 0);
+    // 落基成功（新增地基）或营者已领命才起冷却；选址失败（foundKind 被清、塔数未变）
+    // 不消耗冷却，下个决策周期重试。v0.31.1 修"误把既有塔当新落基"的假冷却/假日志。
+    const towersNow = sim.buildings.filter((b) => b.team === this.team && b.kind === "tower" && b.hp > 0).length;
+    const placed = founder.foundKind === "tower" || towersNow > towers.length;
     if (placed) {
       this.lastTowerTime = sim.time;
       logger.info("ai-war", `派村民#${founder.id} 前往修建哨塔`, {

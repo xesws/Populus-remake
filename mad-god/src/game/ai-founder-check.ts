@@ -104,9 +104,14 @@ function testLadderReachesFirewarrior(): void {
   for (let i = 0; i < 14; i++) sim.addUnit(RED, "walker", hut.x + 2 + i * 0.4, hut.z + 3);
   const dir = new AIDirector([[RED, AIProfile.normal()]]);
   dir.attach(sim);
-  play(sim, dir, 40); // tryTrain 冷却 8s：足够完成一次决策+训练+转兵
-  const fires = sim.units.filter((u) => u.team === RED && u.kind === "firewarrior");
-  assert(fires.length >= 1, `兵种阶梯应产出火战士（实际 ${fires.length}）`);
+  // v0.31.1 改"训出过"口径：火战士可能随即被受袭驰援/波次抽调战死，在场断言有误判窗口。
+  let everFire = false;
+  for (let t = 0; t < 40 * 20; t++) {
+    sim.tick(0.05);
+    dir.update(sim, 0.05);
+    if (!everFire && sim.units.some((u) => u.team === RED && u.kind === "firewarrior")) everFire = true;
+  }
+  assert(everFire, "兵种阶梯应产出过火战士");
   console.log("testLadderReachesFirewarrior ok");
 }
 

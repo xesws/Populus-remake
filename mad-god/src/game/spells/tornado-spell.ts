@@ -1,4 +1,4 @@
-import { BLUE, clamp, inMap, isCampKind, Team, WORLD } from "../types";
+import { BLUE, clamp, inMap, isCampKind, isTribe, Team, WORLD } from "../types";
 import type { Sim } from "../sim";
 import { inPad } from "../world";
 import { Spell, SpellResult } from "./spell";
@@ -205,6 +205,8 @@ export class TornadoSpell extends Spell {
       if (u.flyVy !== 0) {
         if (!sim.world.land(u.x, u.z)) {
           u.hp = 0;
+          // v0.31.1 龙卷致死补报受袭（甩飞坠海的致死伤害不经 applyUnitDamage）。
+          if (isTribe(u.team)) sim.onTeamHurt?.(u.team, u.x, u.z);
           flung.delete(id);
           // 祭司落水由 cull 统一播报"祭司陨落"，这里只播普通子民。
           if (u.team === BLUE && u.kind !== "shaman") sim.toast("一名子民被甩进海里");
