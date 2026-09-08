@@ -1,11 +1,12 @@
-// v0.17 敌方 AI：经济子脑（入住指派 / 训兵供给 / 法力扩张平地）。
-// 只依赖 Sim 既有接口（sendMove/targetId/train/magnet 下发意图），不侵入移动/寻路/生产系统内部。
-// 节流统一走 profile.tickSec；训练间隔走 profile.trainGapSec；扩张按 profile.expandDrive 概率执行。
+// v0.17 敌方 AI：经济子脑（入住指派 / 法力扩张平地）。
+// 只依赖 Sim 既有接口（sendMove/targetId/magnet 下发意图），不侵入移动/寻路/生产系统内部。
+// v0.34 训兵/建营已拆到 TrainingDirector；本类只留入住与扩张。
+// 节流统一走 profile.tickSec；扩张按 profile.expandDrive 概率执行。
 
 import { LogLevel, logger } from "../logger";
 import type { Sim } from "../sim";
 import { flattenToward } from "../spells";
-import { BLUE, Building, Cell, dist2, houseMaxPop, inMap, RED, Team, TrainKind, WORLD } from "../types";
+import { BLUE, Building, Cell, dist2, houseMaxPop, inMap, RED, Team, WORLD } from "../types";
 import type { World } from "../world";
 import type { AIProfile } from "./ai-profile";
 import type { IEconomyDirector } from "./types";
@@ -14,10 +15,8 @@ export class EconomyDirector implements IEconomyDirector {
   readonly team: Team;
   readonly profile: AIProfile;
 
-  /** 决策计时器：每累计到 profile.tickSec 秒执行一轮（入住指派 / 训兵 / 扩张）。 */
+  /** 决策计时器：每累计到 profile.tickSec 秒执行一轮（入住指派 / 扩张）。 */
   private acc = 0;
-  /** 训兵冷却：成功后置 profile.trainGapSec，失败（缺营地）置更长以等建营地。 */
-  private trainCd = 0;
 
   constructor(team: Team, profile: AIProfile) {
     this.team = team;
@@ -25,15 +24,11 @@ export class EconomyDirector implements IEconomyDirector {
   }
 
   update(sim: Sim, dt: number): void {
-    this.trainCd = Math.max(0, this.trainCd - dt);
     if (sim.winner !== null) return;
     this.acc += dt;
     if (this.acc < this.profile.tickSec) return;
     this.acc = 0;
-    // v0.31.1 建营者看门狗：防极端态下 foundKind 永久占死 covered 名额。
-    this.watchdogFounders(sim);
     this.assignHomes(sim);
-    this.tryTrain(sim);
     this.expand(sim);
   }
 
@@ -109,110 +104,7 @@ export class EconomyDirector implements IEconomyDirector {
     return best;
   }
 
-  // ── (b) 训兵供给 ──────────────────────────────────────────────────────────
-  // 村民池 >= armyCap+2 才允许训练（经济优先），士兵数达到 armyCap 即暂停（把村民留给经济）。
-  private tryTrain(sim: Sim): void {
-    if (this.trainCd > 0) return;
-    const walkers = sim.countKind(this.team, "walker");
-    if (walkers < this.profile.armyCap + 2) return;
-    const soldiers = this.armyCount(sim);
-    const kind = this.pickTrainKind(sim);
-    // v0.31 兵种阶梯不被 armyCap 冻结：常备军满员时只停"补座武士"（filler 档），
-    // 缺传教士/火战士/间谍这类编成缺口仍放行——否则满员后阶梯永远走不到特种兵。
-    const special = kind !== "warrior" || sim.countKind(this.team, "warrior") < 2;
-    if (soldiers >= this.profile.armyCap && !special) return;
-    // 参考旧 ai.ts:46 的 find：得有可派出的空闲村民才训练。
-    // v0.31 口径与 sim.train 红方分支对齐（homeId===0）且不计建营者，消除"看着有人、
-    // 训练必败"的 12s 空转冷却。
-    const trainee = sim.units.find(
-      (u) =>
-        u.team === this.team &&
-        u.kind === "walker" &&
-        u.homeId === 0 &&
-        u.carry === 0 &&
-        u.job !== "train" &&
-        u.foundKind === null,
-    );
-    if (!trainee) return;
-    // v0.31 队列限量：补座武士最多补到 cap+2；特种兵一次至多 2 名（配合 train 的切片）。
-    // v0.31.1 补员档（special 武士）固定派 2：旧公式在特种兵把 soldiers 顶过 cap+2 后
-    // 算出 0，曾把武士线卡成"每 8s 假成功一次"的静默空转。
-    const maxWalkers =
-      kind === "warrior"
-        ? sim.countKind(this.team, "warrior") < 2
-          ? 2
-          : Math.max(0, this.profile.armyCap + 2 - soldiers)
-        : 2;
-    const ok = sim.train(this.team, kind, maxWalkers);
-    this.trainCd = ok ? this.profile.trainGapSec : Math.max(2, this.profile.trainGapSec * 1.5);
-    if (ok) {
-      logger.info("ai-economy", `训练 ${kind}：村民#${trainee.id} 前往营地`, {
-        walkers,
-        army: soldiers,
-        cap: this.profile.armyCap,
-      });
-    } else {
-      logger.throttled("ai-economy:train-fail", 2000, LogLevel.Warn, "ai-economy", `训练 ${kind} 失败：缺训练营或村民不可用`, {
-        walkers,
-        army: soldiers,
-      });
-    }
-  }
-
-  /** 士兵总数（与 IWarDirector.armySize 口径一致：warrior/preacher/firewarrior/spy）。 */
-  private armyCount(sim: Sim): number {
-    return (
-      sim.countKind(this.team, "warrior") +
-      sim.countKind(this.team, "preacher") +
-      sim.countKind(this.team, "firewarrior") +
-      sim.countKind(this.team, "spy")
-    );
-  }
-
-  /** v0.31.1 建营者看门狗：营者挂 foundKind 超 90s 仍未落基（聚落被水域/建筑围死等
-   *  极端态）则卸任回归可指派池——covered 判定不再被永久占住，兵种线保留自愈通道。
-   *  营者常态是"当场落基、foundKind 同帧清空"，锁定窗口极短，90s 阈值只兜真卡死。 */
-  private founderSeen = new Map<number, number>();
-
-  private watchdogFounders(sim: Sim): void {
-    for (const [id, since] of this.founderSeen) {
-      const u = sim.unitById(id);
-      if (!u || u.foundKind === null) {
-        this.founderSeen.delete(id);
-        continue;
-      }
-      if (sim.time - since > 90) {
-        logger.info("ai-economy", `建营者#${id} 长期未落基，看门狗卸任`, { foundKind: u.foundKind });
-        u.foundKind = null;
-        this.founderSeen.delete(id);
-      }
-    }
-    for (const u of sim.units) {
-      if (u.team === this.team && u.kind === "walker" && u.foundKind !== null && !this.founderSeen.has(u.id)) {
-        this.founderSeen.set(u.id, sim.time);
-      }
-    }
-  }
-
-  /** 兵种优先级（迁移自旧 ai.ts 第 38-45 行）：先武士、视敌方村民补传教士、再火战士/间谍。 */
-  private pickTrainKind(sim: Sim): TrainKind {
-    const me = this.team;
-    const foe: Team = me === RED ? BLUE : RED;
-    const myWar = sim.countKind(me, "warrior");
-    const myPreach = sim.countKind(me, "preacher");
-    const myFire = sim.countKind(me, "firewarrior");
-    const mySpy = sim.countKind(me, "spy");
-    const foeWalk = sim.countKind(foe, "walker");
-    if (myWar < 2) return "warrior";
-    if (myPreach < 1 && foeWalk >= 1) return "preacher";
-    if (myFire < 1) return "firewarrior";
-    if (mySpy < 1) return "spy";
-    if (myPreach < 2 && foeWalk >= 2) return "preacher";
-    if (myFire < myWar) return "firewarrior";
-    return "warrior";
-  }
-
-  // ── (c) 扩张平地 ──────────────────────────────────────────────────────────
+  // ── (b) 扩张平地 ──────────────────────────────────────────────────────────
   // 法力 > 容量 55% 时按 profile.expandDrive 概率执行；四个方法自旧 GodAI 原样迁移。
   private expand(sim: Sim): void {
     const t = sim.teams[this.team];

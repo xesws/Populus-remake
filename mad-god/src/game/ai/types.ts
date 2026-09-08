@@ -1,6 +1,6 @@
 // v0.17 敌方 AI 系统：模块间接口协议（schema 契约文件之一）。
 // 各子脑（Director）只依赖本文件与 AIProfile，互不 import 彼此实现——保证可并行开发与替换。
-// 驱动原则：AI 只通过 Sim 既有接口（order/targetId/atkId/magnet/train）下发意图，
+// 驱动原则：AI 只通过 Sim 既有接口（order/targetId/atkId/magnet/train/assignCampFounder/leaveBuilding）下发意图，
 // 不侵入移动/寻路/生产等系统内部。
 
 import type { Sim } from "../sim";
@@ -20,12 +20,20 @@ export interface ITribeDirector {
 
 /**
  * 经济子脑契约（EconomyDirector 实现）。
- * 职责：入住指派（修"红方永不入住→不生产"断链）、训兵供给、法力扩张平地。
+ * 职责：入住指派（修"红方永不入住→不生产"断链）、法力扩张平地。
+ * v0.34 训兵/建营已拆到 ITrainingDirector，不再由经济子脑副作用触发。
  */
 export interface IEconomyDirector extends ITribeDirector {
   /** 经济健康度 0~1：茅屋入住率与人口规模的综合评分，供状态机迁移使用。 */
   economyScore(sim: Sim): number;
 }
+
+/**
+ * 训兵子脑契约（TrainingDirector 实现）。
+ * 职责：营地维护（缺营派建、雷电拆营后重建）与编制补缺（常备武士/牛战士配额，不因战死重跑阶梯）。
+ * 建营不要求村民盈余；训兵仍走 Sim.train。
+ */
+export interface ITrainingDirector extends ITribeDirector {}
 
 /**
  * 军事子脑契约（WarDirector 实现）。

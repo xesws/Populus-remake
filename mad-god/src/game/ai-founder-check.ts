@@ -89,7 +89,7 @@ function testFoundationCoversWanted(): void {
   console.log("testFoundationCoversWanted ok");
 }
 
-/** test 5（A4+阶梯）：兵种阶梯能走到火战士——有 2 武士 + 1 传教士且无火战士时，下一轮训的必须是火战士。 */
+/** test 5（A4+并行配额）：L1 三营 + 2 武士 + 1 传教士 + 无火战士时，40s 内应训出过牛战士（v0.34 不再要求先走完传教士阶梯才开训）。 */
 function testLadderReachesFirewarrior(): void {
   const sim = new Sim(new World(42));
   const hut = redHut(sim);
@@ -111,7 +111,7 @@ function testLadderReachesFirewarrior(): void {
     dir.update(sim, 0.05);
     if (!everFire && sim.units.some((u) => u.team === RED && u.kind === "firewarrior")) everFire = true;
   }
-  assert(everFire, "兵种阶梯应产出过火战士");
+  assert(everFire, "并行配额应产出过牛战士");
   console.log("testLadderReachesFirewarrior ok");
 }
 
@@ -156,7 +156,7 @@ function testEndToEndAndHomeSideCamps(): void {
   assert(camps.some((b) => b.kind === "warriorHut"), "480s 内应建成武士营");
   assert(camps.some((b) => b.kind === "temple"), "480s 内应建成神庙（传教士线打通）");
   assert(camps.some((b) => b.kind === "fireHut"), "480s 内应建成火战士营（旧实现 0 次的断链已修复）");
-  assert(everFire, "480s 内应训出过至少 1 名火战士（兵种阶梯走通）");
+  assert(everFire, "480s 内应训出过至少 1 名牛战士（并行配额走通）");
   const redPad = sim.world.startPad(RED);
   for (const c of camps) {
     const dRed = dist2(c.x, c.z, redPad.x, redPad.z);
@@ -172,4 +172,4 @@ testBatchTrainSparesFounder();
 testFoundationCoversWanted();
 testLadderReachesFirewarrior();
 testEndToEndAndHomeSideCamps();
-console.log("ai-founder-check ok (v0.31 建营者保护：卸任/免征/免入住/地基覆盖 + 兵种阶梯到火战士 + 营地后方选址)");
+console.log("ai-founder-check ok (v0.31 建营者保护：卸任/免征/免入住/地基覆盖 + v0.34 并行配额训出牛战士 + 营地后方选址)");

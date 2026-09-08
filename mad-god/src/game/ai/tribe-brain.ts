@@ -1,10 +1,11 @@
-// v0.17 敌方 AI：战略大脑——按 tickSec 周期驱动经济/军事/神力三个子脑，并迁移 发展→攒兵→进攻→重整 状态机。
+// v0.17 敌方 AI：战略大脑——按 tickSec 周期驱动经济/训兵/军事/神力四个子脑，并迁移 发展→攒兵→进攻→重整 状态机。
 import type { Sim } from "../sim";
 import type { Team } from "../types";
 import { logger } from "../logger";
 import type { AIProfile } from "./ai-profile";
 import type { StrategicState } from "./types";
 import { EconomyDirector } from "./economy-director";
+import { TrainingDirector } from "./training-director";
 import { WarDirector } from "./war-director";
 import { SpellDirector } from "./spell-director";
 
@@ -15,6 +16,7 @@ export class TribeBrain {
   readonly team: Team;
   readonly profile: AIProfile;
   readonly economy: EconomyDirector;
+  readonly training: TrainingDirector;
   readonly war: WarDirector;
   readonly spell: SpellDirector;
 
@@ -32,19 +34,21 @@ export class TribeBrain {
     this.team = team;
     this.profile = profile;
     this.economy = new EconomyDirector(team, profile);
+    this.training = new TrainingDirector(team, profile);
     this.war = new WarDirector(team, profile);
     this.spell = new SpellDirector(team, profile);
   }
 
-  /** 每帧驱动：到决策周期才让三个子脑思考一次，并推进战略状态机。 */
+  /** 每帧驱动：到决策周期才让四个子脑思考一次，并推进战略状态机。 */
   update(sim: Sim, dt: number): void {
     this.acc += dt;
     if (this.acc < this.profile.tickSec) return;
     this.acc = 0;
 
-    // 三个子脑并行推进：经济（入住/训兵/平地）、军事（波次与防御）、神力（施法）。
+    // 四个子脑并行推进：经济（入住/平地）、训兵（建营/编制）、军事（波次与防御）、神力（施法）。
     // 注意传完整决策周期而非单帧 dt：子脑内部还有自己的 acc 节流，传单帧会让决策周期被拉长 20 倍。
     this.economy.update(sim, this.profile.tickSec);
+    this.training.update(sim, this.profile.tickSec);
     this.war.update(sim, this.profile.tickSec);
     this.spell.update(sim, this.profile.tickSec);
 

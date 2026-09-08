@@ -25,6 +25,10 @@ export class AIProfile {
   towerCap = 2;
   /** v0.31 两次落塔之间的最小间隔（秒） */
   towerGapSec = 45;
+  /** v0.34 常备武士下限：缺口优先补，不因战死重跑兵种阶梯 */
+  warriorMin = 2;
+  /** v0.34 常备牛战士（firewarrior）下限：武士营落成后并行开训 */
+  fireMin = 1;
 
   static easy(): AIProfile {
     const p = new AIProfile();
