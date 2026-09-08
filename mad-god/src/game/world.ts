@@ -17,6 +17,7 @@ import {
 import { WorldGen } from "./world-gen";
 import { MASK_CHANNEL, MASK_PEAK, type FeatureStat } from "./world-gen/terrain-features";
 import { MapSmoother, type SmoothReport } from "./map-smoother";
+import { logger } from "./logger";
 
 export interface Pad {
   x: number;
@@ -461,6 +462,19 @@ export class World {
   }
 
   setSample(ix: number, iz: number, v: number): void {
+    // v0.31.2 熔断净化：非有限高度（NaN/±Inf）说明调用方已算错，直接丢弃这次写入
+    // 并带堆栈落盘（logs/game.log），绝不让污染进高度场扩散。游戏本身不崩。
+    // 背景：v0.31.2 之前 flattenPad 平滑遍越界读会写 NaN，一个 NaN 经 3×3 平均
+    // 扩散到上千格 → 地形透洞（露出深蓝水面）+ 寻路全灭（AI 卡死）。
+    if (!Number.isFinite(v)) {
+      logger.error("terrain", `setSample 熔断非有限高度 v=${String(v)}`, {
+        ix,
+        iz,
+        v: String(v),
+        stack: new Error().stack ?? "",
+      });
+      return;
+    }
     if (!this.inSample(ix, iz)) return;
     const nv = clamp(v, 0, MAX_H);
     const i = this.idx(ix, iz);
@@ -876,8 +890,16 @@ export class World {
       }
     }
     // v0.13 环形带 1 轮松弛：圆滑缓坡两端拐角（只写环形带，pad 内部保持精确平整）。
-    for (let iz = minIz; iz <= maxIz; iz++) {
-      for (let ix = minIx; ix <= maxIx; ix++) {
+    // v0.31.2 越界修复：循环钳到 [1, SAMPLES-2]（与 smoothField 同口径）。旧写法在整地位置
+    // 贴地图边时，3×3 求和读到 idx(ix±1, iz±1) 越界 → undefined → NaN 写进高度场，
+    // 再经一切平均/插值扩散（实测 seed=2050 群岛图：14 格 NaN 扩到 2878 格，红方被灭）。
+    // 第一遍（pad 内精确平整 + 环带 blend）仍覆盖边缘格，只是不再对最外圈做 cosmetic 平滑。
+    const loIx = Math.max(1, minIx);
+    const loIz = Math.max(1, minIz);
+    const hiIx = Math.min(SAMPLES - 2, maxIx);
+    const hiIz = Math.min(SAMPLES - 2, maxIz);
+    for (let iz = loIz; iz <= hiIz; iz++) {
+      for (let ix = loIx; ix <= hiIx; ix++) {
         const px = ix * STEP;
         const pz = iz * STEP;
         if (inPad(px, pz, pad, 0.45) || !inPad(px, pz, pad, 2.3)) continue;
