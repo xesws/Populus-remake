@@ -1,10 +1,11 @@
 // v0.34 敌方 AI：训兵子脑（营地维护 / 编制补缺 / 建营者看门狗）。
 // 只通过 Sim 既有接口（assignCampFounder / train / leaveBuilding）下发意图，
 // 不侵入移动/寻路/生产/雷电伤害。建营不要求村民盈余；训兵仍走 Sim.train。
+// v0.35 训兵保底：入住需求 + founderSlack，fillingFloor 也不把村民训光。
 
 import { LogLevel, logger } from "../logger";
 import type { Sim } from "../sim";
-import { BLUE, BuildingKind, CAMP_FOR, RED, Team, TrainKind, Unit } from "../types";
+import { BLUE, BuildingKind, CAMP_FOR, houseMaxPop, RED, Team, TrainKind, Unit } from "../types";
 import type { AIProfile } from "./ai-profile";
 import type { ITrainingDirector } from "./types";
 
@@ -66,6 +67,22 @@ export class RosterPolicy {
     if (s.warriorHutL1) return "warrior";
     if (s.fireHutL1) return "firewarrior";
     return null;
+  }
+
+  /** 训兵后至少留下 occupyNeed 名入住村民 + founderSlack 名建营机动。 */
+  walkerReserve(occupyNeed: number): number {
+    return Math.max(0, occupyNeed) + this.profile.founderSlack;
+  }
+
+  /** fillingFloor 也不破保底：训完后村民数必须仍 >= reserve。 */
+  canAffordTrain(walkers: number, occupyNeed: number, batch = 1): boolean {
+    return walkers - batch >= this.walkerReserve(occupyNeed);
+  }
+
+  /** 每次只训 1 人，避免一次把户外村民全送进营。 */
+  trainBatch(walkers: number, occupyNeed: number): number {
+    const reserve = this.walkerReserve(occupyNeed);
+    return walkers - reserve >= 1 ? 1 : 0;
   }
 }
 
@@ -210,6 +227,17 @@ export class TrainingDirector implements ITrainingDirector {
     return null;
   }
 
+  /** 入住保底人数：每座活茅屋 min(occupyTarget, 容量)；无茅屋则按 occupyTarget 留人去盖新宅。 */
+  private occupyNeed(sim: Sim): number {
+    const huts = sim.buildings.filter(
+      (b) => b.team === this.team && b.kind === "hut" && b.level >= 1 && b.hp > 0,
+    );
+    if (!huts.length) return this.profile.occupyTarget;
+    let need = 0;
+    for (const h of huts) need += Math.min(this.profile.occupyTarget, houseMaxPop(h.level));
+    return need;
+  }
+
   private tryTrain(sim: Sim): void {
     if (this.trainCd > 0) return;
     const snap = this.snapshot(sim);
@@ -217,8 +245,12 @@ export class TrainingDirector implements ITrainingDirector {
     if (!kind) return;
     const campKind = CAMP_FOR[kind];
     if (!this.hasCamp(sim, campKind, true)) return;
-    const filling = this.policy.fillingFloor(snap, kind);
+    const occupyNeed = this.occupyNeed(sim);
     const walkers = sim.countKind(this.team, "walker");
+    const batch = this.policy.trainBatch(walkers, occupyNeed);
+    if (batch <= 0) return;
+    const filling = this.policy.fillingFloor(snap, kind);
+    // 编制溢出仍要村民盈余；补常备下限只放宽 armyCap，不放宽 walker 保底。
     if (!filling && walkers < this.profile.armyCap + 2) return;
     const soldiers = snap.warrior + snap.preacher + snap.firewarrior + snap.spy;
     if (!filling && soldiers >= this.profile.armyCap && kind === "warrior") return;
@@ -229,13 +261,14 @@ export class TrainingDirector implements ITrainingDirector {
         u.hp > 0 &&
         u.homeId === 0 &&
         u.carry === 0 &&
+        u.targetId === 0 &&
         u.job !== "train" &&
+        u.job !== "haul" &&
+        u.job !== "chop" &&
         u.foundKind === null,
     );
     if (!trainee) return;
-    const maxWalkers = filling || kind !== "warrior" ? 2 : Math.max(0, this.profile.armyCap + 2 - soldiers);
-    if (maxWalkers <= 0) return;
-    const ok = sim.train(this.team, kind, maxWalkers);
+    const ok = sim.train(this.team, kind, batch);
     if (ok) {
       this.trainCd = this.profile.trainGapSec;
       logger.info("ai-train", `训练 ${kind}：村民#${trainee.id} 前往营地`, {
@@ -243,6 +276,7 @@ export class TrainingDirector implements ITrainingDirector {
         army: soldiers,
         cap: this.profile.armyCap,
         filling,
+        reserve: this.policy.walkerReserve(occupyNeed),
       });
     } else {
       logger.throttled("ai-train:fail", 2000, LogLevel.Warn, "ai-train", `训练 ${kind} 失败：缺营或村民不可用`, {

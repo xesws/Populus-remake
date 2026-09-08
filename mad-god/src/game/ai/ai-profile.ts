@@ -29,6 +29,8 @@ export class AIProfile {
   warriorMin = 2;
   /** v0.34 常备牛战士（firewarrior）下限：武士营落成后并行开训 */
   fireMin = 1;
+  /** v0.35 建营机动名额：训兵保底 = 入住需求 + 该值，禁止把村民训光 */
+  founderSlack = 1;
 
   static easy(): AIProfile {
     const p = new AIProfile();

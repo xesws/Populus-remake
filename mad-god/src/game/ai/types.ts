@@ -31,7 +31,7 @@ export interface IEconomyDirector extends ITribeDirector {
 /**
  * 训兵子脑契约（TrainingDirector 实现）。
  * 职责：营地维护（缺营派建、雷电拆营后重建）与编制补缺（常备武士/牛战士配额，不因战死重跑阶梯）。
- * 建营不要求村民盈余；训兵仍走 Sim.train。
+ * 建营不要求村民盈余；训兵仍走 Sim.train，但必须留入住+建营保底村民（fillingFloor 也不抽空经济）。
  */
 export interface ITrainingDirector extends ITribeDirector {}
 

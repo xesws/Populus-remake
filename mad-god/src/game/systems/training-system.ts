@@ -211,7 +211,21 @@ export class TrainingSystem implements ISystem {
         return false;
       }
     } else {
-      walkers = sim.units.filter((u) => u.team === team && u.kind === "walker" && u.homeId === 0);
+      // v0.35 AI 训兵池：只收真正空闲的户外村民。在途入住（targetId>0）/建营者/
+      // 搬运砍树若进池，会把刚被 assignHomes 指派的人拉去训武士，茅屋空置、人口停产。
+      walkers = sim.units.filter(
+        (u) =>
+          u.team === team &&
+          u.kind === "walker" &&
+          u.hp > 0 &&
+          u.homeId === 0 &&
+          u.carry === 0 &&
+          u.foundKind === null &&
+          u.targetId === 0 &&
+          u.job !== "haul" &&
+          u.job !== "chop" &&
+          !sim.inSwamp(u),
+      );
       if (!walkers.length) return false;
     }
     const campKind = CAMP_FOR[kind];

@@ -1,4 +1,5 @@
 // v0.34 敌方 AI 测试（feature：独立 TrainingDirector + 并行常备配额 + 雷电拆营后重建）。
+// v0.35 村民保底：补编制不得把入住/建营村民训光，否则茅屋停产、再也盖不了营。
 // 背景：旧链路把建营挂在失败的 train() 副作用上——村民不足静默跳过、火战士被 2 武士+1 传教士
 // 阶梯锁死、雷电拆营后 trainCd 空转。本文件验证：武士营 L1 即开训火战士营、无武士仍训牛战士、
 // 村民不足仍从茅屋拉人重建、重建到 L1 后立刻复训、武士营与火战士营独立恢复。
@@ -6,7 +7,7 @@
 
 import { AIDirector, AIProfile, RosterPolicy, type RosterSnapshot } from "./ai";
 import { Sim } from "./sim";
-import { BuildingKind, RED } from "./types";
+import { BLUE, BuildingKind, RED } from "./types";
 import { World } from "./world";
 
 function assert(cond: boolean, msg: string): void {
@@ -84,6 +85,11 @@ function testRosterPolicyParallel(): void {
   const floors = { ...warFloor, firewarrior: 1 };
   assert(p.floorsMet(floors), "2 武士 + 1 牛战士即达标");
   assert(p.wantedCamps(floors).includes("temple"), "下限达标后神庙作为溢出");
+  assert(p.walkerReserve(4) === 5, "入住 4 + founderSlack 1 = 保底 5");
+  assert(!p.canAffordTrain(4, 4), "4 村民不够保底，禁止开训（含补编制）");
+  assert(!p.canAffordTrain(5, 4), "刚好保底仍禁止开训");
+  assert(p.canAffordTrain(6, 4), "6 村民可训 1 人并留下保底");
+  assert(p.trainBatch(6, 4) === 1 && p.trainBatch(5, 4) === 0, "每次只训 1 人，保底下 batch=0");
   console.log("testRosterPolicyParallel ok");
 }
 
@@ -194,10 +200,38 @@ function testWarriorHutRebuildIndependent(): void {
   console.log("testWarriorHutRebuildIndependent ok");
 }
 
+/** T6：开局村民 + L1 武士营，不得在 90s 内把村民训光——茅屋要继续入住并生产。 */
+function testDoesNotDrainStartingVillagers(): void {
+  const sim = new Sim(new World(42));
+  const hut = redHut(sim);
+  placeCamp(sim, "warriorHut", hut.x + 6, hut.z);
+  for (const u of sim.units) {
+    if (u.team === BLUE && u.kind === "shaman") u.hp = 0;
+  }
+  sim.tick(0.05);
+  const walkers0 = sim.countKind(RED, "walker");
+  const dir = new AIDirector([[RED, AIProfile.normal()]]);
+  dir.attach(sim);
+  play(sim, dir, 90);
+  const walkers = sim.countKind(RED, "walker");
+  const warriors = sim.countKind(RED, "warrior");
+  const dwell = sim.buildings
+    .filter((b) => b.team === RED && b.kind === "hut" && b.hp > 0)
+    .reduce((n, b) => n + b.dwell, 0);
+  const born = sim.buildings
+    .filter((b) => b.team === RED && b.kind === "hut")
+    .reduce((n, b) => n + b.born, 0);
+  assert(walkers >= 1, `90s 后应仍有村民（${walkers0} → ${walkers}，武士 ${warriors}），否则无法建营/生产`);
+  assert(dwell >= 1, `茅屋应仍有入住（dwell=${dwell}），训兵不得抽空生产`);
+  assert(born > 0, `茅屋应继续生产（born=${born}）`);
+  console.log("testDoesNotDrainStartingVillagers ok");
+}
+
 testRosterPolicyParallel();
 testL1WarriorHutWantsFireHut();
 testZeroWarriorsStillTrainFirewarrior();
 testLightningCullFoundsFromDweller();
 testRebuildThenRetrainFirewarrior();
 testWarriorHutRebuildIndependent();
-console.log("ai-train-recover-check ok (v0.34 TrainingDirector：并行配额 + 雷电拆营重建 + 复训)");
+testDoesNotDrainStartingVillagers();
+console.log("ai-train-recover-check ok (v0.34 TrainingDirector：并行配额 + 雷电拆营重建 + 复训；v0.35 村民保底)");
