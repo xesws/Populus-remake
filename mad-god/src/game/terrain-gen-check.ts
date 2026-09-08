@@ -1,5 +1,5 @@
 /**
- * v0.24 地图生成检查（模板化大世界：72 格 + 六地貌 + 种子可复现 + 单连通大陆 + 强制平滑）。
+ * v0.24 地图生成检查（模板化大世界：72 格 + 六地貌 + 种子可复现 + 连通/分裂双模式 + 强制平滑）。
  * v0.25 阶段 1 追加：地形动态范围（色带多样性 / 高度标准差 / 可建地坡度守护 / 构图耗时）
  *                  与域扭曲自检（有限有界、同 seed 可复现、x/z 两分量互相独立）。
  *
@@ -8,8 +8,9 @@
  *                  + 模块加载期建静态数组，同 seed 跨进程是两张不同的图，测试随机 flaky）
  *   b) 多样性   —— 相邻 seed 必须真抽到不同地貌（曾经 RNG 首次输出与 seed 线性相关，
  *                  15 个 seed 里 14 个都是同一模板，"每张图不一样"名存实亡）
- *   c) 单连通   —— 陆地只能有一个连通域，双方出生点同域且分隔足够远
- *                  （曾经出生点虽在同域、小块飞地仍是"可走陆地"，取点取到孤岛上
+ *   c) 连通/分裂 —— 连通图陆地只能有一个连通域（双方出生点同域且分隔足够远）；
+ *                  分裂图恰 2~3 座成岛（深断言：出生分布/回退合法/资源均等见 island-check.ts）
+ *                  （曾经出生点虽在同域、小块飞地仍是“可走陆地”，取点取到孤岛上
  *                   astar 直接给不出路径，move-check 10 次挂 4 次）
  *   d) 平滑度   —— 零 NaN、坡度低于阈值、图边框不再是漏网的陡壁
  *   e) 无绊人缝 —— 不许存在"两端可走、线段中间入水"的边（点判据与步进判据口径打架，
@@ -126,24 +127,32 @@ function testDiversity(): void {
   console.log(`testDiversity ok（${ids.size} 种模板，陆地 ${lo.toFixed(0)}%~${hi.toFixed(0)}%）`);
 }
 
-/** c) 单连通大陆 + 双方出生点同域且分隔 ≥36 格。 */
-function testSingleLandmass(): void {
+/** c) 连通/分裂双模式：连通图走旧口径（单连通＋同域＋分隔）；分裂图只验成岛数与出生点可走
+ *（深断言：分岛/回退/填平合法性＋资源均等＋红方自理见 island-check.ts）。 */
+function testLandmassMode(): void {
   for (const seed of [1, 5, 7, 11, 42, 88]) {
     const w = new World(seed);
     const { labels, sizes } = landComponents(w);
-    assert(sizes.length <= 1, `seed ${seed}(${w.templateId}) 陆地连通域必须唯一（实际 ${sizes.length} 块）`);
+    const big = sizes.filter((n) => n >= 500).length;
     const li = (x: number, z: number) => labels[(((z / STEP) | 0) * SAMPLES + ((x / STEP) | 0)) | 0];
     const a = w.startPad(BLUE);
     const b = w.startPad(RED);
-    assert(li(a.x, a.z) === li(b.x, b.z), `seed ${seed} 双方出生点必须在同一连通域`);
-    const d = Math.hypot(a.x - b.x, a.z - b.z);
-    // 分隔下限按模板分别判：其余五种模板实测 ≥36.8 格，而**半岛**是从图边伸入的
-    // 细长楔形（纵深 0.55~0.65 world），锚点取在中线 0.3/0.6 两处，几何上限就是
-    // ~27 格——把全局阈值调低会掩盖别处真的变挤，故这里用模板各自的下限。
-    const minD = w.templateId === "peninsula" ? 24 : 36;
-    assert(d >= minD, `seed ${seed}(${w.templateId}) 双方出生点分隔 ${d.toFixed(1)} 格 ≥${minD}`);
+    if (!w.splitIsles) {
+      assert(sizes.length <= 1, `seed ${seed}(${w.templateId}) 连通图陆地连通域必须唯一（实际 ${sizes.length} 块）`);
+      assert(li(a.x, a.z) === li(b.x, b.z), `seed ${seed} 双方出生点必须在同一连通域`);
+      const d = Math.hypot(a.x - b.x, a.z - b.z);
+      // 分隔下限按模板分别判：其余五种模板实测 ≥36.8 格，而**半岛**是从图边伸入的
+      // 细长楔形（纵深 0.55~0.65 world），锚点取在中线 0.3/0.6 两处，几何上限就是
+      // ~27 格——把全局阈值调低会掩盖别处真的变挤，故这里用模板各自的下限。
+      const minD = w.templateId === "peninsula" ? 24 : 36;
+      assert(d >= minD, `seed ${seed}(${w.templateId}) 双方出生点分隔 ${d.toFixed(1)} 格 ≥${minD}`);
+      continue;
+    }
+    assert(big >= 2 && big <= 3, `seed ${seed}(${w.templateId}) 分裂图须 2~3 座成岛（实际 ${big}）`);
+    assert(w.walkableAt(a.x, a.z), `seed=${seed} 分裂图蓝出生点须可走`);
+    assert(w.walkableAt(b.x, b.z), `seed=${seed} 分裂图红出生点须可走`);
   }
-  console.log("testSingleLandmass ok");
+  console.log("testLandmassMode ok（连通单域＋分隔 / 分裂 2~3 岛）");
 }
 
 /** d) 平滑度：零 NaN、坡度达标（含图边框——曾经整圈没被钳制）。 */
@@ -187,8 +196,10 @@ function testNoTraps(): void {
  *    当前构图耗时已达 ~450ms，留作后续独立优化项。
  */
 function testPathsComplete(): void {
-  for (const seed of [7, 42, 88]) {
+  // v0.33 pin 连通 seed：分裂图双基地隔海（船的事），基地互达断言只在连通图成立。
+  for (const seed of [11, 42, 88]) {
     const w = new World(seed);
+    assert(!w.splitIsles, `seed=${seed} 须为连通图（分裂图基地隔海）`);
     const a = w.startPad(BLUE);
     const b = w.startPad(RED);
     const p = astar(w, a.x, a.z, b.x, b.z);
@@ -558,8 +569,10 @@ function testWaterFeatures(): void {
  * 步骤就是它自己声称要保证的三件事：切开了 → 修得回 → 修完仍然单连通且双方互达。
  */
 function testFordRepair(): void {
-  for (const seed of [11, 42]) {
+  // v0.33 pin 连通 seed（11 大陆 / 13 大陆）：分裂图 repair 后仍是多岛，单连通断言只在连通图成立。
+  for (const seed of [11, 13]) {
     const w = new World(seed);
+    assert(!w.splitIsles, `seed=${seed} 须为连通图（分裂图不适用单连通断言）`);
     const before = landComponents(w).sizes.length;
     // 找主陆的东西边界，在腰部刻一道 1 格宽、贯穿南北的水墙（登记 CHANNEL，与河流同口径）
     let minIx = SAMPLES;
@@ -599,7 +612,7 @@ function testFordRepair(): void {
 function main(): void {
   testReproducible();
   testDiversity();
-  testSingleLandmass();
+  testLandmassMode();
   testSmoothness();
   testNoTraps();
   testPathsComplete();
@@ -611,7 +624,7 @@ function main(): void {
   testWaterFeatures();
   testFordRepair();
   console.log(
-    "terrain-gen-check ok (v0.24 地图生成：可复现 / 六模板多样性 / 单连通大陆 / 平滑无绊人缝 / 寻路与行军 + v0.25 阶段1：色带多样性与坡度守护 / 域扭曲自检 + v0.25 阶段2：山脉落地与存活/成规模峰顶区/出生点不压山 + v0.25 阶段3：水系存活率与陆地不被吃光)",
+    "terrain-gen-check ok (v0.24 地图生成：可复现 / 六模板多样性 / 连通分裂双模式 / 平滑无绊人缝 / 寻路与行军 + v0.25 阶段1：色带多样性与坡度守护 / 域扭曲自检 + v0.25 阶段2：山脉落地与存活/成规模峰顶区/出生点不压山 + v0.25 阶段3：水系存活率与陆地不被吃光)",
   );
 }
 

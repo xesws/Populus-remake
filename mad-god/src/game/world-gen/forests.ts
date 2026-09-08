@@ -78,6 +78,10 @@ export class ForestSeeder {
     pads: ReadonlyArray<Pad>,
     starts: ReadonlyArray<{ x: number; z: number }>,
     plan: ForestPlan = FOREST_DEFAULTS,
+    // v0.33 岛屿过滤（按岛撒树用）：给定时中心与成员都必须落在本岛。不给即全图旧语义。
+    accept?: (x: number, z: number) => boolean,
+    // v0.33 中心采样盒（按岛撒树用）：给定时簇中心只在此盒内采样（小岛全图撒命中率太低）。
+    bounds?: { minX: number; maxX: number; minZ: number; maxZ: number },
   ): TreeSpot[] {
     const spots: TreeSpot[] = [];
     const nClusters = rng.int(plan.clusters[0], plan.clusters[1]);
@@ -87,7 +91,7 @@ export class ForestSeeder {
       //（玩法级 bug，不是观感问题）。只保底 starts[0] 是不够的——实测红方基地
       // 到最近树 18.3 格，蓝方有保底所以看不出问题。
       const near = c < starts.length ? starts[c]! : null;
-      const center = ForestSeeder.findCenter(ground, rng, world, plan, pads, starts, near);
+      const center = ForestSeeder.findCenter(ground, rng, world, plan, pads, starts, near, accept, bounds);
       if (!center) continue;
       const n = rng.int(plan.perCluster[0], plan.perCluster[1]);
       const r = rng.float(plan.clusterRadius[0], plan.clusterRadius[1]);
@@ -97,7 +101,7 @@ export class ForestSeeder {
         const rad = r * Math.sqrt(rng.next());
         const x = center.x + Math.cos(ang) * rad;
         const z = center.z + Math.sin(ang) * rad;
-        if (!ForestSeeder.ok(ground, plan, pads, starts, spots, x, z, world)) continue;
+        if (!ForestSeeder.ok(ground, plan, pads, starts, spots, x, z, world, accept)) continue;
         spots.push({ x, z });
       }
     }
@@ -113,15 +117,23 @@ export class ForestSeeder {
     pads: ReadonlyArray<Pad>,
     starts: ReadonlyArray<{ x: number; z: number }>,
     near: { x: number; z: number } | null,
+    accept?: (x: number, z: number) => boolean,
+    bounds?: { minX: number; maxX: number; minZ: number; maxZ: number },
   ): TreeSpot | null {
     for (let t = 0; t < plan.tries; t++) {
       let x: number;
       let z: number;
       if (near) {
+        // v0.33 锚定优先于岛盒：出生点保底簇必须绕基地采样（accept 负责岛屿过滤，
+        // 落到海里的点照常重试——此前版本 bounds 抢了 near 的分支，保底簇被静默成随机簇）。
         const d = rng.float(plan.minStartDist + 1, plan.maxNearestTreeDist);
         const a = rng.float(0, Math.PI * 2);
         x = near.x + Math.cos(a) * d;
         z = near.z + Math.sin(a) * d;
+      } else if (bounds) {
+        // v0.33 非锚定簇才走岛盒采样（小岛全图撒命中率太低；盒子探出图边/压住水面照常走下方判据）。
+        x = rng.float(bounds.minX, bounds.maxX);
+        z = rng.float(bounds.minZ, bounds.maxZ);
       } else {
         x = rng.float(plan.margin, world - plan.margin);
         z = rng.float(plan.margin, world - plan.margin);
@@ -131,6 +143,7 @@ export class ForestSeeder {
       }
       // 簇中心只查地形本身；与已有树的间距在成员层面查（中心之间可以靠近，林子会连成片）
       if (!ForestSeeder.terrainOk(ground, plan, pads, x, z)) continue;
+      if (accept && !accept(x, z)) continue;
       if (starts.some((s) => Math.hypot(x - s.x, z - s.z) < plan.minStartDist)) continue;
       return { x, z };
     }
@@ -147,6 +160,7 @@ export class ForestSeeder {
     x: number,
     z: number,
     world: number,
+    accept?: (x: number, z: number) => boolean,
   ): boolean {
     if (x < plan.margin || z < plan.margin || x > world - plan.margin || z > world - plan.margin) {
       return false;

@@ -5,9 +5,11 @@
 // 性能：SAMPLES≈209（WORLD 放大后 ≈289）时要求单遍生成毫秒级，
 // 因此除结果与少量工具数组外，热路径（每格循环）不做任何对象分配。
 
-import { clamp, MAX_H, RNG, WATER } from "../types";
+import { clamp, ISLE_BASE_MIN, ISLE_FOREST_MIN, ISLE_MIN_CELLS, ISLE_SPLIT_CHANCE, MAX_H, RNG, WATER } from "../types";
 import { makeNoiseKit, mixSeed, type NoiseKit } from "./noise";
-import { pickTemplate, type MapTemplate } from "./map-template";
+import { ArchipelagoTemplate, pickTemplate, type MapTemplate } from "./map-template";
+// v0.33 红岛森林门槛与撒树规则同源（FOREST_DEFAULTS）：门槛数的是“可种树格”，撒树时同一套判据能落地。
+import { FOREST_DEFAULTS } from "./forests";
 import { FeatureComposer, MASK_CHANNEL, MASK_PEAK, type FeatureEnv, type FeatureStat } from "./terrain-features";
 import { MountainRange, mountainPlanFor } from "./features/mountain-range";
 import { Plateau, plateauPlanFor } from "./features/plateau";
@@ -92,6 +94,9 @@ export interface GenStart {
 
 /**
  * 一次完整生成的产物：高度场 + 特征掩膜 + 模板信息 + 双方出生点 + 特征统计。
+ * v0.33 分裂扩展：split＝本局是否多岛；keepSeeds＝保留岛屿的代表格（labelLand 首格），
+ * World 侧据此在最终高度场上 flood-fill 定保留集（天然免疫平滑/渡口带来的标签漂移）；
+ * splitFallback＝true 表示红岛不够大、红回退到最大岛与蓝同岛（地形仍分裂）。
  * heights 不做松弛/滩涂/pad——这些由 world.ts 既有管线在接入后统一处理。
  * mask 必须与 heights 一起交给 world.ts：它是"特征感知平滑"的输入
  *（见 terrain-features.ts 里 MASK_PEAK / MASK_CHANNEL 的说明）。
@@ -105,6 +110,18 @@ export interface WorldGenResult {
   starts: [GenStart, GenStart];
   /** 各地物落地统计，供日志与检查脚本断言。 */
   features: FeatureStat[];
+  /** v0.33 本局是否分裂多岛（保留代表格≥2 个）。 */
+  split: boolean;
+  /** v0.33 填海保留岛屿的代表格（每岛 labelLand 首格；连通模式恒为 1 个）。 */
+  keepSeeds: Array<{ ix: number; iz: number }>;
+  /** v0.33 红岛不够大时的同岛回退（仍分裂地形，出生点同岛）。 */
+  splitFallback: boolean;
+  /**
+   * v0.33 回退原因（splitFallback＝true 时有效，供检查脚本断言回退合法性）：
+   * small＝第二大地＜ISLE_BASE_MIN；noforest＝可种格＜ISLE_FOREST_MIN；
+   * nostart＝岛上有地无位（findSplitRed 无可用候选）；null＝未回退。
+   */
+  redReject: "small" | "noforest" | "nostart" | null;
 }
 
 /**
@@ -121,7 +138,11 @@ export class WorldGen {
     // 不混淆时 RNG(1..303) 几乎抽不出不同模板（实测 15 个 seed 里 14 个同一模板）。
     const rng = new RNG(mixSeed(seed));
     for (let i = 0; i < 8; i++) rng.next();
-    const tpl = pickTemplate(rng);
+    // v0.33 分裂掷币（独立种子流：连通模式 rng 消费序列与旧版逐数一致，地形零扰动）。
+    // Q2-A：分裂必出群岛系；连通走既有 pickTemplate（群岛也可能被抽中＝填成单块，即现状）。
+    const splitRng = new RNG(mixSeed(seed ^ 0x1e55ab1e));
+    const splitRoll = splitRng.float(0, 1) < ISLE_SPLIT_CHANCE;
+    const tpl = splitRoll ? new ArchipelagoTemplate(splitRng) : pickTemplate(rng);
     const noise = makeNoiseKit(mixSeed(seed ^ 0x5bf03635));
     const heights = new Float32Array(samples * samples);
     const mask = new Uint8Array(samples * samples);
@@ -130,8 +151,45 @@ export class WorldGen {
     // 和"出生点位置"当落位判据（山不能压在基地门口、不能印进海里）。
     // 山脉只抬升、不造新水格，所以 labels 在特征之后依然有效；River/Lake 会改变海陆格局，
     // 那时必须重算 labels（契约里已注明这一条）。
-    const { labels, maxLabel } = this.labelLand(heights, samples);
-    const starts = this.findStarts(heights, labels, maxLabel, samples, step, world, tpl);
+    const { labels, maxLabel, reps } = this.labelLand(heights, samples);
+    // v0.33 保留集：连通只留最大（即现状）；分裂留最大的 ≤3 座成岛（≥ISLE_MIN_CELLS）。
+    const sizes = new Map<number, number>();
+    for (let i = 0; i < labels.length; i++) {
+      const lb = labels[i]!;
+      if (lb < 0) continue;
+      sizes.set(lb, (sizes.get(lb) ?? 0) + 1);
+    }
+    const ranked = [...sizes.entries()].sort((a, b) => b[1] - a[1]);
+    const kept = splitRoll ? ranked.filter(([, n]) => n >= ISLE_MIN_CELLS).slice(0, 3).map(([lb]) => lb) : [maxLabel];
+    // 代表格（labelLand 首格）交 World 做 flood-fill 定保留集——标签编号不跨管线，坐标跨。
+    const keepSeeds = kept.map((lb) => {
+      const rep = reps.get(lb)!;
+      return { ix: rep % samples, iz: (rep / samples) | 0 };
+    });
+    const split = splitRoll && keepSeeds.length >= 2;
+    // 出生点：蓝恒最大岛（既有 findStarts 不动）；分裂时红去第二大地，
+    // 不够大/无可用候选则回退同岛（splitFallback，地形仍分裂）。
+    let starts = this.findStarts(heights, labels, maxLabel, samples, step, world, tpl);
+    let splitFallback = false;
+    let redReject: "small" | "noforest" | "nostart" | null = null;
+    if (split) {
+      const second = kept[1]!;
+      // v0.33 红岛双门槛：够大（建基地）＋够种树（开局有木头），任一不够都回退同岛（原因记录供查）。
+      if (sizes.get(second)! < ISLE_BASE_MIN) {
+        splitFallback = true;
+        redReject = "small";
+      } else if (!this.isleForestable(heights, labels, second, samples, step)) {
+        splitFallback = true;
+        redReject = "noforest";
+      } else {
+        const red = this.findSplitRed(heights, labels, second, samples, step, world, tpl);
+        if (red) starts = [starts[0], red];
+        else {
+          splitFallback = true;
+          redReject = "nostart";
+        }
+      }
+    }
     const features = this.composeFeatures(
       {
         samples,
@@ -153,7 +211,7 @@ export class WorldGen {
     // 平原修饰挪到特征**之后**，且必须特征感知：它原本把选区内每格往邻域均值拉近 60%，
     // 不排除山体的话刚撒好的山脉会被它抹掉大半。
     this.smoothPlains(heights, samples, step, noise, mask);
-    return { heights, mask, templateId: tpl.id, templateName: tpl.name, starts, features };
+    return { heights, mask, templateId: tpl.id, templateName: tpl.name, starts, features, split, keepSeeds, splitFallback, redReject };
   }
 
   /**
@@ -317,16 +375,19 @@ export class WorldGen {
   private static labelLand(
     heights: Float32Array,
     samples: number,
-  ): { labels: Int32Array; maxLabel: number } {
+  ): { labels: Int32Array; maxLabel: number; reps: Map<number, number> } {
     const n = samples * samples;
     const labels = new Int32Array(n);
     labels.fill(-1);
     const queue = new Int32Array(n); // 一次性预分配：BFS 队列入队总次数 ≤ 格数
+    // v0.33 每岛代表格（该 label 首格）：World 侧 flood-fill 定保留集用（编号不跨管线，坐标跨）。
+    const reps = new Map<number, number>();
     let maxLabel = -1;
     let maxCount = 0;
     let label = 0;
     for (let i = 0; i < n; i++) {
       if (heights[i]! <= SEA_H || labels[i]! !== -1) continue;
+      reps.set(label, i);
       let head = 0;
       let tail = 0;
       queue[tail++] = i;
@@ -370,32 +431,36 @@ export class WorldGen {
       }
       label++;
     }
-    return { labels, maxLabel };
+    return { labels, maxLabel, reps };
   }
 
   /**
-   * v0.24 出生点搜索：向模板锚点吸附（保证开局格局遵循模板的对称设计）。
-   * 先取最大连通域内每 4 采样（=1 格）的候选，逐个预计算 3.2 格半径圆内的
-   * 连通域覆盖率与局部平均高度；两起点过近（<world*0.45）或锚点吸附失败时，
-   * 回退为连通域内相距最远的两点（扫描步 8），保证开局分隔公平。
+   * v0.33 候选打分（findStarts 本体抽出，逐岛复用）：forLabel 岛内每 4 采样取候选，
+   * 逐个算 3.2 格覆盖率/均值/最高格/8 向开阔度。连通模式传 maxLabel 即旧行为。
    */
-  private static findStarts(
+  private static scoreCandidates(
     heights: Float32Array,
     labels: Int32Array,
-    maxLabel: number,
+    forLabel: number,
     samples: number,
     step: number,
-    world: number,
-    tpl: MapTemplate,
-  ): [GenStart, GenStart] {
+  ): {
+    candX: Int32Array;
+    candZ: Int32Array;
+    cov: Float32Array;
+    meanH: Float32Array;
+    maxHc: Float32Array;
+    open: Uint8Array;
+    candN: number;
+  } {
     const stride = 4;
     const cap = Math.ceil(samples / stride) ** 2;
     const candX = new Int32Array(cap);
     const candZ = new Int32Array(cap);
-    const cov = new Float32Array(cap); // 3.2 格半径内最大连通域覆盖率
-    const meanH = new Float32Array(cap); // 3.2 格半径内高度场均值（出生平台高度参考）
-    const maxHc = new Float32Array(cap); // 3.2 格半径内最高格（"山顶基地"硬判据，见 START_MAX_H）
-    const open = new Uint8Array(cap); // 8 向 × 6 格开阔度（0~8），见 OPEN_REACH 注释
+    const cov = new Float32Array(cap);
+    const meanH = new Float32Array(cap);
+    const maxHc = new Float32Array(cap);
+    const open = new Uint8Array(cap);
     let candN = 0;
     // v0.24 集成修正：出生点候选必须距图边 ≥4 格（16 采样）——贴边出生会让
     // world 管线的 flattenPad/松弛邻域越界（曾致半岛模板 8 格 NaN 传播）。
@@ -403,14 +468,14 @@ export class WorldGen {
     for (let iz = margin; iz < samples - margin; iz += stride) {
       const row = iz * samples;
       for (let ix = margin; ix < samples - margin; ix += stride) {
-        if (labels[row + ix]! !== maxLabel) continue;
+        if (labels[row + ix]! !== forLabel) continue;
         candX[candN] = ix;
         candZ[candN] = iz;
         candN++;
       }
     }
-    const r = 3.2 / step; // 覆盖半径（采样数）
-    const rS = Math.ceil(r); // 包围盒半径
+    const r = 3.2 / step;
+    const rS = Math.ceil(r);
     const r2 = r * r;
     for (let c = 0; c < candN; c++) {
       const cx = candX[c]!;
@@ -433,14 +498,107 @@ export class WorldGen {
           const hv = heights[rowJ + jx]!;
           sum += hv;
           if (hv > mx) mx = hv;
-          if (labels[rowJ + jx]! === maxLabel) inComp++;
+          if (labels[rowJ + jx]! === forLabel) inComp++;
         }
       }
       cov[c] = tot > 0 ? inComp / tot : 0;
       meanH[c] = tot > 0 ? sum / tot : 0;
       maxHc[c] = mx;
-      open[c] = this.openness(labels, maxLabel, cx, cz, samples, Math.round(OPEN_REACH / step));
+      open[c] = this.openness(labels, forLabel, cx, cz, samples, Math.round(OPEN_REACH / step));
     }
+    return { candX, candZ, cov, meanH, maxHc, open, candN };
+  }
+
+  /**
+   * v0.33 红岛森林门槛：该岛“严格可种格”≥ ISLE_FOREST_MIN。
+   * 严格＝四角一致（与 cellLand 同式，岸边碎格不算）＋林线下＋格点坡度（与 slopeAt 同式）；
+   * 与 ForestSeeder 判据同源（近似口径：门槛只求“有没有一片林子的量”，精确落位由撒树保证）。
+   * 计数到门槛即停，整图一遍封顶。注意 WATER 取游戏海平面（0.20）而非 SEA_H（0.04），
+   * 与撒树走的 walkableAt 同口径——0.04~0.2 的滩涂格撒树时本就种不上，门限里也不该算数。
+   */
+  private static isleForestable(
+    heights: Float32Array,
+    labels: Int32Array,
+    forLabel: number,
+    samples: number,
+    step: number,
+  ): boolean {
+    const treeline = FOREST_DEFAULTS.treelineH;
+    const maxSlope = FOREST_DEFAULTS.maxSlope;
+    const at = (ix: number, iz: number): number => heights[iz * samples + ix]!;
+    let n = 0;
+    for (let iz = 1; iz < samples - 2; iz++) {
+      for (let ix = 1; ix < samples - 2; ix++) {
+        const i = iz * samples + ix;
+        if (labels[i]! !== forLabel) continue;
+        if (at(ix, iz) <= WATER || at(ix + 1, iz) <= WATER || at(ix, iz + 1) <= WATER || at(ix + 1, iz + 1) <= WATER)
+          continue;
+        const h = at(ix, iz);
+        if (h >= treeline) continue;
+        const gx = (at(ix + 1, iz) - at(ix - 1, iz)) / (2 * step);
+        const gz = (at(ix, iz + 1) - at(ix, iz - 1)) / (2 * step);
+        if (Math.hypot(gx, gz) > maxSlope) continue;
+        if (++n >= ISLE_FOREST_MIN) return true;
+      }
+    }
+    return false;
+  }
+
+  /**
+   * v0.33 分岛红出生点：第二大地岛上按锚点[1]吸附（与蓝对称落位），失败则全岛按
+   * “覆盖率→开阔度→低地”取最优（两轮：先禁山顶，全山岛放宽，attachToAnchor 同规）。
+   * 无可用候选返回 null（调用方回退同岛，见 generate splitFallback）。
+   */
+  private static findSplitRed(
+    heights: Float32Array,
+    labels: Int32Array,
+    redLabel: number,
+    samples: number,
+    step: number,
+    world: number,
+    tpl: MapTemplate,
+  ): GenStart | null {
+    const sc = this.scoreCandidates(heights, labels, redLabel, samples, step);
+    const { candX, candZ, cov, meanH, maxHc, open, candN } = sc;
+    if (candN === 0) return null;
+    const anchors = tpl.anchors(world);
+    const cb = this.attachToAnchor(anchors[1].x, anchors[1].z, candX, candZ, cov, meanH, maxHc, open, candN, step);
+    if (cb >= 0) return this.makeStart(candX[cb]!, candZ[cb]!, meanH[cb]!, step, world);
+    for (let strict = 1; strict >= 0; strict--) {
+      let best = -1;
+      let bestScore = -Infinity;
+      for (let c = 0; c < candN; c++) {
+        if (cov[c]! < 0.8 || open[c]! < OPEN_MIN) continue;
+        if (strict === 1 && maxHc[c]! > START_MAX_H) continue;
+        const score = cov[c]! * 10 + open[c]! - Math.max(0, meanH[c]! - START_PREFER_H);
+        if (score > bestScore) {
+          bestScore = score;
+          best = c;
+        }
+      }
+      if (best >= 0) return this.makeStart(candX[best]!, candZ[best]!, meanH[best]!, step, world);
+    }
+    return null;
+  }
+
+  /**
+   * v0.24 出生点搜索：向模板锚点吸附（保证开局格局遵循模板的对称设计）。
+   * 先取最大连通域内每 4 采样（=1 格）的候选，逐个预计算 3.2 格半径圆内的
+   * 连通域覆盖率与局部平均高度；两起点过近（<world*0.45）或锚点吸附失败时，
+   * 回退为连通域内相距最远的两点（扫描步 8），保证开局分隔公平。
+   */
+  private static findStarts(
+    heights: Float32Array,
+    labels: Int32Array,
+    maxLabel: number,
+    samples: number,
+    step: number,
+    world: number,
+    tpl: MapTemplate,
+  ): [GenStart, GenStart] {
+    // v0.33 候选打分抽出复用（连通模式传 maxLabel，行为与旧版逐数一致）。
+    const sc = this.scoreCandidates(heights, labels, maxLabel, samples, step);
+    const { candX, candZ, cov, meanH, maxHc, open, candN } = sc;
     const anchors = tpl.anchors(world);
     let startA: GenStart | null = null;
     let startB: GenStart | null = null;

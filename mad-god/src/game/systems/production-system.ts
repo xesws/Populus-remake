@@ -511,8 +511,11 @@ export class ProductionSystem implements ISystem {
   nearestNeedSite(sim: Sim, team: Team, x: number, z: number): Building | null {
     let best: Building | null = null;
     let bestD = 1e9;
+    // v0.33 按岛过滤（与 nearestTree 同理：海对岸的工地送不到，分岛图搬运工不再隔海认工地）。
+    const home = sim.world.islandAt(x, z);
     for (const b of sim.buildings) {
       if (b.team !== team || !this.needsWood(b)) continue;
+      if (home >= 0 && sim.world.islandAt(b.x, b.z) !== home) continue;
       const d = (x - b.x) ** 2 + (z - b.z) ** 2;
       if (d < bestD) {
         bestD = d;

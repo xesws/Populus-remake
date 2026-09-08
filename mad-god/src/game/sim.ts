@@ -19,6 +19,11 @@ import {
   houseHp,
   houseMaxPop,
   inMap,
+  ISLE_BIG_CELLS,
+  ISLE_MIN_CELLS,
+  ISLE_SMALL_CELLS,
+  ISLE_TREE_CLUSTERS,
+  ISLE_WILDMEN,
   unitHp,
   isCampKind,
   isTribe,
@@ -55,7 +60,7 @@ import {
   FIREBALL_FIRE_T,
 } from "./types";
 import { inDoorSlit, inPad, Pad, padsOverlap, PAD_STAND_INFLATE, worldOnPad, World } from "./world";
-import { ForestSeeder } from "./world-gen/forests";
+import { ForestSeeder, FOREST_DEFAULTS } from "./world-gen/forests";
 import type { FirePatch } from "./entities/fire-patch";
 import type { BreathShot } from "./systems/dragon-system";
 import {
@@ -246,6 +251,47 @@ export class Sim {
   }
 
   seedWildmen(): void {
+    // v0.33 按岛撒野人（Q3-A for loop 均等）：每座成岛（≥ISLE_MIN_CELLS）ISLE_WILDMEN 只；
+    // 岛上有出生点则首只锚定其近郊 6~13 环带（旧语义保留，开局附近能碰上野人），其余岛内散布。
+    const rng = this.world.rng;
+    const isles = this.world.islands.filter((i) => i.cells >= ISLE_MIN_CELLS);
+    if (!isles.length) {
+      this.seedWildmenLegacy();
+      return;
+    }
+    for (const isle of isles) {
+      const startHere = this.world.starts.find((s) => this.world.islandAt(s.x, s.z) === isle.label) ?? null;
+      let placed = 0;
+      if (startHere) {
+        for (let t = 0; t < 30 && placed < ISLE_WILDMEN; t++) {
+          const ang = rng.float(0, Math.PI * 2);
+          const r = rng.float(6, 13);
+          const x = startHere.x + Math.cos(ang) * r;
+          const z = startHere.z + Math.sin(ang) * r;
+          if (!inMap(x, z)) continue;
+          if (!this.world.walkableAt(x, z)) continue;
+          if (this.world.slopeAt(x, z) > 0.55) continue;
+          if (this.world.islandAt(x, z) !== isle.label) continue;
+          this.addUnit(NEUTRAL, "wildman", x, z);
+          placed++;
+          break;
+        }
+      }
+      for (let t = 0; t < 160 && placed < ISLE_WILDMEN; t++) {
+        const x = rng.float(isle.minX, isle.maxX);
+        const z = rng.float(isle.minZ, isle.maxZ);
+        if (!inMap(x, z)) continue;
+        if (this.world.islandAt(x, z) !== isle.label) continue;
+        if (!this.world.walkableAt(x, z)) continue;
+        if (this.world.slopeAt(x, z) > 0.55) continue;
+        this.addUnit(NEUTRAL, "wildman", x, z);
+        placed++;
+      }
+    }
+  }
+
+  /** v0.24 旧全图撒野人（无岛表时兜底，理论不出现——refreshIslands 恒产出最大岛）。 */
+  private seedWildmenLegacy(): void {
     // v0.24 取点改为跟着地图走：旧实现写死 7 个 (18~34) 坐标，那是 52 格图的中心区，
     // 换成模板化的 72 格图后中心经常是海面（群岛/环礁/半岛），于是一张图可能
     // 一只野人都没有——感化（招降成村民）这条玩法链路直接失效（object-check 抓到）。
@@ -283,11 +329,51 @@ export class Sim {
    * 否则可能整张图的林子都离基地很远，村民早期没木头可砍（这是玩法 bug，不是观感问题）。
    */
   seedTrees(): void {
+    // v0.33 按岛撒树（Q3-A for loop 均等）：每座成岛 ISLE_TREE_CLUSTERS 簇；
+    // 岛上有出生点则首簇锚定它（基地有木头砍，既有保底语义逐岛保留），避让地基全局同规。
     const pads: Pad[] = this.buildings.map((b) => this.buildingPad(b));
     for (const s of this.world.starts) pads.push({ x: s.x, z: s.z, w: 3.6, d: 3.6, yaw: s.yaw });
-    const spots = ForestSeeder.place(this.world, this.world.rng, WORLD, pads, this.world.starts);
-    for (const p of spots) {
-      this.trees.push(createTree(nid(), p.x, p.z, this.world.heightAt(p.x, p.z), true, 0));
+    const isles = this.world.islands.filter((i) => i.cells >= ISLE_MIN_CELLS);
+    if (!isles.length) {
+      const spots = ForestSeeder.place(this.world, this.world.rng, WORLD, pads, this.world.starts);
+      for (const p of spots) {
+        this.trees.push(createTree(nid(), p.x, p.z, this.world.heightAt(p.x, p.z), true, 0));
+      }
+      return;
+    }
+    for (const isle of isles) {
+      const startsHere = this.world.starts
+        .filter((s) => this.world.islandAt(s.x, s.z) === isle.label)
+        .map((s) => ({ x: s.x, z: s.z }));
+      const accept = (x: number, z: number): boolean => this.world.islandAt(x, z) === isle.label;
+      // v0.33 按岛定簇：大岛（≥ISLE_BIG_CELLS）走默认参数（5~8 簇，与连通图一致）；
+      // 中岛 2~3 簇默认尺寸；小岛小簇（半径/株数减半＋minStartDist 收紧＋tries 加量，见下）。
+      const plan =
+        isle.cells >= ISLE_BIG_CELLS
+          ? FOREST_DEFAULTS
+          : isle.cells >= ISLE_SMALL_CELLS
+            ? { ...FOREST_DEFAULTS, clusters: [2, 3] as [number, number] }
+            : {
+                ...FOREST_DEFAULTS,
+                clusters: [ISLE_TREE_CLUSTERS, ISLE_TREE_CLUSTERS] as [number, number],
+                clusterRadius: [1.5, 2.5] as [number, number],
+                perCluster: [5, 9] as [number, number],
+                minStartDist: 2.0,
+                tries: 150,
+              };
+      const spots = ForestSeeder.place(
+        this.world,
+        this.world.rng,
+        WORLD,
+        pads,
+        startsHere,
+        plan,
+        accept,
+        { minX: isle.minX, maxX: isle.maxX, minZ: isle.minZ, maxZ: isle.maxZ },
+      );
+      for (const p of spots) {
+        this.trees.push(createTree(nid(), p.x, p.z, this.world.heightAt(p.x, p.z), true, 0));
+      }
     }
   }
 
@@ -1436,8 +1522,11 @@ export class Sim {
   nearestTree(x: number, z: number): Tree | null {
     let best: Tree | null = null;
     let bestD = 1e9;
+    // v0.33 按岛过滤：海对岸的树再近也砍不到（astar 下海失败），分岛图红方村民不再隔海认树卡死。
+    const home = this.world.islandAt(x, z);
     for (const t of this.trees) {
       if (!t.alive) continue;
+      if (home >= 0 && this.world.islandAt(t.x, t.z) !== home) continue;
       const d = dist2(x, z, t.x, t.z);
       if (d < bestD) {
         bestD = d;
@@ -1713,10 +1802,13 @@ export class Sim {
     const pz = fx;
     const dists = [6.2, 7.6, 5.4, 9.0];
     const sides = [0, 1.1, -1.1, 2.1, -2.1];
+    // v0.33 按岛过滤：候选点必须与建营者同岛（分岛图营地/哨塔不再隔海选址）。
+    const homeIsle = this.world.islandAt(u.x, u.z);
     for (const dist of dists) {
       for (const side of sides) {
         const x = clamp(ox + fx * dist + px * side * 2.4, 3, WORLD - 3);
         const z = clamp(oz + fz * dist + pz * side * 2.4, 3, WORLD - 3);
+        if (homeIsle >= 0 && this.world.islandAt(x, z) !== homeIsle) continue;
         if (this.tryPrepFound(x, z, yaw, kind)) {
           u.settleYaw = yaw;
           return { x, z };
@@ -1863,11 +1955,14 @@ export class Sim {
     const ox = home ? home.x : u.x;
     const oz = home ? home.z : u.z;
     const yaw = snapYaw(u.yaw);
+    // v0.33 按岛过滤：落基点必须与建房者同岛，否则隔海走过去卡 90s 看门狗（分岛图红方高发）。
+    const homeIsle = this.world.islandAt(u.x, u.z);
     for (let i = 0; i < 36; i++) {
       const baseX = i < 18 ? ox : u.x;
       const baseZ = i < 18 ? oz : u.z;
       const x = clamp(baseX + Math.random() * 18 - 9, 2, WORLD - 2);
       const z = clamp(baseZ + Math.random() * 18 - 9, 2, WORLD - 2);
+      if (homeIsle >= 0 && this.world.islandAt(x, z) !== homeIsle) continue;
       if (!this.canFound(x, z, 1, yaw)) continue;
       u.settleYaw = yaw;
       return { x, z };

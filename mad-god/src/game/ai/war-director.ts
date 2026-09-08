@@ -5,6 +5,7 @@
 
 import { logger } from "../logger";
 import type { Sim } from "../sim";
+import { astar } from "../path";
 import { BLUE, Cell, dist2, RED, Team, TOWER_GARRISON_MAX, UnitKind } from "../types";
 import { AIProfile } from "./ai-profile";
 import type { IWarDirector } from "./types";
@@ -32,6 +33,12 @@ export class WarDirector implements IWarDirector {
   private lastHurtT = -1e9;
   /** v0.31 上一次落塔（派建塔营者）的游戏时刻；-1e9 表示从未建塔 */
   private lastTowerTime = -1e9;
+  /**
+   * v0.33 隔海探路缓存（分岛图红方专用）：key＝量化后的{目标,集结点}，TTL 15s。
+   * launchWave/dispatchDefenders 发兵前先探——海对岸的目标直接整波取消，
+   * 否则大军走到岸边罚站＋think 节流 60Hz 刷 A*（旧单块图恒可达，探路恒真零开销感知）。
+   */
+  private probeCache = { key: "", t: -1e9, ok: false };
 
   constructor(team: Team, profile: AIProfile) {
     this.team = team;
@@ -76,6 +83,15 @@ export class WarDirector implements IWarDirector {
         u.job !== "train",
     );
     if (!marchers.length) return false;
+    // v0.33 隔海无路整波取消（分岛图红方无船）：不断重试由 15s 探路缓存吸收，不刷 A*。
+    if (!this.seaProbe(sim, focus.x, focus.z, marchers[0]!.x, marchers[0]!.z)) {
+      logger.info("ai-war", "隔海无路，本波取消（分岛图等蓝方登陆再打）", {
+        team: this.team,
+        x: +focus.x.toFixed(1),
+        z: +focus.z.toFixed(1),
+      });
+      return false;
+    }
     sim.setMagnet(this.team, focus.x, focus.z);
     sim.setOrder(this.team, "fight");
     // v0.17 repath 对 fight 没有 magnet 寻路分支，setOrder 也不会改士兵个体 order：
@@ -174,6 +190,11 @@ export class WarDirector implements IWarDirector {
     );
     pool.sort((a, b) => dist2(a.x, a.z, x, z) - dist2(b.x, b.z, x, z));
     const n = Math.min(this.profile.waveSize, this.armySize(sim), pool.length);
+    // v0.33 隔海不驰援（与波次同理：红龙在敌岛挨打，地面部队过不去就不派）。
+    if (n > 0 && !this.seaProbe(sim, x, z, pool[0]!.x, pool[0]!.z)) {
+      logger.info("ai-war", "隔海无路，驰援取消", { team: this.team, x: +x.toFixed(1), z: +z.toFixed(1) });
+      return;
+    }
     for (let i = 0; i < n; i++) {
       const u = pool[i]!;
       sim.sendMove(u, x, z);
@@ -269,6 +290,19 @@ export class WarDirector implements IWarDirector {
   /** 战斗兵种判定（不含间谍：间谍只计入 armySize，不参与波次与防御）。 */
   private isFighter(kind: UnitKind): boolean {
     return kind === "warrior" || kind === "preacher" || kind === "firewarrior";
+  }
+
+  /**
+   * v0.33 隔海探路（陆地 astar 全图上限，prio=0 玩家级特权免预算）：
+   * 同{目标,集结点} 15s 内复用结论——发波/驰援决策高频调用，跨海 astar 每次穷举
+   * 全图（~60ms），无缓存会把主线程刷爆。单块图恒真，行为与旧版一致。
+   */
+  private seaProbe(sim: Sim, fx: number, fz: number, mx: number, mz: number): boolean {
+    const key = `${Math.round(fx / 2)}:${Math.round(fz / 2)}:${Math.round(mx / 2)}:${Math.round(mz / 2)}`;
+    if (key === this.probeCache.key && sim.time - this.probeCache.t < 15) return this.probeCache.ok;
+    const ok = astar(sim.world, mx, mz, fx, fz, 20736, 0).length > 0;
+    this.probeCache = { key, t: sim.time, ok };
+    return ok;
   }
 
   /** 敌方密集点：在敌方建筑/单位点集中取邻域（半径 √20 格）内同伴最多的点。 */

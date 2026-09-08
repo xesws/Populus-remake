@@ -34,6 +34,23 @@ export interface StartPad {
   h: number;
 }
 
+/**
+ * v0.33 岛屿（World.refreshIslands 产物）：终局高度场连通域统计。
+ * label 仅本局有效（每次 generate 重算）；cells 按采样格计（1 格＝0.0625 平方格）。
+ */
+export interface Island {
+  label: number;
+  cells: number;
+  /** 质心（世界坐标）。 */
+  cx: number;
+  cz: number;
+  /** 包围盒（世界坐标）。 */
+  minX: number;
+  maxX: number;
+  minZ: number;
+  maxZ: number;
+}
+
 export function localOnPad(px: number, pz: number, pad: Pad): { x: number; z: number } {
   const dx = px - pad.x;
   const dz = pz - pad.z;
@@ -277,6 +294,12 @@ export class World {
   fordCount = 0;
   /** v0.25 本图各地物的落地统计（山脉/河流/…），供日志与检查脚本断言"特征确实放上了"。 */
   genFeatures: FeatureStat[] = [];
+  /** v0.33 本局是否分裂多岛（WorldGen 掷币，见 ISLE_SPLIT_CHANCE）。 */
+  splitIsles = false;
+  /** v0.33 终局岛屿表（最终高度场 BFS，64 格以上成块；按 cells 降序）。 */
+  islands: Island[] = [];
+  /** v0.33 终局连通域编号（与 islands 同源；-1＝水/碎礁，供 islandAt 做 O(1) 归属查询）。 */
+  islandGrid: Int32Array = new Int32Array(0);
 
   constructor(seed = 1989) {
     this.h = new Float32Array(SAMPLES * SAMPLES);
@@ -688,12 +711,55 @@ export class World {
     return fords;
   }
 
-  floodDisconnectedLand(): number {
-    const n = SAMPLES * SAMPLES;
+  /**
+   * v0.33 分裂填海（替代旧 floodDisconnectedLand 的“只留最大”）：
+   * 代表格在最终高度场上 flood-fill 定保留集——标签编号不跨管线（WorldGen 侧与
+   * 本侧是两次独立 BFS），坐标跨：即使平滑/渡口合并或切分了岛屿，保留的“那片地方”
+   * 照样保住。代表格若变水（平滑 dipping），8 格环搜最近陆格；全灭则保最大岛兜底。
+   */
+  floodSplit(seeds: Array<{ ix: number; iz: number }>): number {
     const { lab, kept } = this.landLabels();
+    const keep = new Set<number>();
+    for (const s of seeds) {
+      const lb = this.nearestLandLabel(lab, s.ix, s.iz);
+      if (lb >= 0) keep.add(lb);
+    }
+    if (keep.size === 0) keep.add(kept); // 理论不出现：500+ 格岛不会被平滑吃光
+    return this.floodExcept(keep);
+  }
+
+  /** 代表格所在连通域（变水则 8 格环搜最近陆格，找不到返回 -1）。 */
+  private nearestLandLabel(lab: Int32Array, ix: number, iz: number): number {
+    if (this.inSample(ix, iz)) {
+      const i0 = this.idx(ix, iz);
+      if (this.h[i0]! > WATER) return lab[i0]!;
+    }
+    for (let r = 1; r <= 8; r++) {
+      for (let dz = -r; dz <= r; dz++) {
+        for (let dx = -r; dx <= r; dx++) {
+          if (Math.abs(dx) !== r && Math.abs(dz) !== r) continue;
+          const jx = ix + dx;
+          const jz = iz + dz;
+          if (!this.inSample(jx, jz)) continue;
+          const j = this.idx(jx, jz);
+          if (this.h[j]! > WATER) return lab[j]!;
+        }
+      }
+    }
+    return -1;
+  }
+
+  /**
+   * v0.33 参数化填海：只保留 keep 集内的陆域，其余降回浅海基准（0.04）。
+   * 连通模式 keep＝{最大}即旧语义；分裂模式 keep＝映射后的 2~3 岛。
+   * 出生点若落在填海区（削峰/平滑改写了海陆界时才可能），迁到保留域内最近格（旧逻辑保留）。
+   */
+  floodExcept(keep: Set<number>): number {
+    const n = SAMPLES * SAMPLES;
+    const { lab } = this.landLabels();
     let flooded = 0;
     for (let i = 0; i < n; i++) {
-      if (this.h[i]! <= WATER || lab[i] === kept) continue;
+      if (this.h[i]! <= WATER || keep.has(lab[i]!)) continue;
       // 走 setSample：降为海的同时清掉该格 lava/swamp，语义与天然海格一致。
       this.setSample(i % SAMPLES, (i / SAMPLES) | 0, 0.04);
       flooded++;
@@ -701,7 +767,7 @@ export class World {
     // 出生点若被判为飞地（削峰/平滑改写了海陆界时才可能），螺旋迁到保留域内最近格。
     for (const s of this.starts) {
       const si = (Math.round(s.z / STEP) * SAMPLES + Math.round(s.x / STEP)) | 0;
-      if (lab[si] === kept) continue;
+      if (keep.has(lab[si]!)) continue;
       let bx = -1;
       let bz = -1;
       outer: for (let r = 1; r < 40; r++) {
@@ -711,7 +777,7 @@ export class World {
             const ix = Math.round(s.x / STEP) + dx;
             const iz = Math.round(s.z / STEP) + dz;
             if (ix < 1 || iz < 1 || ix >= SAMPLES - 1 || iz >= SAMPLES - 1) continue;
-            if (lab[iz * SAMPLES + ix] !== kept) continue;
+            if (!keep.has(lab[iz * SAMPLES + ix]!)) continue;
             bx = ix * STEP;
             bz = iz * STEP;
             break outer;
@@ -724,6 +790,64 @@ export class World {
       }
     }
     return flooded;
+  }
+
+  /**
+   * v0.33 终局岛屿表刷新（generate 收尾调用）：最终高度场重算连通域，64 格以上成块，
+   * 按 cells 降序入 islands/islandGrid。flood 之后算＝所见即所得（不受平滑漂移影响）。
+   */
+  refreshIslands(): void {
+    const { lab } = this.landLabels();
+    this.islandGrid = lab;
+    const acc = new Map<number, { cells: number; sx: number; sz: number; minIx: number; maxIx: number; minIz: number; maxIz: number }>();
+    for (let i = 0; i < lab.length; i++) {
+      const lb = lab[i]!;
+      if (lb < 0) continue;
+      let a = acc.get(lb);
+      if (!a) {
+        a = { cells: 0, sx: 0, sz: 0, minIx: SAMPLES, maxIx: -1, minIz: SAMPLES, maxIz: -1 };
+        acc.set(lb, a);
+      }
+      const ix = i % SAMPLES;
+      const iz = (i / SAMPLES) | 0;
+      a.cells++;
+      a.sx += ix;
+      a.sz += iz;
+      if (ix < a.minIx) a.minIx = ix;
+      if (ix > a.maxIx) a.maxIx = ix;
+      if (iz < a.minIz) a.minIz = iz;
+      if (iz > a.maxIz) a.maxIz = iz;
+    }
+    const list: Island[] = [];
+    for (const [lb, a] of acc) {
+      if (a.cells < 64) continue;
+      list.push({
+        label: lb,
+        cells: a.cells,
+        cx: (a.sx / a.cells) * STEP,
+        cz: (a.sz / a.cells) * STEP,
+        minX: a.minIx * STEP,
+        maxX: a.maxIx * STEP,
+        minZ: a.minIz * STEP,
+        maxZ: a.maxIz * STEP,
+      });
+    }
+    list.sort((p, q) => q.cells - p.cells);
+    this.islands = list;
+  }
+
+  /**
+   * v0.33 归属查询：该点所在终局岛屿编号（-1＝水/碎礁）。
+   * 经 nearestLandLabel 兜底：亚格水洼（单个 ≤WATER 采样 surrounded by 陆）不算“出岛”，
+   * 归属按周围陆地算——否则站在可走格上的单位会被判到 -1（红方守岛断言实测抓到）。
+   * 红方选点按岛过滤、Sim 按岛撒资源都走这里（O(1) 查表＋偶发 8 格环搜）。
+   */
+  islandAt(x: number, z: number): number {
+    if (!this.islandGrid.length) return -1;
+    const ix = Math.round(x / STEP);
+    const iz = Math.round(z / STEP);
+    if (!this.inSample(ix, iz)) return -1;
+    return this.nearestLandLabel(this.islandGrid, ix, iz);
   }
 
   /**
@@ -1398,7 +1522,9 @@ export class World {
     // v0.25 水系连通性修复：必须在填海**之前**。河/湖把大陆切开的话，
     // floodDisconnectedLand 会把切下来的那半张图（可能含一方基地）整块降成浅海。
     this.fordCount = this.repairWaterCuts();
-    this.floodDisconnectedLand();
+    // v0.33 分裂填海（Q2-A）：代表格定保留集；连通模式代表格恒 1 个＝旧语义。
+    this.splitIsles = gen.split;
+    this.floodSplit(gen.keepSeeds);
     for (const s of this.starts) {
       // v0.13 出生平台高度随当地地形（+0.25）：避免固定高度在平台边造出海崖。
       const sh = Math.max(this.heightAt(s.x, s.z), 0.8) + 0.25;
@@ -1412,6 +1538,7 @@ export class World {
     // （平台边缘的环形缓坡、pad 内高精度格与 pad 外低格之间的落差），所以出图前
     // 必须再扫一遍。residualSeams 就是"还能把单位绊倒的边"的数量，检查脚本断言它为 0。
     this.smoothReport = MapSmoother.smooth(this.h, this.fmask);
+    this.refreshIslands(); // v0.33 终局岛屿表（flood 之后算，所见即所得）
     this.markAll();
   }
 

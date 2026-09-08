@@ -651,7 +651,7 @@ export class Game {
     const r = w.smoothReport;
     logger.info(
       "world",
-      `${when}：seed=${w.genSeed} 地貌=${w.templateId}(${w.templateName}) 出生点=(${w.starts[0].x.toFixed(0)},${w.starts[0].z.toFixed(0)})↔(${w.starts[1].x.toFixed(0)},${w.starts[1].z.toFixed(0)}) 平滑=填缺${r ? r.filled : 0}/削刺${r ? r.pruned : 0}/尖峰${r ? r.spikes : 0}`,
+      `${when}：seed=${w.genSeed} 地貌=${w.templateId}(${w.templateName}) 出生点=(${w.starts[0].x.toFixed(0)},${w.starts[0].z.toFixed(0)})↔(${w.starts[1].x.toFixed(0)},${w.starts[1].z.toFixed(0)}) 平滑=填缺${r ? r.filled : 0}/削刺${r ? r.pruned : 0}/尖峰${r ? r.spikes : 0} 岛屿=${w.splitIsles ? w.islands.length + "岛" : "单块"}`,
     );
   }
 

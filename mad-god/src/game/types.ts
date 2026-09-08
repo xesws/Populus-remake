@@ -316,6 +316,23 @@ export const BOATHOUSE_WATER_RANGE = 7;
 export const LAUNCH_RANGE = 6; // 下水半径（屋旁找水格出生）
 export const BOATHOUSE_DECK_Y = 0.6; // 住户甲板站位高度（船屋建模带工作平台，仿哨塔 TOWER_DECK_Y）
 
+// ---------------------------------------------------------------------------
+// v0.33 群岛分裂（两片或三片陆地）：开局 50% 掷币，分裂时强制群岛系模板并保留
+// 最大的 2~3 座岛（Q2-A），出生点分岛对峙（Q1-B），资源按岛均等（Q3-A）。
+// 玩法后果（已确认）：红方无船，波次过不了海（不可达自动跳过）＋只能守岛＋火山隔海轰炸；
+// 蓝方必须造船登陆才能终结，法术可隔海狙杀——僵局只能由玩家打破。红方海军另立项。
+// ---------------------------------------------------------------------------
+export const ISLE_SPLIT_CHANCE = 0.5; // 分裂掷币概率（独立种子流，不扰动既有地形序列）
+export const ISLE_MIN_CELLS = 500; // 成岛门槛（采样格）：以下全填（礁石不参与资源/出生）
+export const ISLE_BASE_MIN = 2500; // 建基地门槛：红岛小于此数则回退同岛（并打日志）
+export const ISLE_FOREST_MIN = 2000; // 红岛森林门槛：严格可种格（四角一致＋林线下＋坡度）。
+// 取 5 倍余量：门限看的是平滑前高度场，而撒树看的是平滑/滩涂侵蚀后的终局地形，
+// 海岸一圈会被吃掉一截（seed12 教训：门限前 400 过、终局只剩 238 格、只落 2 棵树）。
+export const ISLE_TREE_CLUSTERS = 2; // 每岛森林簇数（均等固定份）
+export const ISLE_WILDMEN = 3; // 每岛野人数（均等固定份）
+export const ISLE_SMALL_CELLS = 4000; // 小岛屿阈值：以下用小簇参数（簇半径/株数减半，大簇在小岛上摆不下）
+export const ISLE_BIG_CELLS = 20000; // 大岛阈值：以上走默认森林参数（5~8 簇，与连通图一致，大陆级岛屿不亏待）
+
 export function houseHalf(level: number): number {
   const lv = level >= 3 ? 3 : level === 2 ? 2 : 1;
   return Math.max(HOUSE_WALL[lv], HOUSE_ROOF[lv]) / 2;

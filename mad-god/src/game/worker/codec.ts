@@ -360,6 +360,10 @@ export function createSimMirror(): SimMirror {
     smoothReport: null as SmoothReport | null,
     templateId: "",
     templateName: "",
+    // v0.33 岛屿表（镜像不撒资源，读不到也无妨；给空值防未来误读崩）。
+    splitIsles: false,
+    islands: [],
+    islandGrid: new Int32Array(n),
     fordCount: 0,
     genFeatures: [] as FeatureStat[],
     lastRiverTips: [],
