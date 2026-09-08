@@ -64,7 +64,7 @@ export class LightningSpell extends Spell {
         b.shell = true;
         b.hp = Math.max(1, b.maxHp * 0.4);
         sim.lightningHouse = true;
-        if (b.team === BLUE && (b.kind === "hut" || isCampKind(b.kind))) sim.toast("一座屋宇被劈成骨架");
+        if (b.team === BLUE && (b.kind === "hut" || isCampKind(b.kind) || b.kind === "boathouse")) sim.toast("一座屋宇被劈成骨架");
       } else {
         b.hp = 0;
         sim.lightningHouse = true;

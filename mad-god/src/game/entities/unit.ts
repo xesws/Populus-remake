@@ -40,6 +40,9 @@ export abstract class Unit extends BaseEntity {
   flyVz = 0;
   flyVy = 0;
   enterT = 0;
+  // v0.32 战船沉没倒计时（秒）：hp 归零后 BoatSystem 置 SINK_T，cull 为 sinkT>0 让路，
+  // 归零时船员团灭、船被 cull 带走；其余单位恒为 0（镜像端不传，见 codec 注释）。
+  sinkT = 0;
   // v0.8 自动索敌/还手：获得目标时记录的锚点；-1 表示当前 atkId 来自玩家手动指令（不受拴绳限制）。
   agroX = -1;
   agroZ = -1;

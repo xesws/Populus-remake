@@ -14,6 +14,14 @@ function worldOf(g: number): number {
   return g * CELL;
 }
 
+/**
+ * v0.32 水面点判据（船用）：图内且插值高度 ≤ WATER。
+ * 与海水染色（heightColor COL_SEA）同一口径：画出来是海的地方船就能开。
+ */
+export function waterAt(world: World, x: number, z: number): boolean {
+  return inMap(x, z) && world.heightAt(x, z) <= WATER;
+}
+
 export function nearestLand(world: World, x: number, z: number): Cell | null {
   if (world.walkableAt(x, z)) return { x, z };
   const sx = gxOf(x);
@@ -319,6 +327,192 @@ function astarInner(
       const cost = diag + climb * 0.6 + slope * 0.7 + swamp;
       const ni = nz * GW + nx;
       const ng = gScore[cur]! + cost;
+      if (ng < gScore[ni]!) {
+        gScore[ni] = ng;
+        came[ni] = cur;
+        heap.push(ni, ng + heur(ni), ng);
+      }
+    }
+  }
+  if (best !== start) return rebuild(came, best, worldOf(best % GW), worldOf((best / GW) | 0));
+  return [];
+}
+
+/** v0.32 最近水格（waterAstar 端点吸附，nearestLand 的水面镜像）。 */
+export function nearestWater(world: World, x: number, z: number): Cell | null {
+  if (waterAt(world, x, z)) return { x, z };
+  const sx = gxOf(x);
+  const sz = gxOf(z);
+  for (let r = 1; r <= 16; r++) {
+    for (let dz = -r; dz <= r; dz++) {
+      for (let dx = -r; dx <= r; dx++) {
+        if (Math.abs(dx) !== r && Math.abs(dz) !== r) continue;
+        const wx = worldOf(sx + dx);
+        const wz = worldOf(sz + dz);
+        if (waterAt(world, wx, wz)) return { x: wx, z: wz };
+      }
+    }
+  }
+  return null;
+}
+
+/**
+ * v0.32 绳套平滑（水面版）：pullString 的水面镜像，直线段按 waterAt 采样。
+ * 单独成函数（不改 pullString 签名）：陆地那版的海湾/地基血泪注释一条都动不得。
+ */
+export function pullWaterString(
+  world: World,
+  fromX: number,
+  fromZ: number,
+  path: Cell[],
+  fromI: number,
+): number {
+  if (fromI >= path.length - 1) return fromI;
+  let best = fromI;
+  const maxJ = Math.min(path.length - 1, fromI + 12);
+  for (let j = fromI + 1; j <= maxJ; j++) {
+    const pj = path[j]!;
+    const segX = pj.x - fromX;
+    const segZ = pj.z - fromZ;
+    const span = Math.hypot(segX, segZ);
+    if (span > 2.0) break;
+    const steps = Math.max(2, Math.ceil(span / (STEP / 2)));
+    let free = true;
+    for (let s = 0; s <= steps; s++) {
+      const t = s / steps;
+      if (!waterAt(world, fromX + segX * t, fromZ + segZ * t)) {
+        free = false;
+        break;
+      }
+    }
+    if (!free) break;
+    best = j;
+  }
+  return best;
+}
+
+/**
+ * v0.32 水域 A*（战船专用，与 astar 同构）：
+ * - 网格/堆/启发式/预算壳/部分路径回退全部复用同一套；
+ * - 可走口径与海水染色严格一致（heightAt ≤ WATER）：画出来是海的地方船就能开，
+ *   画出来是陆（>WATER 哪怕 0.01）船就过不去——误拦一条窄湾好过穿一次陆地；
+ * - 临界边（任一端浅于 WATER−0.15）做 4 等分细分，防直线擦过陆岬
+ *   （陆地版“细滩涂穿格”教训的水面镜像）；深水边跳过细分，保性能；
+ * - 代价只有对角步＋浅水小罚（+0.4，偏好深水，非停靠不蹭滩）；水面无坡度/沼泽账；
+ * - 起点/终点非水 → 就近吸附（16 格环搜，无水返回 []，船原地待命）。
+ */
+export function waterAstar(
+  world: World,
+  sx: number,
+  sz: number,
+  tx: number,
+  tz: number,
+  maxVisit = 20736,
+  prio = 0,
+): Cell[] {
+  if (prio > 0 && budgetOpen && (pathStats.left <= 0 || pathStats.timeMs >= PATH_TIME_BUDGET_MS)) {
+    pathStats.denied++;
+    return [];
+  }
+  if (budgetOpen) {
+    pathStats.used++;
+    pathStats.left--;
+  }
+  const t0 = performance.now();
+  try {
+    const cap = prio > 0 && budgetOpen ? Math.min(maxVisit, PATH_VISIT_CAP_TICK) : maxVisit;
+    return waterAstarInner(world, sx, sz, tx, tz, cap);
+  } finally {
+    if (budgetOpen) pathStats.timeMs += performance.now() - t0;
+  }
+}
+
+function waterAstarInner(
+  world: World,
+  sx: number,
+  sz: number,
+  tx: number,
+  tz: number,
+  maxVisit = 20736,
+): Cell[] {
+  if (!inMap(sx, sz) || !inMap(tx, tz)) return [];
+  if (!waterAt(world, sx, sz)) {
+    const from = nearestWater(world, sx, sz);
+    if (!from) return [];
+    sx = from.x;
+    sz = from.z;
+  }
+  if (!waterAt(world, tx, tz)) {
+    const alt = nearestWater(world, tx, tz);
+    if (!alt) return [];
+    tx = alt.x;
+    tz = alt.z;
+  }
+  const sgx = gxOf(sx);
+  const sgz = gxOf(sz);
+  const tgx = gxOf(tx);
+  const tgz = gxOf(tz);
+  if (sgx === tgx && sgz === tgz) return [{ x: tx, z: tz }];
+  const gScore = new Float32Array(GW * GW);
+  gScore.fill(1e9);
+  const came = new Int32Array(GW * GW);
+  came.fill(-1);
+  const heap = new MinHeap();
+  const start = sgz * GW + sgx;
+  const goal = tgz * GW + tgx;
+  gScore[start] = 0;
+  const heur = (i: number) => {
+    const x = i % GW;
+    const z = (i / GW) | 0;
+    const dx = Math.abs(x - tgx);
+    const dz = Math.abs(z - tgz);
+    return Math.max(dx, dz) + 0.4142 * Math.min(dx, dz);
+  };
+  heap.push(start, heur(start), 0);
+  let visits = 0;
+  let best = start;
+  let bestH = heur(start);
+  while (heap.length > 0 && visits < maxVisit) {
+    const top = heap.pop()!;
+    if (top.g > gScore[top.id]! + 1e-4) continue;
+    visits++;
+    const cur = top.id;
+    if (cur === goal) return rebuild(came, cur, tx, tz);
+    const h = heur(cur);
+    if (h < bestH) {
+      bestH = h;
+      best = cur;
+    }
+    const cx = cur % GW;
+    const cz = (cur / GW) | 0;
+    const cwx = worldOf(cx);
+    const cwz = worldOf(cz);
+    const ch = world.heightAt(cwx, cwz);
+    for (let k = 0; k < 8; k++) {
+      const nx = cx + DX[k]!;
+      const nz = cz + DZ[k]!;
+      if (nx < 0 || nz < 0 || nx >= GW || nz >= GW) continue;
+      const nwx = worldOf(nx);
+      const nwz = worldOf(nz);
+      const nh = world.heightAt(nwx, nwz);
+      if (nh > WATER) continue;
+      const diag = k >= 4 ? 1.42 : 1;
+      if (ch > WATER - 0.15 || nh > WATER - 0.15) {
+        const segX = nwx - cwx;
+        const segZ = nwz - cwz;
+        let blocked = false;
+        for (let s = 1; s <= 3; s++) {
+          const t = s / 4;
+          if (world.heightAt(cwx + segX * t, cwz + segZ * t) > WATER) {
+            blocked = true;
+            break;
+          }
+        }
+        if (blocked) continue;
+      }
+      const shallow = nh > WATER - 0.15 ? 0.4 : 0;
+      const ni = nz * GW + nx;
+      const ng = gScore[cur]! + diag + shallow;
       if (ng < gScore[ni]!) {
         gScore[ni] = ng;
         came[ni] = cur;

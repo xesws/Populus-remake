@@ -35,7 +35,7 @@ export function applyBuildingDamage(sim: Sim, b: Building, dmg: number): void {
   if (!b.shell && b.level >= 1 && b.hp - dmg <= 0) {
     b.shell = true;
     b.hp = Math.max(1, b.maxHp * 0.4);
-    if (b.team === BLUE && (b.kind === "hut" || isCampKind(b.kind))) sim.toast("一座屋宇被拆成骨架");
+    if (b.team === BLUE && (b.kind === "hut" || isCampKind(b.kind) || b.kind === "boathouse")) sim.toast("一座屋宇被拆成骨架");
     return;
   }
   b.hp -= dmg;

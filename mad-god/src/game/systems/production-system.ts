@@ -1,11 +1,17 @@
 import {
   BLUE,
+  BOAT_BUILD_T,
+  BOAT_FLOAT_Y,
+  BOATHOUSE_DECK_Y,
+  BOATHOUSE_DWELL,
+  BOATHOUSE_FLEET_CAP,
   clamp,
   houseBaseRate,
   BUILD_RATE_BASE,
   DRAGON_GARRISON_MAX,
   HOUSE_ROOF_Y,
   POP_CAP,
+  LAUNCH_RANGE,
   sitePad,
   TOWER_CLIMB_T,
   TOWER_DECK_Y,
@@ -26,6 +32,8 @@ import {
 } from "../types";
 import type { Sim } from "../sim";
 import type { ISystem } from "./system";
+import type { Boathouse } from "../entities/buildings/boathouse";
+import { waterAt } from "../path";
 import { LogLevel, logger } from "../logger";
 
 export class ProductionSystem implements ISystem {
@@ -62,6 +70,18 @@ export class ProductionSystem implements ISystem {
           u.x = p.x;
           u.z = p.z;
           u.y = b.y + HOUSE_ROOF_Y[lv]!;
+          i++;
+        }
+      } else if (b.kind === "boathouse") {
+        // v0.32 船屋住户站工作甲板（仿哨塔瞭望台站位，住满 10 人一眼可见）。
+        let i = 0;
+        for (const u of sim.units) {
+          if (u.homeId !== b.id || u.enterT > 0) continue;
+          const ang = i * 2.4;
+          const p = sim.padLocalToWorld(b, Math.cos(ang) * 0.8, Math.sin(ang) * 0.8);
+          u.x = p.x;
+          u.z = p.z;
+          u.y = b.y + BOATHOUSE_DECK_Y;
           i++;
         }
       } else if (b.kind === "tower") {
@@ -103,7 +123,7 @@ export class ProductionSystem implements ISystem {
       if (b.shell || sim.lavaOnPad(b)) continue;
       if (b.kind === "hut") {
         if (sim.world.houseLevelAt(b.x, b.z, b.yaw) === 0) b.hp = 0;
-      } else if (isCampKind(b.kind) || b.kind === "tower" || b.kind === "dragonFactory") {
+      } else if (isCampKind(b.kind) || b.kind === "tower" || b.kind === "dragonFactory" || b.kind === "boathouse") {
         // v0.27-3 哨塔与营地同款地基校验（塔更小，同样不能悬空/泡水）；v0.30 大龙训练营同规。
         const s = sim.world.padStats(b.x, b.z, b.padW, b.padD, b.yaw);
         if (s.n === 0 || s.land < 0.55 || s.mean <= WATER) b.hp = 0;
@@ -219,6 +239,72 @@ export class ProductionSystem implements ISystem {
         });
       }
     }
+    // v0.32 船屋产船：住满 BOATHOUSE_DWELL 才涨进度（住不满一动不动），BOAT_BUILD_T 秒一条；
+    // 同屋存活达 BOATHOUSE_FLEET_CAP 只暂停（进度保留，沉一补一）；下水点找不到同样等待。
+    for (const b of sim.buildings) {
+      if (b.hp <= 0 || b.kind !== "boathouse" || b.level < 1) continue;
+      const bh = b as Boathouse;
+      // 懒清理：沉没/被拆的船腾出名额（unitById 只认活船）。
+      bh.producedBoatIds = bh.producedBoatIds.filter((id) => {
+        const u = sim.unitById(id);
+        return !!u && u.kind === "boat";
+      });
+      const fleet = bh.producedBoatIds.length;
+      logger.periodic(`boathouse:${b.id}`, 1000, LogLevel.Debug, "produce", `船屋#${b.id}`, () => ({
+        team: b.team,
+        dwell: `${b.dwell}/${BOATHOUSE_DWELL}`,
+        prod: +b.prod.toFixed(3),
+        fleet: `${fleet}/${BOATHOUSE_FLEET_CAP}`,
+        blocked: b.dwell < BOATHOUSE_DWELL ? "no-crew" : fleet >= BOATHOUSE_FLEET_CAP ? "fleet-full" : undefined,
+      }));
+      if (b.dwell < BOATHOUSE_DWELL) continue;
+      const rate = (1 / BOAT_BUILD_T) * sim.rates.of(b.team).prod;
+      b.prod += rate * dt;
+      if (b.prod < 1) continue;
+      if (fleet >= BOATHOUSE_FLEET_CAP) {
+        logger.throttled(`fleet:${b.id}`, 2000, LogLevel.Warn, "produce", `船屋#${b.id} 满编待产（进度保留）`, {
+          team: b.team,
+          fleet,
+        });
+        continue;
+      }
+      const launch = this.findLaunchWater(sim, b);
+      if (!launch) {
+        logger.throttled(`launch:${b.id}`, 2000, LogLevel.Warn, "produce", `船屋#${b.id} 找不到下水点，进度卡住`, {
+          prod: +b.prod.toFixed(2),
+        });
+        continue;
+      }
+      b.prod = 0;
+      b.born += 1;
+      const boat = sim.addUnit(b.team, "boat", launch.x, launch.z);
+      boat.y = BOAT_FLOAT_Y;
+      boat.yaw = Math.atan2(launch.x - b.x, launch.z - b.z);
+      bh.producedBoatIds.push(boat.id);
+      logger.info("produce", `船屋#${b.id} 战船#${boat.id}下水`, {
+        team: b.team,
+        dwell: b.dwell,
+        fleet: bh.producedBoatIds.length,
+      });
+      if (b.team === BLUE) sim.toast("战船下水");
+    }
+  }
+
+  /**
+   * v0.32 下水点：屋旁 LAUNCH_RANGE 内螺旋找水格（朝 yaw 方向优先），找不到返回 null
+   * （岸被雕刻填了之类，produce 进度保留等待，不崩）。
+   */
+  private findLaunchWater(sim: Sim, b: Building): { x: number; z: number } | null {
+    for (let r = 0.5; r <= LAUNCH_RANGE; r += 0.5) {
+      const steps = Math.max(8, Math.ceil(r * 8));
+      for (let k = 0; k < steps; k++) {
+        const a = (k / steps) * Math.PI * 2 + b.yaw;
+        const x = b.x + Math.cos(a) * r;
+        const z = b.z + Math.sin(a) * r;
+        if (waterAt(sim.world, x, z)) return { x, z };
+      }
+    }
+    return null;
   }
 
   tickEnter(sim: Sim, dt: number): void {
@@ -273,7 +359,9 @@ export class ProductionSystem implements ISystem {
       if (u.enterT <= 0) {
         u.enterT = 0;
         if (u.team === BLUE && hut) {
-          sim.toast(`勇士住进茅屋（${hut.dwell}/${houseMaxPop(hut.level)}）`);
+          // v0.32 船屋住户 toast 独立口径（住满 10 开工）。
+          if (hut.kind === "boathouse") sim.toast(`村民住进船屋（${hut.dwell}/${BOATHOUSE_DWELL}）`);
+          else sim.toast(`勇士住进茅屋（${hut.dwell}/${houseMaxPop(hut.level)}）`);
         }
       }
     }
@@ -281,9 +369,11 @@ export class ProductionSystem implements ISystem {
 
   occupy(sim: Sim, u: Unit, hut: Building): boolean {
     if (u.kind !== "walker" || u.homeId > 0) return false;
-    if (hut.kind !== "hut" || hut.level < 1 || hut.hp <= 0) return false;
+    // v0.32 船屋同款入住（只收村民，住满 BOATHOUSE_DWELL 开工造船，无升级链）。
+    if ((hut.kind !== "hut" && hut.kind !== "boathouse") || hut.level < 1 || hut.hp <= 0) return false;
     if (hut.team !== u.team) return false;
-    if (hut.dwell >= houseMaxPop(hut.level)) return false;
+    const cap = hut.kind === "boathouse" ? BOATHOUSE_DWELL : houseMaxPop(hut.level);
+    if (hut.dwell >= cap) return false;
     hut.dwell += 1;
     u.homeId = hut.id;
     u.selected = false;
@@ -307,14 +397,17 @@ export class ProductionSystem implements ISystem {
     });
     // v0.15 住满即升：L1 住满 2 人 / L2 住满 5 人当帧置位升级，下一次 produce tick（下一帧）生效，
     // 不再等第 2 个新生儿出生（旧 born>=2 门槛会让升级"顿"好几秒）。
-    if (hut.dwell >= houseMaxPop(hut.level) && hut.level < 3) hut.wantLevel = hut.level + 1;
+    // v0.32 船屋单级：住满只开工（produce 船屋分支），不置 wantLevel。
+    if (hut.kind === "hut" && hut.dwell >= cap && hut.level < 3) hut.wantLevel = hut.level + 1;
     return true;
   }
 
   tryOccupy(sim: Sim, u: Unit): boolean {
     if (u.kind !== "walker" || u.homeId > 0 || !u.targetId) return false;
     const hut = sim.buildingById(u.targetId);
-    if (!hut || hut.kind !== "hut" || hut.level < 1 || hut.hp <= 0 || hut.team !== u.team) return false;
+    // v0.32 船屋同款到站入住（orderMove 船屋分支把 targetId 指向船屋）。
+    if (!hut || (hut.kind !== "hut" && hut.kind !== "boathouse") || hut.level < 1 || hut.hp <= 0 || hut.team !== u.team)
+      return false;
     const door = sim.hutDoor(hut);
     const d2 = (u.x - door.x) ** 2 + (u.z - door.z) ** 2;
     if (d2 > 1.2 * 1.2) return false;
@@ -365,7 +458,8 @@ export class ProductionSystem implements ISystem {
       return;
     }
     // v0.27-3 哨塔与营地同款完工：送满木头即落成（塔只需 1 捆，落成最快）。
-    if ((isCampKind(b.kind) || b.kind === "tower" || b.kind === "dragonFactory") && b.level === 0) {
+    // v0.32 船屋同规（单级，落成即 L1 开放入住）。
+    if ((isCampKind(b.kind) || b.kind === "tower" || b.kind === "dragonFactory" || b.kind === "boathouse") && b.level === 0) {
       this.upgradeBuilding(sim, b, 1);
     }
   }
@@ -397,6 +491,9 @@ export class ProductionSystem implements ISystem {
       sim.toast(b.team === BLUE ? "训练营落成" : "敌方训练营落成");
     } else if (b.kind === "tower") {
       sim.toast(b.team === BLUE ? "哨塔落成" : "敌方哨塔落成");
+    } else if (b.kind === "boathouse") {
+      // v0.32 船屋落成：接下来住满 10 名村民开工造船。
+      sim.toast(b.team === BLUE ? "船屋落成——住满 10 名村民即可开工" : "敌方船屋落成");
     } else if (b.kind === "dragonFactory") {
       // v0.30 大龙训练营落成：接下来等 20 名牛战士进驻。
       sim.toast(b.team === BLUE ? "大龙训练营落成——凑齐 20 名牛战士即可开工" : "敌方大龙训练营落成");

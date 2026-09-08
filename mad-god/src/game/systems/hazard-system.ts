@@ -13,7 +13,9 @@ export class HazardSystem implements ISystem {
       // v0.30 大龙在半空飞行：溺水/岩浆/沼泽都是地面危害，不波及。
       if (u.isFlying()) continue;
       if (!inMap(u.x, u.z) || sim.world.heightAt(u.x, u.z) <= WATER) {
-        u.hp -= 4 * dt;
+        // v0.32 船/船员不溺水（船浮着，船员在甲板上）；落水 continue 照旧跳过岩浆/沼泽分支
+        // （水面本无持久岩浆，火山/地震的水面浆 ohnehin 熄灭口径，见 flowLava 入海熄灭）。
+        if (u.kind !== "boat" && u.homeId <= 0) u.hp -= 4 * dt;
         continue;
       }
       const i = sim.world.sampleAt(u.x, u.z);

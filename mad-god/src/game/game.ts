@@ -2,6 +2,7 @@ import { AIDirector, AIProfile } from "./ai";
 import { SimClient } from "./client/sim-client";
 import type { WorkerSimClient } from "./client/worker-sim-client";
 import { bindInput, InputState, maybeStartSculpt, ndcCell, tickCamera } from "./input";
+import { nearestWater, waterAt } from "./path";
 import {
   DRAGON_PICK_RADIUS,
   DRAGON_PICK_TOLERANCE,
@@ -14,7 +15,7 @@ import { View } from "./render";
 import { Sim } from "./sim";
 import { ShotDirector } from "./shot-director";
 import { canUnlock, cast } from "./spells";
-import { BLUE, BuildingKind, FxBolt, inMap, isCampKind, Order, RED, snapYaw, Team, Tool, TrainKind } from "./types";
+import { BLUE, BOAT_CAPACITY, BOAT_DOCK_RANGE, BuildingKind, FxBolt, inMap, isCampKind, Order, RED, snapYaw, Team, Tool, TrainKind } from "./types";
 import * as THREE from "three";
 import type { AiLevel } from "./worker/protocol";
 import { HUD, showEnd } from "./ui";
@@ -225,6 +226,7 @@ export class Game {
       tower: "哨塔",
       rebirth: "重生",
       dragonFactory: "大龙训练营",
+      boathouse: "船屋",
     };
     this.sim.toast(`建造：${names[kind] ?? kind}`);
   }
@@ -334,6 +336,53 @@ export class Game {
       this.sim.orderAttackTarget(BLUE, foe);
       return;
     }
+    // v0.32 船交互（船是单位，buildingAt 捡不到，放建筑分支之前）。
+    // 本地直调 BoatSystem 真方法，worker 经 WorkerBoatSystem 发命令（签名统一，见 BoatClient）。
+    const clicked = cell ? this.sim.unitAt(cell.x, cell.z, 0.9) : undefined;
+    const ownBoat =
+      clicked && clicked.kind === "boat" && clicked.team === BLUE && clicked.hp > 0 && clicked.sinkT <= 0
+        ? clicked
+        : undefined;
+    const selBoats = selected.filter((u) => u.kind === "boat" && u.hp > 0 && u.sinkT <= 0);
+    const selTroops = selected.filter(
+      (u) => u.team === BLUE && u.hp > 0 && u.homeId === 0 && u.kind !== "boat" && !u.isFlying(),
+    );
+    // 选中陆地单位右键自家船＝上船（走到船边可走岸点，thinkUnits 到站自动登船）。
+    if (ownBoat && selTroops.length) {
+      for (const u of selTroops) this.sim.boatSystem.orderBoard(this.sim, ownBoat, u);
+      const sent = selTroops.filter((u) => u.targetId === ownBoat.id).length;
+      if (sent) this.view.showMoveMark(ownBoat.x, ownBoat.z);
+      else if (this.sim.boatSystem.riders(this.sim, ownBoat.id).length >= BOAT_CAPACITY)
+        this.sim.toast(`船已满（${BOAT_CAPACITY}/${BOAT_CAPACITY}）`);
+      else this.sim.toast("离岸太远，上不了船");
+      return;
+    }
+    // 选中船右键：陆地近岸＋已贴岸有船员＝下船；其余一律航行（陆地点击自动吸附最近水格贴岸）。
+    if (selBoats.length && cell) {
+      if (!waterAt(this.sim.world, cell.x, cell.z)) {
+        let out = 0;
+        for (const bt of selBoats) {
+          if (
+            (cell.x - bt.x) ** 2 + (cell.z - bt.z) ** 2 <= (BOAT_DOCK_RANGE + 1.5) ** 2 &&
+            this.sim.boatSystem.canDisembark(this.sim, bt) &&
+            this.sim.boatSystem.disembarkAll(this.sim, bt)
+          )
+            out++;
+        }
+        if (out) {
+          this.view.showMoveMark(cell.x, cell.z);
+          return;
+        }
+      }
+      for (const bt of selBoats) this.sim.boatSystem.sendSail(this.sim, bt, cell.x, cell.z);
+      for (const u of selected) {
+        if (u.kind === "boat" || u.homeId > 0) continue;
+        u.atkId = 0;
+        this.sim.sendMove(u, cell.x, cell.z);
+      }
+      this.view.showMoveMark(cell.x, cell.z);
+      return;
+    }
     const b = cell ? this.sim.buildingAt(cell.x, cell.z) : undefined;
     if (b && b.team === RED && b.hp > 0 && b.level >= 1) {
       this.sim.orderAttackTarget(BLUE, b);
@@ -345,10 +394,11 @@ export class Game {
         this.view.showMoveMark(b.x, b.z);
         return;
       }
-      if (b.kind === "hut" || isCampKind(b.kind) || b.kind === "tower" || b.kind === "dragonFactory") {
+      if (b.kind === "hut" || isCampKind(b.kind) || b.kind === "tower" || b.kind === "dragonFactory" || b.kind === "boathouse") {
         // v0.28e 修游戏内实锤断链：哨塔此前落不进 orderMove，右键只会让牛战士走到塔边傻站
         //（检查脚本直调 sim.orderMove 测不到这层）。塔的进/出驻扎分支在 sim.orderMove 内。
         // v0.30 大龙训练营同路：右键自家工厂 = 选中牛战士前往进驻。
+        // v0.32 船屋同路：右键自家船屋 = 选中村民前往入住（住满 10 开工）。
         this.sim.orderMove(BLUE, b.x, b.z);
         return;
       }
@@ -370,6 +420,8 @@ export class Game {
       spy: "选中间谍",
       walker: "选中勇士",
       dragon: "选中大龙",
+      boat: "选中战船", // v0.32
+      boathouse: "选中船屋", // v0.32
     };
     return pick[kind] ?? "选中子民";
   }
@@ -434,6 +486,41 @@ export class Game {
     return undefined;
   }
 
+  /**
+   * v0.32 船光标判定（frame 每帧调用，secondary 右键语义同源——光标所见即所得）：
+   * 选中陆地单位悬停自家船→board/deny；选中船悬停水面→sail；选中船悬停可停靠岸→disembark。
+   * 判定只读 units/world（BoatClient 视图），本地/镜像通用。
+   */
+  private boatCursor(cell: {
+    x: number;
+    z: number;
+  }): { x: number; z: number; mode: "board" | "sail" | "disembark" | "deny" } | null {
+    const selected = this.sim.selectedOf(BLUE);
+    if (!selected.length) return null;
+    const boats = selected.filter((u) => u.kind === "boat" && u.hp > 0 && u.sinkT <= 0);
+    const troops = selected.filter(
+      (u) => u.team === BLUE && u.hp > 0 && u.homeId === 0 && u.kind !== "boat" && !u.isFlying(),
+    );
+    const clicked = this.sim.unitAt(cell.x, cell.z, 0.9);
+    const ownBoat =
+      clicked && clicked.kind === "boat" && clicked.team === BLUE && clicked.hp > 0 && clicked.sinkT <= 0
+        ? clicked
+        : undefined;
+    if (ownBoat && troops.length) {
+      const ok = troops.some((u) => this.sim.boatSystem.canBoard(this.sim, ownBoat, u));
+      return { x: ownBoat.x, z: ownBoat.z, mode: ok ? "board" : "deny" };
+    }
+    if (!boats.length) return null;
+    if (waterAt(this.sim.world, cell.x, cell.z)) return { x: cell.x, z: cell.z, mode: "sail" };
+    const near = boats.find(
+      (bt) =>
+        (cell.x - bt.x) ** 2 + (cell.z - bt.z) ** 2 <= (BOAT_DOCK_RANGE + 1.5) ** 2 &&
+        this.sim.boatSystem.canDisembark(this.sim, bt),
+    );
+    if (near) return { x: cell.x, z: cell.z, mode: "disembark" };
+    return { x: cell.x, z: cell.z, mode: "sail" };
+  }
+
   closestBlue(sx: number, sy: number, cell: { x: number; z: number } | null) {
     // v0.30 己方大龙优先（同 closestRed 的剪影规则）。
     const dragon = this.pickDragon(BLUE, sx, sy);
@@ -445,9 +532,10 @@ export class Game {
       // 进屋动画中（enterT>0）的不选。
       if (u.team !== BLUE || u.enterT > 0) continue;
       // v0.30 大龙训练营厂内驻员锁定不可点选（旧宿主白名单：茅屋/哨塔之外不参与拾取）。
+      // v0.32 船屋甲板村民同理可点选（右键拉出走 leaveBuilding 船屋分支）。
       if (u.homeId > 0) {
         const home = this.sim.buildingById(u.homeId);
-        if (!home || (home.kind !== "hut" && home.kind !== "tower")) continue;
+        if (!home || (home.kind !== "hut" && home.kind !== "tower" && home.kind !== "boathouse")) continue;
       }
       const p = this.view.worldToCanvas(u.x, u.y + 0.28, u.z, this.canvas);
       const d = (p.x - sx) * (p.x - sx) + (p.y - sy) * (p.y - sy);
@@ -474,7 +562,7 @@ export class Game {
           b.team === BLUE &&
           b.hp > 0 &&
           b.level >= 1 &&
-          (b.kind === "hut" || isCampKind(b.kind))
+          (b.kind === "hut" || isCampKind(b.kind) || b.kind === "tower" || b.kind === "dragonFactory" || b.kind === "boathouse")
         ) {
           return false;
         }
@@ -667,7 +755,10 @@ export class Game {
         if (this.tool === "select" && hasSel) {
           const foe = this.closestRed(this.input.mx, this.input.my, cell);
           const eb = this.sim.buildingAt(cell.x, cell.z);
+          // v0.32 船光标优先于建筑/空地（弱于攻击：敌人永远先亮拳头，与既有口径一致）。
+          const bc = !foe ? this.boatCursor(cell) : null;
           if (foe) this.view.hover(foe.x, foe.z, true, "fight");
+          else if (bc) this.view.hover(bc.x, bc.z, true, bc.mode);
           else if (eb && eb.team === RED && eb.hp > 0 && eb.level >= 1) this.view.hover(eb.x, eb.z, true, "fight");
           else this.view.hover(cell.x, cell.z, true, "move");
         } else if (this.tool !== "select") {

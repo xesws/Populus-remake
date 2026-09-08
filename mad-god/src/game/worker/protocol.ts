@@ -53,6 +53,10 @@ export type MainCmd =
    * （镜像本地 push 只为即时显示；若不回执，worker 计数不增，后续 toast 会被 HUD 的
    * toastGen 去重吞掉——见 worker-sim-client.toast 的注释）。 */
   | { t: "toast"; msg: string }
+  // v0.32 战船指令（game.ts secondary/光标经 SimClient 统一入口，worker 侧落 sim.boatSystem 真方法）。
+  | { t: "board"; boatId: number; ids: number[] }
+  | { t: "sail"; ids: number[]; x: number; z: number }
+  | { t: "disembark"; ids: number[] }
   /** v0.29c-2 右键自家未完工工地 = sim.assignBuilders(BLUE, buildingById(targetId))（game.ts secondary）。 */
   | { t: "assignBuilders"; targetId: number };
 

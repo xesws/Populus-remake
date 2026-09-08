@@ -127,6 +127,7 @@ export class TornadoSpell extends Spell {
     for (const u of sim.units) {
       if (u.hp <= 0) continue;
       if (u.isFlying()) continue; // v0.30 大龙在半空，龙卷风卷不到
+      if (u.kind === "boat" || u.homeId > 0) continue; // v0.32 船太重卷不动，房中人随建筑（原地不动）
       if (u.flyVy !== 0) continue; // 已被甩飞在空中：抛物线飞行交给 path-system，不再重复吸入
       const d = Math.hypot(u.x - tw.x, u.z - tw.z);
       if (d > suckR) continue;
@@ -176,7 +177,7 @@ export class TornadoSpell extends Spell {
         b.hp = Math.max(1, b.maxHp * 0.4);
         tw.houseT = 0;
         sim.tornadoHouse = true;
-        if (b.team === BLUE && (b.kind === "hut" || isCampKind(b.kind))) sim.toast("一座屋宇被卷成骨架");
+        if (b.team === BLUE && (b.kind === "hut" || isCampKind(b.kind) || b.kind === "boathouse")) sim.toast("一座屋宇被卷成骨架");
       } else {
         tw.houseT += dt;
         if (tw.houseT > 0.85) {

@@ -277,6 +277,7 @@ export class CombatSystem implements ISystem {
       if (b.hp <= 0) this.clearAutoLock(u);
     }
     this.towerCombat(sim, dt); // v0.27-3 哨塔驻军射击（主循环跳过 homeId>0，塔走独立通道）
+    this.boatCombat(sim, dt); // v0.32 船上开火（船员 homeId 挂船，船走独立通道）
   }
 
   /**
@@ -347,6 +348,115 @@ export class CombatSystem implements ISystem {
           const d = Math.hypot(tb.x - b.x, tb.z - b.z) - edge;
           if (g.atkCd <= 0 && d <= unitRange("firewarrior") * TOWER_RANGE_MULT) {
             this.launchFireball(sim, g, tb.x, tb.z, { x: b.x, z: b.z, y: b.y + TOWER_TOP });
+            g.atkCd = attackInterval(g.kind);
+          }
+        } else {
+          g.atkId = 0;
+        }
+      }
+    }
+  }
+
+  /**
+   * v0.32 船上开火：船员是移动炮位（船会动，开火点跟船走）——
+   * - 主循环跳过 homeId>0，船员走本独立通道（towerCombat 同款）；
+   * - 索敌/射程/间隔/伤害/暴击/感化全部默认数值（1×，spec 原话"保持默认行为"）；
+   * - SIGHT≤0 的（村民）不开火；船员打不还手（敌人索敌不到船员，塔驻军同规）；
+   * - 船只本身 ATTACK/RANGE/SIGHT 全 0，永不参与本通道（只当炮位载体）。
+   */
+  private boatAcc = 0;
+  private boatCombat(sim: Sim, dt: number): void {
+    this.boatAcc += dt;
+    const scan = this.boatAcc >= 0.2;
+    if (scan) this.boatAcc = 0;
+    for (const b of sim.units) {
+      if (b.kind !== "boat" || b.hp <= 0 || b.sinkT > 0) continue;
+      for (const g of sim.boatSystem.riders(sim, b.id)) {
+        if (g.atkCd > 0) g.atkCd = Math.max(0, g.atkCd - dt);
+        if (this.autoPreach(sim, g, dt)) continue; // 传教士船员默认引导（陆地同规）
+        const sight = UNIT_SIGHT[g.kind];
+        if (sight <= 0) continue;
+        if (scan) {
+          const enemy: Team = g.team === BLUE ? RED : BLUE;
+          let best: Unit | null = null;
+          let bestD = sight * sight;
+          for (const o of sim.units) {
+            if (o.team !== enemy || o.hp <= 0 || o.homeId > 0) continue;
+            const d = dist2(b.x, b.z, o.x, o.z);
+            if (d < bestD) {
+              bestD = d;
+              best = o;
+            }
+          }
+          if (best) {
+            g.atkId = best.id;
+          } else {
+            let bb: Building | null = null;
+            let bd = sight * sight;
+            for (const t of sim.buildings) {
+              if (t.team !== enemy || t.hp <= 0 || t.kind === "rebirth") continue;
+              const d = dist2(b.x, b.z, t.x, t.z);
+              if (d < bd) {
+                bd = d;
+                bb = t;
+              }
+            }
+            g.atkId = bb ? bb.id : 0;
+          }
+        }
+        const from = { x: b.x, z: b.z, y: b.y + 0.7 }; // 甲板发射原点
+        const tu = sim.unitById(g.atkId);
+        if (tu) {
+          if (tu.isFlying()) {
+            if (unitRange(g.kind) < 2) {
+              this.clearAutoLock(g);
+              continue;
+            }
+            if (g.kind === "firewarrior") {
+              const range = unitRange(g.kind);
+              if (g.atkCd <= 0 && dist2(b.x, b.z, tu.x, tu.z) <= range * range) {
+                this.launchFireball(sim, g, tu.x, tu.z, from, tu.y + 0.3);
+                g.atkCd = attackInterval(g.kind);
+              }
+            }
+            continue;
+          }
+          if (tu.flyVy !== 0 || tu.y > sim.world.heightAt(tu.x, tu.z) + 0.08) continue;
+          const range = unitRange(g.kind);
+          const d2 = dist2(b.x, b.z, tu.x, tu.z);
+          if (g.kind === "firewarrior") {
+            if (g.atkCd <= 0 && d2 <= range * range && !sim.world.losBlocked(b.x, b.z, tu.x, tu.z)) {
+              this.launchFireball(sim, g, tu.x, tu.z, from);
+              g.atkCd = attackInterval(g.kind);
+            }
+            continue;
+          }
+          if (g.atkCd <= 0 && d2 <= range * range) {
+            applyUnitDamage(tu, g.kind, undefined, sim);
+            if (g.kind === "warrior" && tu.hp > 0 && Math.random() < WARRIOR_CRIT_CHANCE) {
+              applyUnitDamage(tu, g.kind, undefined, sim);
+              if (tu.hp > 0) {
+                const knock =
+                  WARRIOR_CRIT_KNOCK_MIN + Math.random() * (WARRIOR_CRIT_KNOCK_MAX - WARRIOR_CRIT_KNOCK_MIN);
+                this.pushUnit(sim, tu, b.x, b.z, knock);
+              }
+            }
+            g.atkCd = attackInterval(g.kind);
+            if (tu.hp <= 0) this.clearAutoLock(g);
+          }
+          continue;
+        }
+        const tb = sim.buildingById(g.atkId);
+        if (tb) {
+          const edge = padSupportRadius({ x: tb.x, z: tb.z, w: tb.padW, d: tb.padD, yaw: tb.yaw }, b.x, b.z);
+          const d = Math.hypot(tb.x - b.x, tb.z - b.z) - edge;
+          if (g.kind === "firewarrior") {
+            if (g.atkCd <= 0 && d <= unitRange(g.kind) && !sim.world.losBlocked(b.x, b.z, tb.x, tb.z)) {
+              this.launchFireball(sim, g, tb.x, tb.z, from);
+              g.atkCd = attackInterval(g.kind);
+            }
+          } else if (g.atkCd <= 0 && d <= unitRange(g.kind)) {
+            applyBuildingDamage(sim, tb, unitDamageToBuilding(g.kind));
             g.atkCd = attackInterval(g.kind);
           }
         } else {

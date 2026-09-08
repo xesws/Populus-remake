@@ -61,6 +61,8 @@ export type SimClient = Pick<
   | "orderMove"
   | "orderAttackTarget"
   | "train"
+  // —— 战船指令（v0.32：本地直调 BoatSystem，worker 发命令＋读镜像，见 WorkerBoatSystem）——
+  | "boatSystem"
   // —— 建造 ——
   | "canFound"
   | "foundSite"

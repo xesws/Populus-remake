@@ -1,6 +1,6 @@
 import * as THREE from "three";
 import type { SimClient } from "./client/sim-client";
-import { BLUE, clamp, FIRE_DOWN_TIME, FxBolt, houseMaxPop, isCampKind, SAMPLES, STEP, Team, TRAIN_TIME, WATER, WORLD } from "./types";
+import { BLUE, BOATHOUSE_DWELL, clamp, FIRE_DOWN_TIME, FxBolt, houseMaxPop, isCampKind, SAMPLES, SINK_T, STEP, Team, TRAIN_TIME, WATER, WORLD } from "./types";
 import { World } from "./world";
 import { TornadoFX } from "./render-parts/tornado-fx";
 import { LavaFX } from "./render-parts/lava-fx";
@@ -61,6 +61,11 @@ export class View {
   cursor: THREE.Mesh;
   fightRing: THREE.Mesh;
   fist: THREE.Group;
+  denyX: THREE.Group; // v0.32 上船禁止符号（红叉，deny 光标态专用）
+  /** v0.32 沉没本地计时（主线程/镜像通用）：boat id → 首次看到 hp≤0 的 this.t（推导沉没进度，不依赖 sinkT 快照）。 */
+  sinkingBoats = new Map<number, number>();
+  /** v0.32 白色涟漪池（船沉入水时泛起一圈，1.2s 扩散淡出）。 */
+  sinkRipples: Array<{ g: THREE.Mesh; t0: number }> = [];
   moveMark: THREE.Group;
   moveMarkLife = 0;
   moveMarkMats: THREE.Material[] = [];
@@ -231,6 +236,10 @@ export class View {
     this.fist.visible = false;
     this.scene.add(this.fist);
 
+    this.denyX = this.makeDenyX();
+    this.denyX.visible = false;
+    this.scene.add(this.denyX);
+
     this.moveMark = this.makeMoveMark();
     this.scene.add(this.moveMark);
 
@@ -282,6 +291,18 @@ export class View {
     return g;
   }
 
+  makeDenyX(): THREE.Group {
+    // v0.32 红叉：两根交叉细盒 vertical 悬浮（fist 同款高度，不做 billboard，随视角固定朝向）。
+    const g = new THREE.Group();
+    const red = new THREE.MeshBasicMaterial({ color: 0xd43a2a, side: THREE.DoubleSide });
+    const a = new THREE.Mesh(new THREE.BoxGeometry(0.5, 0.09, 0.02), red);
+    a.rotation.z = Math.PI / 4;
+    const b = new THREE.Mesh(new THREE.BoxGeometry(0.5, 0.09, 0.02), red);
+    b.rotation.z = -Math.PI / 4;
+    g.add(a, b);
+    return g;
+  }
+
   makeMoveMark(): THREE.Group {
     const g = new THREE.Group();
     const gold = new THREE.MeshBasicMaterial({ color: 0xc9a227, transparent: true, opacity: 0.95, side: THREE.DoubleSide });
@@ -330,12 +351,18 @@ export class View {
     p.y = this.world.heightAt(p.x, p.z) + 0.02;
   }
 
-  hover(x: number, z: number, valid: boolean, mode: "move" | "fight" | "off" = valid ? "move" : "off"): void {
+  hover(
+    x: number,
+    z: number,
+    valid: boolean,
+    mode: "move" | "fight" | "board" | "sail" | "disembark" | "deny" | "off" = valid ? "move" : "off",
+  ): void {
     const m = !valid ? "off" : mode;
     if (m === "off") {
       this.cursor.visible = false;
       this.fightRing.visible = false;
       this.fist.visible = false;
+      this.denyX.visible = false;
       return;
     }
     const y = this.world.heightAt(x, z);
@@ -348,8 +375,24 @@ export class View {
       this.fightRing.quaternion.copy(q);
       this.fist.visible = true;
       this.fist.position.set(x, y + 0.85, z);
+      this.denyX.visible = false;
       return;
     }
+    // v0.32 船光标：同环换色（board 青/sail 浅蓝/disembark 绿/deny 红＋红叉）。
+    if (m === "board" || m === "sail" || m === "disembark" || m === "deny") {
+      const col = m === "deny" ? 0xd43a2a : m === "board" ? 0x2fbfa0 : m === "sail" ? 0x5cb8ff : 0x58c24a;
+      (this.cursor.material as THREE.MeshBasicMaterial).color.set(col);
+      this.cursor.visible = true;
+      this.cursor.position.set(x, y + 0.04, z);
+      this.cursor.quaternion.copy(q);
+      this.fightRing.visible = false;
+      this.fist.visible = false;
+      this.denyX.visible = m === "deny";
+      if (m === "deny") this.denyX.position.set(x, y + 0.85, z);
+      return;
+    }
+    (this.cursor.material as THREE.MeshBasicMaterial).color.set(0xf2e08a);
+    this.denyX.visible = false;
     this.fightRing.visible = false;
     this.fist.visible = false;
     this.cursor.visible = true;
@@ -511,6 +554,7 @@ export class View {
     this.guardFireFX.sync(sim, dt); // v0.19 守卫篝火
     this.dragonFX.sync(sim, dt); // v0.30 大龙：吐息弹体 + 燃烧地块
     this.syncBlast(sim);
+    this.syncSinkRipples(); // v0.32 战船沉没白色涟漪
     this.syncMeteors(sim); // v0.27f 天降火球
     this.syncAnkhs(sim);
     this.syncShots(sim);
@@ -527,6 +571,35 @@ export class View {
     this.syncSelect(sim);
     if (!freezeFx) this.tickMoveMark(dt);
     this.syncCamera();
+  }
+
+  /** v0.32 白色涟漪：船沉点泛起一圈，1.2s 扩散淡出（纯表现，sim 侧零状态）。 */
+  spawnSinkRipple(x: number, z: number): void {
+    const m = new THREE.Mesh(
+      new THREE.RingGeometry(0.5, 0.72, 32),
+      new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.85, side: THREE.DoubleSide }),
+    );
+    m.rotation.x = -Math.PI / 2;
+    m.position.set(x, Math.max(this.world.heightAt(x, z), WATER) + 0.06, z);
+    this.scene.add(m);
+    this.sinkRipples.push({ g: m, t0: this.t });
+  }
+
+  syncSinkRipples(): void {
+    for (let i = this.sinkRipples.length - 1; i >= 0; i--) {
+      const r = this.sinkRipples[i]!;
+      const f = (this.t - r.t0) / 1.2;
+      if (f >= 1) {
+        this.scene.remove(r.g);
+        r.g.geometry.dispose();
+        (r.g.material as THREE.Material).dispose();
+        this.sinkRipples.splice(i, 1);
+        continue;
+      }
+      const s = 1 + f * 3.2;
+      r.g.scale.set(s, s, 1);
+      (r.g.material as THREE.MeshBasicMaterial).opacity = 0.85 * (1 - f);
+    }
   }
 
   teamPrimary(team: Team): number {
@@ -692,6 +765,24 @@ export class View {
       return g;
     }
 
+    if (kind === "boat") {
+      // v0.32 战船：低多边形小木船——船壳＋舷＋长凳＋队色饰带＋艉旗。前向 +z（yaw=atan2(dx,dz) 同约定）。
+      const hull = new THREE.MeshLambertMaterial({ color: 0x6a4a28 });
+      const dark = new THREE.MeshLambertMaterial({ color: 0x3a2818 });
+      this.box(g, 0.7, 0.22, 1.6, hull, 0, 0.11, 0); // 船底壳
+      this.box(g, 0.4, 0.2, 0.4, hull, 0, 0.12, 0.9); // 艏收窄
+      this.box(g, 0.5, 0.2, 0.3, hull, 0, 0.12, -0.85); // 艉
+      this.box(g, 0.74, 0.06, 1.0, teamMat, 0, 0.24, 0); // 队色饰带（阵营识别）
+      this.box(g, 0.08, 0.22, 1.5, hull, -0.36, 0.3, 0); // 左舷
+      this.box(g, 0.08, 0.22, 1.5, hull, 0.36, 0.3, 0); // 右舷
+      this.box(g, 0.55, 0.05, 1.4, dark, 0, 0.24, 0); // 舱底板
+      this.box(g, 0.55, 0.07, 0.18, hull, 0, 0.32, 0.35); // 长凳×2（船员 2×3 槽位即坐这两排）
+      this.box(g, 0.55, 0.07, 0.18, hull, 0, 0.32, -0.35);
+      this.box(g, 0.05, 0.5, 0.05, hull, 0, 0.5, -0.8); // 艉旗杆
+      this.box(g, 0.3, 0.18, 0.03, teamMat, 0.17, 0.68, -0.8); // 队色旗
+      return g;
+    }
+
     // v0.25d 村民（walker）头巾：头顶一块 + 脑后垂尾，任何角度都能看到阵营色（蓝/红）。
     // 头巾顶略宽于头(0.14)盖住头顶（头顶 y=0.41，中心放 0.435 微微隆起）；
     // 垂尾贴后脑勺（头半深 0.07，尾巴厚 0.02 → 外缘 -0.105 不悬空）。若实测 -z 是脸的方向，把 z 改 +0.095。
@@ -708,9 +799,13 @@ export class View {
     for (const u of sim.units) {
       // v0.27h 茅屋住户画在屋顶；v0.28e 塔顶驻军同理——sim.arrangeDwellers/tickEnter
       // 已把坐标/高度维护到位（含爬塔插值），照常走地面单位绘制路径，攀爬过程自然可见。
+      // v0.32 船员同理：宿主是船（单位 id），船在场即画（BoatSystem.syncRiders 已钉甲板）。
       if (u.homeId > 0 && u.enterT <= 0) {
         const home = sim.buildingById(u.homeId);
-        if (!home || (home.kind !== "hut" && home.kind !== "tower")) continue;
+        if (!home) {
+          const boat = sim.units.find((o) => o.id === u.homeId);
+          if (!boat || boat.kind !== "boat" || boat.hp <= 0) continue;
+        } else if (home.kind !== "hut" && home.kind !== "tower") continue;
       }
       live.add(u.id);
       let g = this.unitMeshes.get(u.id);
@@ -727,6 +822,24 @@ export class View {
       const bob = Math.abs(Math.sin(this.t * 8 + u.phase)) * 0.03;
       g.position.set(u.x, u.y + bob, u.z);
       g.rotation.y = u.yaw;
+      // v0.32 沉没动画（主线程/镜像通用：按“hp≤0 且仍在场”本地计时推导进度，
+      // 不依赖 sinkT 快照；首次看到即 spawn 白色涟漪，见 syncSinkRipples）。
+      if (u.kind === "boat") {
+        if (u.hp <= 0) {
+          let t0 = this.sinkingBoats.get(u.id);
+          if (t0 === undefined) {
+            t0 = this.t;
+            this.sinkingBoats.set(u.id, t0);
+            this.spawnSinkRipple(u.x, u.z);
+          }
+          const f = Math.min(1, (this.t - t0) / SINK_T);
+          g.position.y -= f * 1.4;
+          g.rotation.z = f * 0.5;
+          g.rotation.x = f * 0.22;
+        } else {
+          this.sinkingBoats.delete(u.id);
+        }
+      }
       // v0.12 倒地动画：命中后 0.2s 倒下 → 平躺 → 归零前 0.2s 爬起，倾角按包络系数过渡。
       if (u.downT > 0) {
         const f = Math.min(1, Math.min(u.downT, FIRE_DOWN_TIME - u.downT) / 0.2);
@@ -781,6 +894,7 @@ export class View {
       if (!live.has(id)) {
         this.unitGroup.remove(g);
         this.unitMeshes.delete(id);
+        this.sinkingBoats.delete(id); // v0.32 沉船被 cull 带走后清本地计时
       }
     }
   }
@@ -956,6 +1070,29 @@ export class View {
       return g;
     }
 
+    if (kind === "boathouse") {
+      // v0.32 船屋：高脚工作台＋后舱＋前伸码头（工作甲板面 0.6＝BOATHOUSE_DECK_Y，住户站位见 arrangeDwellers）。
+      const wood = new THREE.MeshLambertMaterial({ color: 0x6a4a28 });
+      const wall = new THREE.MeshLambertMaterial({ color: team === 0 ? 0x8a6a40 : 0x7a4a32 });
+      const thatch = new THREE.MeshLambertMaterial({ color: 0xc4a44a });
+      for (const [x, z] of [
+        [0.9, 0.9],
+        [-0.9, 0.9],
+        [0.9, -0.9],
+        [-0.9, -0.9],
+      ] as const) {
+        this.box(g, 0.14, 0.6, 0.14, wood, x, 0.3, z); // 高脚柱
+      }
+      this.box(g, 2.2, 0.1, 2.2, wood, 0, 0.55, 0); // 工作甲板（面 0.6）
+      this.box(g, 1.4, 0.8, 1.2, wall, 0, 1.0, -0.4); // 后舱
+      this.box(g, 1.6, 0.15, 1.4, thatch, 0, 1.48, -0.4); // 茅草顶
+      this.box(g, 0.3, 0.06, 1.4, wood, -0.35, 0.5, 1.6); // 码头 plank×2（朝水一侧前伸）
+      this.box(g, 0.3, 0.06, 1.4, wood, 0.35, 0.5, 1.6);
+      this.box(g, 0.07, 0.7, 0.07, wood, 1.0, 1.0, -0.9); // 队色旗杆＋旗
+      this.box(g, 0.34, 0.22, 0.04, teamMat, 1.18, 1.24, -0.9);
+      return g;
+    }
+
     if (level <= 1) {
       // v0.28c 茅屋缩半：水平尺寸 2.2→1.1（高度不变，只瘦身）。
       const wallCol = team === 0 ? 0x8a6a40 : 0x7a4a32;
@@ -1078,8 +1215,11 @@ export class View {
   syncProdBars(sim: SimClient): void {
     const live = new Set<number>();
     for (const b of sim.buildings) {
-      if (b.kind !== "hut" || b.team !== BLUE || b.hp <= 0 || b.level < 1) continue;
-      if (b.dwell <= 0 || b.dwell >= houseMaxPop(b.level)) continue;
+      // v0.32 船屋生产条：住满开工即显示（住户条走 syncDwellPips 船屋分支，见下）。
+      const isBoat = b.kind === "boathouse" && b.team === BLUE && b.hp > 0 && b.level >= 1 && b.dwell >= BOATHOUSE_DWELL;
+      const isHut = b.kind === "hut" && b.team === BLUE && b.hp > 0 && b.level >= 1;
+      if (!isHut && !isBoat) continue;
+      if (isHut && (b.dwell <= 0 || b.dwell >= houseMaxPop(b.level))) continue;
       live.add(b.id);
       let g = this.prodBars.get(b.id);
       if (!g) {
@@ -1256,9 +1396,12 @@ export class View {
   syncDwellPips(sim: SimClient): void {
     const live = new Set<number>();
     for (const b of sim.buildings) {
-      if (b.kind !== "hut" || b.hp <= 0 || b.level < 1 || b.dwell <= 0) continue;
+      // v0.32 船屋住户条：住满 10 开工一眼可见（与茅屋同构，maxPop 走船屋档）。
+      const isBoat = b.kind === "boathouse" && b.hp > 0 && b.level >= 1 && b.dwell > 0;
+      const isHut = b.kind === "hut" && b.hp > 0 && b.level >= 1 && b.dwell > 0;
+      if (!isHut && !isBoat) continue;
       live.add(b.id);
-      const maxPop = houseMaxPop(b.level);
+      const maxPop = isBoat ? BOATHOUSE_DWELL : houseMaxPop(b.level);
       let g = this.dwellPips.get(b.id);
       if (
         !g ||
@@ -1274,8 +1417,8 @@ export class View {
         this.dwellPips.set(b.id, g);
         this.dwellPipGroup.add(g);
       }
-      const roofY = b.level >= 3 ? 2.0 : b.level === 2 ? 1.6 : 1.22;
-      const front = 1.02; // v0.11a：占地恒定后门面位置不随等级变化
+      const roofY = isBoat ? 2.0 : b.level >= 3 ? 2.0 : b.level === 2 ? 1.6 : 1.22;
+      const front = isBoat ? 1.5 : 1.02; // v0.11a：占地恒定后门面位置不随等级变化
       g.position.set(b.x, b.y + roofY, b.z);
       g.rotation.y = b.yaw;
       const local = this.padLocalFront(b.yaw, front);

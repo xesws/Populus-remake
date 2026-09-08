@@ -1,5 +1,16 @@
-import { astar, nearestLand, pullString } from "../path";
-import { Cell, clamp, dist2, isTribe, sitePad, UNIT_RADIUS, Unit, WORLD } from "../types";
+import { astar, nearestLand, pullString, pullWaterString, waterAt } from "../path";
+import {
+  BOAT_FLOAT_Y,
+  BOAT_SPEED,
+  Cell,
+  clamp,
+  dist2,
+  isTribe,
+  sitePad,
+  UNIT_RADIUS,
+  Unit,
+  WORLD,
+} from "../types";
 import { applyUnitDamage } from "../damage";
 import { inDoorSlit, inPad, pushCircleFromPad, TREE_BLOCK_R } from "../world";
 import type { Sim } from "../sim";
@@ -19,6 +30,12 @@ export class PathSystem implements ISystem {
       // 否则下方 !path 分支会把它每帧拍回地面。
       if (u.isFlying()) continue;
       if (u.homeId > 0) continue;
+      // v0.32 战船：不走地面移动（仿 isFlying 先例），本分支按 u.path 积分、y 钉吃水线；
+      // 地面吸附/坡度/沼泽/训练那一整套对船无意义，船员 homeId>0 上一行已跳过。
+      if (u.kind === "boat") {
+        this.moveBoat(sim, u, dt);
+        continue;
+      }
       if (u.fireT > 0) u.fireT = Math.max(0, u.fireT - dt);
       if (u.ghostT > 0) u.ghostT = Math.max(0, u.ghostT - dt);
       const g0 = sim.world.heightAt(u.x, u.z);
@@ -210,12 +227,60 @@ export class PathSystem implements ISystem {
     }
     this.resolveCollisions(sim);
     for (const u of sim.units) {
+      if (u.kind === "boat") {
+        u.y = BOAT_FLOAT_Y; // v0.32 船钉吃水线，不跟海床
+        continue;
+      }
       if (u.flyVy !== 0 || u.y > sim.world.heightAt(u.x, u.z) + 0.08) continue;
       // v0.13 高度指数趋近 + 离地钳制：随地形起伏更顺滑，同时不会被误判为腾空。
       const gh = sim.world.heightAt(u.x, u.z);
       u.y += (gh - u.y) * Math.min(1, 20 * dt);
       if (u.y > gh + 0.02) u.y = gh + 0.02;
     }
+  }
+
+  /**
+   * v0.32 战船水上跟随器（moveUnits 船分支唯一入口）：
+   * - 按 u.path（waterAstar 产物）以 BOAT_SPEED 推进，pullWaterString  shortcut；
+   * - y 全程钉吃水线；无坡度/沼泽/碰撞账（水面开阔，船船分离走 BoatSystem）；
+   * - 路径点变陆地（玩家雕刻填海等陈旧路径）就地跳过，整条废了就地停船等新令；
+   * - 沉没中（sinkT>0）/已沉不动，沉没动画走 BoatSystem。
+   */
+  moveBoat(sim: Sim, u: Unit, dt: number): void {
+    if (u.fireT > 0) u.fireT = Math.max(0, u.fireT - dt);
+    u.y = BOAT_FLOAT_Y;
+    if (u.hp <= 0 || u.sinkT > 0) return;
+    while (u.pathI < u.path.length) {
+      const s = u.path[u.pathI]!;
+      if (waterAt(sim.world, s.x, s.z)) break;
+      u.pathI++;
+    }
+    if (u.pathI >= u.path.length) {
+      u.path = [];
+      u.pathI = 0;
+      u.job = "idle"; // 到站回 idle（thinkUnits job==move 分支同语义）
+      return;
+    }
+    const pulled = pullWaterString(sim.world, u.x, u.z, u.path, u.pathI);
+    if (pulled > u.pathI) u.pathI = pulled;
+    const step = u.path[u.pathI]!;
+    const dx = step.x - u.x;
+    const dz = step.z - u.z;
+    const len = Math.hypot(dx, dz);
+    if (len < 0.15) {
+      u.pathI++;
+      if (u.pathI >= u.path.length) {
+        u.path = [];
+        u.pathI = 0;
+        u.job = "idle";
+      }
+      return;
+    }
+    const m = Math.min(1, (BOAT_SPEED * dt) / len);
+    u.x = clamp(u.x + dx * m, 0.3, WORLD - 0.3);
+    u.z = clamp(u.z + dz * m, 0.3, WORLD - 0.3);
+    u.yaw = Math.atan2(dx, dz);
+    u.y = BOAT_FLOAT_Y;
   }
 
   /**
@@ -398,6 +463,7 @@ export class PathSystem implements ISystem {
     for (const u of sim.units) {
       if (u.hp <= 0 || u.homeId > 0) continue;
       if (u.isFlying()) continue; // v0.30 大龙不参与地面卡死看门狗
+      if (u.kind === "boat") continue; // v0.32 战船不参与地面卡死看门狗（水上到站即 idle，不穿墙）
       if (u.flyVy !== 0 || u.y > sim.world.heightAt(u.x, u.z) + 0.08) continue;
       const going =
         u.path.length > 0 ||
@@ -447,6 +513,7 @@ export class PathSystem implements ISystem {
     for (const u of sim.units) {
       if (u.homeId > 0) continue;
       if (u.isFlying()) continue; // v0.30 大龙在空中，不参与地面推挤/水域纠偏
+      if (u.kind === "boat") continue; // v0.32 战船在水层，不参与地面推挤/上岸纠偏（船船分离走 BoatSystem）
       if (u.flyVy !== 0 || u.y > sim.world.heightAt(u.x, u.z) + 0.08) continue;
       const r = UNIT_RADIUS[u.kind];
       const holdTrain = u.job === "train" && u.channel > 0;

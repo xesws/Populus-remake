@@ -920,6 +920,27 @@ export class World {
   }
 
   /**
+   * v0.32 船屋选址：半径 range 内有没有水格（h <= WATER）。
+   * 纯地形查询（不写高度场），供 Sim.canFound 船屋专条调用。
+   */
+  waterNear(x: number, z: number, range: number): boolean {
+    const r = Math.max(0.2, range);
+    const minIx = clamp(Math.floor((x - r) / STEP), 0, SAMPLES - 1);
+    const maxIx = clamp(Math.ceil((x + r) / STEP), 0, SAMPLES - 1);
+    const minIz = clamp(Math.floor((z - r) / STEP), 0, SAMPLES - 1);
+    const maxIz = clamp(Math.ceil((z + r) / STEP), 0, SAMPLES - 1);
+    for (let iz = minIz; iz <= maxIz; iz++) {
+      for (let ix = minIx; ix <= maxIx; ix++) {
+        const dx = ix * STEP - x;
+        const dz = iz * STEP - z;
+        if (dx * dx + dz * dz > r * r) continue;
+        if (this.h[this.idx(ix, iz)]! <= WATER) return true;
+      }
+    }
+    return false;
+  }
+
+  /**
    * 所在双线性格是否四角全为陆地（取格口径与 heightAt 完全一致）。
    * v0.24 新增：「整格一致」可走判据的基础，见 walkableAt。
    */

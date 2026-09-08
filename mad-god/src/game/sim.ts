@@ -3,6 +3,7 @@ import { createBuilding, createTree, createUnit } from "./entities";
 import {
   Ankh,
   BLUE,
+  BOATHOUSE_WATER_RANGE,
   Building,
   BuildingKind,
   CAMP_FOR,
@@ -58,6 +59,7 @@ import { ForestSeeder } from "./world-gen/forests";
 import type { FirePatch } from "./entities/fire-patch";
 import type { BreathShot } from "./systems/dragon-system";
 import {
+  BoatSystem,
   CombatSystem,
   DragonSystem,
   HazardSystem,
@@ -191,6 +193,7 @@ export class Sim {
   readonly pathSystem = new PathSystem();
   readonly combatSystem = new CombatSystem();
   readonly dragonSystem = new DragonSystem();
+  readonly boatSystem = new BoatSystem(); // v0.32 战船（上下船/航行/沉没/船员同步）
   readonly hazardSystem = new HazardSystem();
   readonly winSystem = new WinSystem();
   readonly blastSpell = new BlastSpell();
@@ -306,6 +309,8 @@ export class Sim {
     // v0.28c 地基按建筑类型取：茅屋 1.3 / 训练营 2.6 / 哨塔 0.6（原一律 padSize → 茅屋缩半后训练营被误缩）。
     const pad = kind === "hut" ? padSize(level) : sitePad(kind);
     if (!this.world.padReady(x, z, pad.w, pad.d, yaw)) return false;
+    // v0.32 船屋必须建在岸边：陆地 pad（上已保证）＋水在 BOATHOUSE_WATER_RANGE 内。
+    if (kind === "boathouse" && !this.world.waterNear(x, z, BOATHOUSE_WATER_RANGE)) return false;
     const mine: Pad = { x, z, w: pad.w, d: pad.d, yaw };
     for (const b of this.buildings) {
       if (b.hp <= 0 || b.id === ignoreId) continue;
@@ -500,7 +505,9 @@ export class Sim {
   }
 
   countPop(team: Team): number {
-    return this.units.filter((u) => u.team === team).length;
+    // v0.32 战船不占人口：船是载具（船员照常计数），否则每条船卡一个村民出生位；
+    // checkWin 照常工作（船员是 walker 照计，空船不算存活）。
+    return this.units.filter((u) => u.team === team && u.kind !== "boat").length;
   }
 
   countKind(team: Owner, kind: UnitKind): number {
@@ -703,6 +710,24 @@ export class Sim {
         }
       }
       if (sent && team === BLUE) this.toast("前往入住");
+      return;
+    }
+    // v0.32 船屋：选中村民右键自家船屋 = 前往入住（住满 10 开工造船，到站走 tryOccupy 船屋分支）。
+    if (b && b.team === team && b.hp > 0 && b.level >= 1 && b.kind === "boathouse") {
+      let sent = 0;
+      for (const u of selected) {
+        if (u.kind === "walker" && u.homeId === 0 && !this.inSwamp(u)) {
+          const door = this.hutDoor(b);
+          this.sendMove(u, door.x, door.z);
+          u.targetId = b.id;
+          u.atkId = 0;
+          sent++;
+        } else {
+          u.atkId = 0;
+          this.sendMove(u, x, z);
+        }
+      }
+      if (sent && team === BLUE) this.toast("前往船屋");
       return;
     }
     if (b && b.team === team && b.hp > 0 && b.level >= 1 && isCampKind(b.kind)) {
@@ -1040,6 +1065,7 @@ export class Sim {
     this.moveUnits(dt);
     this.tickEnter(dt);
     this.dragonSystem.tick(this, dt); // v0.30 大龙：飞行/索敌/吐息/工厂生产
+    this.boatSystem.tick(this, dt); // v0.32 战船（船员钉甲板/沉没推进，须在 moveUnits 之后、cull 之前）
     this.watchStuck();
     this.tickBlast(dt);
     this.tickMeteors(dt);
@@ -1143,6 +1169,7 @@ export class Sim {
       if (this.tryOccupy(u)) continue;
       if (this.tryGarrison(u)) continue; // v0.27-3 哨塔驻扎（牛战士走到塔边自动上塔）
       if (this.dragonSystem.tryEnterFactory(this, u)) continue; // v0.30 牛战士进驻大龙训练营
+      if (this.boatSystem.tryBoard(this, u)) continue; // v0.32 走到船边自动上船（targetId 挂自家船）
       if (this.inSwamp(u)) {
         u.path = [];
         u.pathI = 0;
@@ -1295,7 +1322,8 @@ export class Sim {
       u.z = door.z;
     } else {
       // v0.30 大龙训练营驻员同样走这里（主动走出/被弹出）：释放 dwell 名额，弹到厂边。
-      if (b.kind === "dragonFactory") b.dwell = Math.max(0, b.dwell - 1);
+      // v0.32 船屋同规（住户走出释放名额）。
+      if (b.kind === "dragonFactory" || b.kind === "boathouse") b.dwell = Math.max(0, b.dwell - 1);
       const spot = this.spawnNear(b) ?? { x: b.x, z: b.z };
       u.x = spot.x;
       u.z = spot.z;
@@ -2089,7 +2117,9 @@ export class Sim {
         if (home) home.dwell = Math.max(0, home.dwell - 1);
       }
     }
-    this.units = this.units.filter((u) => u.hp > 0);
+    // v0.32 沉没让路：hp 归零但 sinkT>0 的船还在播 2s 沉没动画，本轮不删；
+    // BoatSystem 递减到 0 时处决船员，下帧同批带走。
+    this.units = this.units.filter((u) => u.hp > 0 || u.sinkT > 0);
     const wrecked = this.buildings.filter((b) => b.hp <= 0);
     if (wrecked.length) {
       for (const b of wrecked) {

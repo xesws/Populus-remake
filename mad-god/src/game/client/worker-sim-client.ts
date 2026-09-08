@@ -45,6 +45,7 @@ import { nearestLand } from "../path";
 import type { Sim } from "../sim";
 import { logger } from "../logger";
 import { applySnapshot, applyWorld, createSimMirror, type SimMirror } from "../worker/codec";
+import { WorkerBoatSystem } from "./worker-boat-system";
 import type { AiLevel, MainCmd, WorkerMsg } from "../worker/protocol";
 import type { SimClient } from "./sim-client";
 
@@ -170,6 +171,20 @@ export class WorkerSimClient implements SimClient {
   setSelection(ids: number[]): void {
     this.post({ t: "select", ids });
   }
+
+  /** v0.32 战船指令扇出（worker 侧真 Sim 落 sim.boatSystem 同名方法）。 */
+  sendBoard(boatId: number, ids: number[]): void {
+    this.post({ t: "board", boatId, ids });
+  }
+  sendSail(ids: number[], x: number, z: number): void {
+    this.post({ t: "sail", ids, x, z });
+  }
+  sendDisembark(ids: number[]): void {
+    this.post({ t: "disembark", ids });
+  }
+
+  /** v0.32 船指令面：动作发命令＋查询读镜像（与真 BoatSystem 同形，见 WorkerBoatSystem）。 */
+  readonly boatSystem: WorkerBoatSystem = new WorkerBoatSystem(this);
 
   // -------------------------------------------------------------------------
   // 镜像字段

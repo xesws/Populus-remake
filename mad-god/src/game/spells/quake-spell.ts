@@ -113,6 +113,8 @@ export class QuakeSpell extends Spell {
     for (const u of sim.units) {
       if (u.hp <= 0) continue;
       if (u.isFlying()) continue; // v0.30 大龙在半空，地缝滑不到它
+      // v0.32 船/房中人免裂缝：船只吃沉没（hp 伤害照吃，滑移处决免了），房中人随建筑命运。
+      if (u.kind === "boat" || u.homeId > 0) continue;
       const n = this.nearestOpenCrack(sim, u.x, u.z);
       if (n.d > 0.9) continue;
       if (n.d > 0.02) {

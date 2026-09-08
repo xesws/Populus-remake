@@ -136,6 +136,33 @@ function handle(cmd: MainCmd): void {
       post({ t: "foundRes", ok: made !== null, id: made?.id ?? 0 });
       return;
     }
+    // v0.32 战船指令：id 回查＋真方法（权威态只在 worker 内变）。
+    case "board": {
+      if (!sim) return;
+      const boat = sim.unitById(cmd.boatId);
+      if (!boat || boat.kind !== "boat") return;
+      for (const id of cmd.ids) {
+        const u = sim.unitById(id);
+        if (u) sim.boatSystem.orderBoard(sim, boat, u);
+      }
+      return;
+    }
+    case "sail": {
+      if (!sim) return;
+      for (const id of cmd.ids) {
+        const boat = sim.unitById(id);
+        if (boat && boat.kind === "boat") sim.boatSystem.sendSail(sim, boat, cmd.x, cmd.z);
+      }
+      return;
+    }
+    case "disembark": {
+      if (!sim) return;
+      for (const id of cmd.ids) {
+        const boat = sim.unitById(id);
+        if (boat && boat.kind === "boat") sim.boatSystem.disembarkAll(sim, boat);
+      }
+      return;
+    }
     case "cast": {
       if (!sim) return;
       lastCastTool = cmd.tool;

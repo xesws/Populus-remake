@@ -15,9 +15,29 @@ export type Team = 0 | 1;
 export type Owner = 0 | 1 | 2;
 
 // v0.30 大龙（飞龙）：新作战单位 kind；dragonFactory = 大龙训练营（外观类似工厂）。
-export type UnitKind = "shaman" | "walker" | "warrior" | "preacher" | "firewarrior" | "spy" | "wildman" | "dragon";
+export type UnitKind =
+  | "shaman"
+  | "walker"
+  | "warrior"
+  | "preacher"
+  | "firewarrior"
+  | "spy"
+  | "wildman"
+  | "dragon"
+  // v0.32 战船：两栖载具单位（船员 homeId 挂船，见 BoatSystem）。
+  | "boat";
 export type TrainKind = "warrior" | "preacher" | "firewarrior" | "spy";
-export type BuildingKind = "hut" | "warriorHut" | "temple" | "fireHut" | "spyHut" | "tower" | "rebirth" | "dragonFactory";
+export type BuildingKind =
+  | "hut"
+  | "warriorHut"
+  | "temple"
+  | "fireHut"
+  | "spyHut"
+  | "tower"
+  | "rebirth"
+  | "dragonFactory"
+  // v0.32 船屋：住满 10 村民产船（见 ProductionSystem 船屋分支）。
+  | "boathouse";
 
 export const TRAIN_COST: Record<TrainKind, number> = {
   warrior: 28,
@@ -53,6 +73,8 @@ export function woodNeedFor(kind: BuildingKind, level: number): number {
   if (kind === "tower") return level >= 1 ? 0 : 1;
   // v0.30 大龙训练营：大厂房，6 捆木头。
   if (kind === "dragonFactory") return level >= 1 ? 0 : DRAGON_FACTORY_WOOD;
+  // v0.32 船屋：训练营档（4 捆），单级，完工后 need 归零。
+  if (kind === "boathouse") return level >= 1 ? 0 : BOATHOUSE_WOOD;
   return 0;
 }
 
@@ -69,7 +91,8 @@ export function isSoldier(kind: UnitKind): boolean {
 
 export function canConvert(kind: UnitKind): boolean {
   // v0.30 大龙是战争兵器，传教士/转化术说不动人。
-  return kind !== "shaman" && kind !== "preacher" && kind !== "dragon";
+  // v0.32 战船是器物不是人，不许感化（船员 homeId>0 本来就索敌不到）。
+  return kind !== "shaman" && kind !== "preacher" && kind !== "dragon" && kind !== "boat";
 }
 
 export const UNIT_RADIUS: Record<UnitKind, number> = {
@@ -81,6 +104,7 @@ export const UNIT_RADIUS: Record<UnitKind, number> = {
   spy: 0.22,
   wildman: 0.22,
   dragon: 0.9, // v0.30 龙体地面投影半径（命中/影环基准）
+  boat: 0.8, // v0.32 船体半径（点选/命中/靠岸判定基准）
 };
 
 // v0.7 战斗数值表：伤害 = max(1, round(攻击 × 克制系数 − 受击护甲))，集中在此调参。
@@ -93,6 +117,7 @@ export const UNIT_ATTACK: Record<UnitKind, number> = {
   spy: 3,
   wildman: 2,
   dragon: 0, // v0.30 大龙无直接攻击数值：伤害全部走吐息火 patch（衰减 DoT）
+  boat: 0, // v0.32 船体无武器：伤害全靠船上船员（boatCombat 独立通道），船自己不开火
 };
 
 export const UNIT_ARMOR: Record<UnitKind, number> = {
@@ -104,6 +129,7 @@ export const UNIT_ARMOR: Record<UnitKind, number> = {
   spy: 0,
   wildman: 0,
   dragon: 2, // v0.30 龙鳞：轻甲（对火战士 5 攻 → 3/发）
+  boat: 1, // v0.32 木船壳：火战士 5 攻 → 4/发，150 血约 38 发，上岸集火可沉
 };
 
 // 攻击距离（格）。火战士 v0.9 起为远程火球；v0.27g 4.5→7（×1.5，用户口径
@@ -118,6 +144,7 @@ export const UNIT_RANGE: Record<UnitKind, number> = {
   spy: 0.95,
   wildman: 0.95,
   dragon: 10, // v0.30 喷火射程 = 索敌/脱锁半径
+  boat: 0, // v0.32 船自己不开火（射程 0），只当载具与靶子
 };
 
 // 攻击间隔（秒）：atkCd 归零才能出刀。
@@ -130,6 +157,7 @@ export const UNIT_ATK_CD: Record<UnitKind, number> = {
   spy: 1.0,
   wildman: 1.2,
   dragon: 2.4, // v0.30 吐息间隔
+  boat: 1.8, // v0.32 占位（船不开火，此值不用）
 };
 
 // 自动索敌半径（格）；0 = 不主动索敌、只还手。v0.8 生效；v0.19 武士 10 步、间谍 4 步；
@@ -147,6 +175,7 @@ export const UNIT_SIGHT: Record<UnitKind, number> = {
   spy: 4,
   wildman: 0,
   dragon: 10,
+  boat: 0, // v0.32 船不主动索敌（0＝只还手；还手由 boatCombat 接管船员，船体不还手）
 };
 
 // 克制系数（攻击方 → 受击方，缺省 1）。
@@ -264,6 +293,29 @@ export const FIRE_PATCH_DPS0 = 8; // 起始每秒伤害（不经过护甲，火�
 export const FIRE_IMPACT_DMG = 2; // 吐息对点名目标的直接伤害
 export const DRAGON_BREATH_SPEED = 9; // 吐息弹速（格/秒）
 
+// ---------------------------------------------------------------------------
+// v0.32 船屋＋战船（两栖载具）：全部数值集中在此调参。
+// 链路：船屋住满 BOATHOUSE_DWELL 开工 → BOAT_BUILD_T 秒下水一条 → 同屋最多
+// BOATHOUSE_FLEET_CAP 条存活（producedBoatIds 懒清理，沉一补一）；详见 BOAT.md。
+// ---------------------------------------------------------------------------
+export const BOAT_CAPACITY = 6; // 每船载员上限（第 7 人拒绝上船）
+export const BOAT_HP = 150; // 船血量（≈2× L3 茅屋，火战士 4/发约 38 发）
+export const BOAT_SPEED = 4.0; // 船速（村民 2.6，水上快车）
+export const BOAT_BOARD_RANGE = 2.5; // 上船半径（人↔船）
+export const BOAT_DOCK_RANGE = 2.5; // 停靠半径（船↔可走岸）：超此距红叉禁上船/禁下船
+export const BOAT_FLOAT_Y = WATER + 0.15; // 吃水线（船体 y 钉在此，不跟地形）
+export const SINK_T = 2.0; // 沉没动画时长（秒）：下沉＋倾斜，到 0 时船员团灭
+// v0.32 船屋：单级建筑（无升级链），训练营尺寸/木料档。
+export const BOATHOUSE_PAD = 2.6;
+export const BOATHOUSE_WOOD = 4;
+export const BOATHOUSE_DWELL = 10; // 住满开工线（produce 分支口径）
+export const BOAT_BUILD_T = 25; // 住满后每条船生产时长（秒）
+export const BOATHOUSE_FLEET_CAP = 3; // 同屋同时存活上限
+// v0.32 船屋必须建在岸边：pad 为陆地（走既有 padReady）且此半径内有水格。
+export const BOATHOUSE_WATER_RANGE = 7;
+export const LAUNCH_RANGE = 6; // 下水半径（屋旁找水格出生）
+export const BOATHOUSE_DECK_Y = 0.6; // 住户甲板站位高度（船屋建模带工作平台，仿哨塔 TOWER_DECK_Y）
+
 export function houseHalf(level: number): number {
   const lv = level >= 3 ? 3 : level === 2 ? 2 : 1;
   return Math.max(HOUSE_WALL[lv], HOUSE_ROOF[lv]) / 2;
@@ -281,6 +333,8 @@ export function sitePad(kind: BuildingKind): { w: number; d: number } {
   if (kind === "tower") return { w: TOWER_PAD, d: TOWER_PAD };
   // v0.30 大龙训练营：独立大厂房占地。
   if (kind === "dragonFactory") return { w: DRAGON_FACTORY_PAD, d: DRAGON_FACTORY_PAD };
+  // v0.32 船屋：训练营尺寸（岸边大屋＋码头）。
+  if (kind === "boathouse") return { w: BOATHOUSE_PAD, d: BOATHOUSE_PAD };
   return padSize(1);
 }
 
@@ -465,6 +519,8 @@ export function unitHp(kind: UnitKind, str: number): number {
   if (kind === "firewarrior") return 9 + str;
   if (kind === "spy") return 4 + str;
   if (kind === "wildman") return 3 + str * 2;
+  // v0.32 战船血量（与 str 无关，船不吃力量加成）。
+  if (kind === "boat") return BOAT_HP;
   return 3 + str * 3;
 }
 

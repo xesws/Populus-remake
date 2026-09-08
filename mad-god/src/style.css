@@ -202,6 +202,9 @@ html, body, #app {
 .ico.factory { background: #5a5450; width: 18px; margin-left: -2px; }
 .ico.factory::before { left: auto; right: 3px; top: -3px; width: 4px; height: 5px; background: #7a4432; }
 .ico.factory::after { left: 3px; right: 8px; top: 5px; height: 4px; background: #ff8830; }
+/* v0.32 船屋：水上的木屋（棕屋身 + 底部蓝色水线） */
+.ico.boathouse { background: #8a6a40; }
+.ico.boathouse::after { left: 2px; right: 2px; bottom: 1px; height: 5px; background: #1e5a88; }
 .ico.raise { background: linear-gradient(#c9a227, #4e8d3b); clip-path: polygon(50% 0, 100% 100%, 0 100%); }
 .ico.lower { background: linear-gradient(#4e8d3b, #1e5a88); clip-path: polygon(0 0, 100% 0, 50% 100%); }
 .ico.bolt { background: #f2e08a; clip-path: polygon(60% 0, 20% 50%, 48% 50%, 40% 100%, 80% 45%, 52% 45%); }

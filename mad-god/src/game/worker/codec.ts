@@ -14,6 +14,8 @@ import type { Pad, StartPad, TreeBlock } from "../world";
 import type { SmoothReport } from "../map-smoother";
 import type { FeatureStat } from "../world-gen/terrain-features";
 import {
+  Boat,
+  Boathouse,
   Building,
   Dragon,
   DragonFactory,
@@ -78,6 +80,8 @@ export const UNIT_KINDS: readonly UnitKind[] = [
   "wildman",
   // v0.30 大龙：只许末尾追加（跨端序号必须稳定）。
   "dragon",
+  // v0.32 战船：只许末尾追加（跨端序号必须稳定）。
+  "boat",
 ];
 export const JOBS: readonly Job[] = ["idle", "chop", "haul", "train", "move"];
 export const TRAIN_KINDS: readonly TrainKind[] = ["warrior", "preacher", "firewarrior", "spy"];
@@ -150,6 +154,7 @@ const UNIT_PROTOS: Record<UnitKind, object> = {
   spy: Spy.prototype,
   wildman: Wildman.prototype,
   dragon: Dragon.prototype, // v0.30 大龙（零新增字段，复用 Unit 基类默认值表）
+  boat: Boat.prototype, // v0.32 战船（sinkT 走基类默认值；镜像端不传沉没进度，见下）
 };
 
 const BUILDING_PROTOS: Record<BuildingKind, object> = {
@@ -161,6 +166,7 @@ const BUILDING_PROTOS: Record<BuildingKind, object> = {
   tower: Tower.prototype,
   rebirth: Rebirth.prototype,
   dragonFactory: DragonFactory.prototype, // v0.30 大龙训练营（dwell=进驻数、prod=生产进度，字段复用）
+  boathouse: Boathouse.prototype, // v0.32 船屋（dwell=住户、prod=造船进度；producedBoatIds 镜像不产船，给空数组）
 };
 
 /** 与 entities/unit.ts 的字段初始化器对齐（BaseEntity 的 id/team/x/z/y/hp/maxHp 由消息赋）。 */
@@ -199,6 +205,7 @@ const UNIT_DEFAULTS: Record<string, unknown> = {
   flyVz: 0,
   flyVy: 0,
   enterT: 0,
+  sinkT: 0, // v0.32 战船沉没倒计时（基类字段初始化器对齐；快照不传，镜像端推导）
   agroX: -1,
   agroZ: -1,
   flyDmg: 0,
@@ -243,6 +250,8 @@ function makeMirrorBuilding(snap: BuildingSnap): Building {
   const b = Object.create(BUILDING_PROTOS[snap.kind]) as unknown as Building;
   Object.assign(b, BUILDING_DEFAULTS);
   Object.assign(b, snap); // 全部消息字段（id/team/x/y/z/hp/...，含 readonly 的 kind）
+  // v0.32 船屋 producedBoatIds：镜像不产船，给独立空数组（防与类字段共享引用）。
+  if (snap.kind === "boathouse") (b as unknown as { producedBoatIds: number[] }).producedBoatIds = [];
   const tk = TRAIN_FOR_CAMP[snap.kind];
   if (tk) (b as unknown as { trainKind: TrainKind }).trainKind = tk;
   return b;

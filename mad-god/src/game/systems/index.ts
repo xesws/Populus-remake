@@ -4,5 +4,6 @@ export * from "./training-system";
 export * from "./path-system";
 export * from "./combat-system";
 export * from "./dragon-system";
+export * from "./boat-system";
 export * from "./hazard-system";
 export * from "./win-system";
