@@ -2,12 +2,12 @@
  * v0.33 群岛分裂回归锁（Q1-B 分岛对峙 / Q2-A 掷币定模板 / Q3-A 按岛均等）：
  *   T1 双模式存活：1..40 里分裂与连通都出现（50% 掷币两边都开火）；
  *   T2 分裂地形：split 图恰 2~3 座成岛（≥500 格），连通图恰 1 座；
- *   T3 出生点：分岛（非回退）蓝红不同岛、红岛≥2500 格且可走；回退时同岛但须无第二大地
- *     可用（否则回退逻辑有 bug）；连通时同岛；
+ *   T3 出生点：分裂模式蓝红必须属于不同终局岛，双方岛均≥2500 格且可走；不存在同岛回退；
+ *     连通模式双方仍在同一终局岛；
  *   T4 资源均等：每座成岛野人 == 3；红岛树 ≥ 4；有出生点的岛 16 格内必有树；
  *   T5 红方自理：分裂图跑 60s（RED AIDirector）：红建筑/单位全在本岛、人口增长、
  *     跨海波次 waves == 0（探路取消，只记日志）；
- *   T6 确定性：同 seed 两次 split 标志与 keepSeeds 一致。
+ *   T6 确定性：同 seed 两次模式、终局出生点、attempt 与保护区一致。
  */
 import { Sim } from "./sim";
 import { BLUE, RED, ISLE_BASE_MIN, ISLE_MIN_CELLS } from "./types";
@@ -62,25 +62,11 @@ function testSpawnSplit(seeds: { split: number[]; connected: number[] }): void {
     const lr = w.islandAt(w.starts[1].x, w.starts[1].z);
     assert(w.walkableAt(w.starts[0].x, w.starts[0].z), `seed=${seed} 蓝出生点须可走`);
     assert(w.walkableAt(w.starts[1].x, w.starts[1].z), `seed=${seed} 红出生点须可走`);
-    if (lb !== lr) {
-      const red = w.islands.find((i) => i.label === lr)!;
-      assert(red && red.cells >= ISLE_BASE_MIN, `seed=${seed} 分岛红岛须≥${ISLE_BASE_MIN} 格（实际 ${red?.cells}）`);
-    } else {
-      // 同岛两种合法成因：回退（gen 有记录）或填平（海峡被平滑/渡口连上，出生点都没挪过）。
-      const gen = WorldGen.generate(seed, 289, 0.25);
-      if (!gen.splitFallback) {
-        console.log(`  seed=${seed} 海峡填平（分岛出生→终局同岛）`);
-      } else {
-        assert(gen.redReject, `seed=${seed} 同岛回退须有原因记录`);
-        if (gen.redReject === "small") {
-          const others = bigIslands(w).filter((i) => i.label !== lb);
-          assert(
-            others.every((i) => i.cells < ISLE_BASE_MIN),
-            `seed=${seed} small 回退须无第二大地`);
-        }
-        console.log(`  seed=${seed} 同岛回退（${gen.redReject}）`);
-      }
-    }
+    assert(lb !== lr, `seed=${seed} 分裂图双方出生点必须分属不同终局岛（实际同为 ${lb}）`);
+    const blue = w.islands.find((i) => i.label === lb)!;
+    const red = w.islands.find((i) => i.label === lr)!;
+    assert(blue && blue.cells >= ISLE_BASE_MIN, `seed=${seed} 蓝岛须≥${ISLE_BASE_MIN} 格（实际 ${blue?.cells}）`);
+    assert(red && red.cells >= ISLE_BASE_MIN, `seed=${seed} 红岛须≥${ISLE_BASE_MIN} 格（实际 ${red?.cells}）`);
   }
   for (const seed of seeds.connected) {
     const w = new World(seed);
@@ -89,7 +75,7 @@ function testSpawnSplit(seeds: { split: number[]; connected: number[] }): void {
       `seed=${seed} 连通图双方出生点须同岛`,
     );
   }
-  console.log("testSpawnSplit ok（分岛/回退合法/连通同岛）");
+  console.log("testSpawnSplit ok（分裂严格分岛/连通同岛）");
 }
 
 // T4：资源均等
@@ -184,16 +170,24 @@ function testRedLocality(seeds: { split: number[] }): void {
 // T6：确定性
 function testDeterministic(): void {
   for (const seed of [1, 12, 18, 42]) {
-    const a = WorldGen.generate(seed, 289, 0.25);
-    const b = WorldGen.generate(seed, 289, 0.25);
-    assert(a.split === b.split, `seed=${seed} split 标志须稳定`);
+    const ga = WorldGen.generate(seed, 289, 0.25);
+    const gb = WorldGen.generate(seed, 289, 0.25);
+    assert(ga.split === gb.split, `seed=${seed} split 标志须稳定`);
     assert(
-      a.keepSeeds.length === b.keepSeeds.length &&
-        a.keepSeeds.every((s, i) => s.ix === b.keepSeeds[i]!.ix && s.iz === b.keepSeeds[i]!.iz),
-      `seed=${seed} keepSeeds 须稳定`,
+      ga.protectedZones.length === gb.protectedZones.length &&
+        ga.protectedZones.every((s, i) => s.x === gb.protectedZones[i]!.x && s.z === gb.protectedZones[i]!.z),
+      `seed=${seed} 地形保护区须稳定`,
+    );
+    const a = new World(seed);
+    const b = new World(seed);
+    assert(a.genAttempt === b.genAttempt, `seed=${seed} 接受 attempt 须稳定`);
+    assert(a.splitIsles === b.splitIsles, `seed=${seed} 终局模式须稳定`);
+    assert(
+      a.starts.every((s, i) => s.x === b.starts[i]!.x && s.z === b.starts[i]!.z && s.yaw === b.starts[i]!.yaw),
+      `seed=${seed} 终局出生点须稳定`,
     );
   }
-  console.log("testDeterministic ok（同 seed 分裂标志与保留集稳定）");
+  console.log("testDeterministic ok（同 seed 模式/保护区/attempt/终局出生点稳定）");
 }
 
 function main(): void {

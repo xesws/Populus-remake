@@ -15,6 +15,8 @@ import {
   WORLD,
 } from "./types";
 import { WorldGen } from "./world-gen";
+import { IslandAnalyzer } from "./world-gen/island-analyzer";
+import { SpawnPlanner } from "./world-gen/spawn-planner";
 import { MASK_CHANNEL, MASK_PEAK, type FeatureStat } from "./world-gen/terrain-features";
 import { MapSmoother, type SmoothReport } from "./map-smoother";
 import { logger } from "./logger";
@@ -294,8 +296,12 @@ export class World {
   fordCount = 0;
   /** v0.25 本图各地物的落地统计（山脉/河流/…），供日志与检查脚本断言"特征确实放上了"。 */
   genFeatures: FeatureStat[] = [];
-  /** v0.33 本局是否分裂多岛（WorldGen 掷币，见 ISLE_SPLIT_CHANCE）。 */
+  /** v0.36 本局是否为严格分岛模式；接受地图上双方出生点必属不同终局岛。 */
   splitIsles = false;
+  /** v0.36 实际接受的确定性地形尝试序号（0=首图，4=安全模板）。 */
+  genAttempt = 0;
+  /** v0.36 前序尝试拒绝原因，供日志与回归检查。 */
+  genRejects: string[] = [];
   /** v0.33 终局岛屿表（最终高度场 BFS，64 格以上成块；按 cells 降序）。 */
   islands: Island[] = [];
   /** v0.33 终局连通域编号（与 islands 同源；-1＝水/碎礁，供 islandAt 做 O(1) 归属查询）。 */
@@ -511,79 +517,12 @@ export class World {
   }
 
   /**
-   * v0.24 单块可通行大陆：以游戏真实通行判据（h > WATER）做 4 邻接 BFS，只保留最大连通
-   * 陆域，其余飞地降回浅海基准（0.04）。返回被填平的采样格数。
-   * 为什么必要：WorldGen 的连通域标记只用于挑出生点，小块飞地仍是"可走陆地"——
-   * 单位寻路/建筑随机取点一旦落到孤岛，astar 直接给不出完整路径
-   *（实测 move-check 10 次挂 4 次：plain arrives d=6.13、long path len=30 截断）。
-   * 本项目没有船只，跨海不可达的地块对玩法就是废地块，填平成海才是一劳永逸的解。
-   * 必须放在滩涂抬升**之后**：滩涂 0.16 仍低于 WATER，不会被垫成假连通；
-   * 也必须在出生平台整平之前：出生点已由 WorldGen 保证落在其最大域内，这里再校验一次，
-   * 万一该格被本步骤判为飞地（平滑/削峰改变了海陆界），就地迁到保留域内的最近格。
-   */
-  /**
-   * 按**游戏真实通行判据**（h > WATER）做 4 邻接连通域标记，并给出最大陆域编号。
-   *
-   * 为什么单独抽出来：v0.25 有两处要同一份连通域——`floodDisconnectedLand` 填飞地、
-   * `repairWaterCuts` 判"河有没有把大陆切开"。这两处必须用**同一个口径**，
-   * 否则会出现"修复认为连通、填海认为不连通"这种自相矛盾的图。
-   * 4 邻接而不是 8：对角相接在单位图里过不去，与 astar 的通行语义一致。
+   * v0.36 真实水位下的岛屿标签统一委托给 IslandAnalyzer。
+   * repair/flood/refresh/spawn 由此共享同一份 4 邻接语义，不再各自复制 BFS。
    */
   landLabels(): { lab: Int32Array; kept: number; sizes: number[] } {
-    const n = SAMPLES * SAMPLES;
-    const lab = new Int32Array(n).fill(-1);
-    const queue = new Int32Array(n); // BFS 队列入队总次数 ≤ 格数，一次预分配
-    const sizes: number[] = [];
-    let kept = -1;
-    let keptCount = 0;
-    let label = 0;
-    for (let i = 0; i < n; i++) {
-      if (lab[i] !== -1 || this.h[i]! <= WATER) continue;
-      let head = 0;
-      let tail = 0;
-      queue[tail++] = i;
-      lab[i] = label;
-      while (head < tail) {
-        const cur = queue[head++]!;
-        const cz = (cur / SAMPLES) | 0;
-        const cx = cur - cz * SAMPLES;
-        if (cx > 0) {
-          const nb = cur - 1;
-          if (lab[nb] === -1 && this.h[nb]! > WATER) {
-            lab[nb] = label;
-            queue[tail++] = nb;
-          }
-        }
-        if (cx < SAMPLES - 1) {
-          const nb = cur + 1;
-          if (lab[nb] === -1 && this.h[nb]! > WATER) {
-            lab[nb] = label;
-            queue[tail++] = nb;
-          }
-        }
-        if (cz > 0) {
-          const nb = cur - SAMPLES;
-          if (lab[nb] === -1 && this.h[nb]! > WATER) {
-            lab[nb] = label;
-            queue[tail++] = nb;
-          }
-        }
-        if (cz < SAMPLES - 1) {
-          const nb = cur + SAMPLES;
-          if (lab[nb] === -1 && this.h[nb]! > WATER) {
-            lab[nb] = label;
-            queue[tail++] = nb;
-          }
-        }
-      }
-      sizes.push(tail);
-      if (tail > keptCount) {
-        keptCount = tail;
-        kept = label;
-      }
-      label++;
-    }
-    return { lab, kept, sizes };
+    const topology = IslandAnalyzer.analyze(this.h, SAMPLES, STEP, WATER);
+    return { lab: topology.grid, kept: topology.largestLabel, sizes: topology.sizes };
   }
 
   /**
@@ -750,9 +689,8 @@ export class World {
   }
 
   /**
-   * v0.33 参数化填海：只保留 keep 集内的陆域，其余降回浅海基准（0.04）。
-   * 连通模式 keep＝{最大}即旧语义；分裂模式 keep＝映射后的 2~3 岛。
-   * 出生点若落在填海区（削峰/平滑改写了海陆界时才可能），迁到保留域内最近格（旧逻辑保留）。
+   * v0.36 参数化填海：只保留 keep 集内的陆域，其余降回浅海基准（0.04）。
+   * 此阶段尚未生成玩家出生点；终局岛表完成后由 SpawnPlanner 决定双方归属。
    */
   floodExcept(keep: Set<number>): number {
     const n = SAMPLES * SAMPLES;
@@ -764,31 +702,7 @@ export class World {
       this.setSample(i % SAMPLES, (i / SAMPLES) | 0, 0.04);
       flooded++;
     }
-    // 出生点若被判为飞地（削峰/平滑改写了海陆界时才可能），螺旋迁到保留域内最近格。
-    for (const s of this.starts) {
-      const si = (Math.round(s.z / STEP) * SAMPLES + Math.round(s.x / STEP)) | 0;
-      if (keep.has(lab[si]!)) continue;
-      let bx = -1;
-      let bz = -1;
-      outer: for (let r = 1; r < 40; r++) {
-        for (let dz = -r; dz <= r; dz++) {
-          for (let dx = -r; dx <= r; dx++) {
-            if (Math.abs(dx) !== r && Math.abs(dz) !== r) continue;
-            const ix = Math.round(s.x / STEP) + dx;
-            const iz = Math.round(s.z / STEP) + dz;
-            if (ix < 1 || iz < 1 || ix >= SAMPLES - 1 || iz >= SAMPLES - 1) continue;
-            if (!keep.has(lab[iz * SAMPLES + ix]!)) continue;
-            bx = ix * STEP;
-            bz = iz * STEP;
-            break outer;
-          }
-        }
-      }
-      if (bx >= 0) {
-        s.x = bx;
-        s.z = bz;
-      }
-    }
+    // v0.36 不再把预选点迁进“任意”保留域；该后门正是分裂局双方落到同岛的来源之一。
     return flooded;
   }
 
@@ -797,43 +711,9 @@ export class World {
    * 按 cells 降序入 islands/islandGrid。flood 之后算＝所见即所得（不受平滑漂移影响）。
    */
   refreshIslands(): void {
-    const { lab } = this.landLabels();
-    this.islandGrid = lab;
-    const acc = new Map<number, { cells: number; sx: number; sz: number; minIx: number; maxIx: number; minIz: number; maxIz: number }>();
-    for (let i = 0; i < lab.length; i++) {
-      const lb = lab[i]!;
-      if (lb < 0) continue;
-      let a = acc.get(lb);
-      if (!a) {
-        a = { cells: 0, sx: 0, sz: 0, minIx: SAMPLES, maxIx: -1, minIz: SAMPLES, maxIz: -1 };
-        acc.set(lb, a);
-      }
-      const ix = i % SAMPLES;
-      const iz = (i / SAMPLES) | 0;
-      a.cells++;
-      a.sx += ix;
-      a.sz += iz;
-      if (ix < a.minIx) a.minIx = ix;
-      if (ix > a.maxIx) a.maxIx = ix;
-      if (iz < a.minIz) a.minIz = iz;
-      if (iz > a.maxIz) a.maxIz = iz;
-    }
-    const list: Island[] = [];
-    for (const [lb, a] of acc) {
-      if (a.cells < 64) continue;
-      list.push({
-        label: lb,
-        cells: a.cells,
-        cx: (a.sx / a.cells) * STEP,
-        cz: (a.sz / a.cells) * STEP,
-        minX: a.minIx * STEP,
-        maxX: a.maxIx * STEP,
-        minZ: a.minIz * STEP,
-        maxZ: a.maxIz * STEP,
-      });
-    }
-    list.sort((p, q) => q.cells - p.cells);
-    this.islands = list;
+    const topology = IslandAnalyzer.analyze(this.h, SAMPLES, STEP, WATER);
+    this.islandGrid = topology.grid;
+    this.islands = topology.islands.filter((i) => i.cells >= 64);
   }
 
   /**
@@ -1479,67 +1359,79 @@ export class World {
   }
 
   generate(): void {
-    // v0.24 模板化生成：六地貌模板（大陆/群岛/半岛/双半岛/环礁/高地）× seeded fBm/ridge 噪声，
-    // 高度场与双方出生点由 WorldGen 产出（连通域保证互达）；
-    // 松弛/滩涂/pad 平台的 v0.13 管线保留在本方法内（坡度与海岸平滑仍由这里负责）。
-    const gen = WorldGen.generate(this.genSeed, SAMPLES, STEP);
-    this.h.set(gen.heights);
-    this.fmask.set(gen.mask);
-    this.genFeatures = gen.features;
-    this.templateId = gen.templateId;
-    this.templateName = gen.templateName;
-    this.starts = [
-      { x: gen.starts[0].x, z: gen.starts[0].z, yaw: gen.starts[0].yaw, h: gen.starts[0].h },
-      { x: gen.starts[1].x, z: gen.starts[1].z, yaw: gen.starts[1].yaw, h: gen.starts[1].h },
-    ];
-    // v0.13 生成期 4 轮盒式松弛（v0.24 由 3 轮加一轮）：72 格大图的山脊带更长更陡，多松一轮压坡度。
-    this.smoothField(4, 0, 0, SAMPLES - 1, SAMPLES - 1);
-    // v0.13 山脊融入 3 轮松弛（WorldGen 的 ridge 分量随高度场一起平滑）。
-    this.smoothField(3, 0, 0, SAMPLES - 1, SAMPLES - 1);
-    // v0.13 浅水滩涂：紧邻陆地的水域抬到 0.16（仍低于 WATER，可通行性不变），海岸线从断崖变缓滩。
-    for (let iz = 1; iz < SAMPLES - 1; iz++) {
-      for (let ix = 1; ix < SAMPLES - 1; ix++) {
-        const i = this.idx(ix, iz);
-        if (this.h[i]! > WATER || this.h[i]! >= 0.16) continue;
-        let nearLand = false;
-        for (let dz = -1; dz <= 1 && !nearLand; dz++) {
-          for (let dx = -1; dx <= 1 && !nearLand; dx++) {
-            if (this.h[this.idx(ix + dx, iz + dz)]! > WATER) nearLand = true;
+    // v0.36 权威顺序：地形/地物 → 平滑/水系/填海 → 终局岛表 → 出生点 → 出生平台。
+    // 模式只由主 seed 掷一次；失败只换地形 attempt，绝不把分裂局降级成双方同岛。
+    const split = WorldGen.splitForSeed(this.genSeed);
+    const regularAttempts = 4;
+    const rejects: string[] = [];
+    for (let attempt = 0; attempt <= regularAttempts; attempt++) {
+      const safeSplit = split && attempt === regularAttempts;
+      const terrainSeed = WorldGen.attemptSeed(this.genSeed, attempt);
+      const gen = WorldGen.generate(terrainSeed, SAMPLES, STEP, { split, safeSplit });
+      this.h.set(gen.heights);
+      this.fmask.set(gen.mask);
+      this.genFeatures = gen.features;
+      this.templateId = gen.templateId;
+      this.templateName = gen.templateName;
+      this.splitIsles = split;
+
+      // 地形阶段：出生点尚不存在，所有形态学操作只处理岛屿本身。
+      this.smoothField(4, 0, 0, SAMPLES - 1, SAMPLES - 1);
+      this.smoothField(3, 0, 0, SAMPLES - 1, SAMPLES - 1);
+      for (let iz = 1; iz < SAMPLES - 1; iz++) {
+        for (let ix = 1; ix < SAMPLES - 1; ix++) {
+          const i = this.idx(ix, iz);
+          if (this.h[i]! > WATER || this.h[i]! >= 0.16) continue;
+          let nearLand = false;
+          for (let dz = -1; dz <= 1 && !nearLand; dz++) {
+            for (let dx = -1; dx <= 1 && !nearLand; dx++) {
+              if (this.h[this.idx(ix + dx, iz + dz)]! > WATER) nearLand = true;
+            }
+          }
+          if (nearLand) {
+            this.h[i] = 0.16;
+            this.markSample(ix, iz);
           }
         }
-        if (nearLand) {
-          this.h[i] = 0.16;
-          this.markSample(ix, iz);
-        }
       }
+      this.smoothReport = MapSmoother.smooth(this.h, this.fmask);
+      this.fordCount = this.repairWaterCuts();
+      this.floodSplit(gen.keepSeeds);
+      this.clampSlope(0.4);
+      this.smoothReport = MapSmoother.smooth(this.h, this.fmask);
+      this.refreshIslands();
+
+      // 出生阶段：SpawnPlanner 只读上面的终局岛表。分裂模式无两座可玩岛/无合法点对就整图重试。
+      const planned = SpawnPlanner.plan(this, split, this.templateId);
+      if (!planned.ok) {
+        rejects.push(`attempt${attempt}:${this.templateId}:${planned.reason}`);
+        continue;
+      }
+      this.starts = [
+        { ...planned.plan.starts[0] },
+        { ...planned.plan.starts[1] },
+      ];
+      for (const s of this.starts) {
+        const sh = Math.max(this.heightAt(s.x, s.z), 0.8) + 0.25;
+        s.h = sh;
+        this.flattenPad(s.x, s.z, 3.2, 3.2, s.yaw, sh);
+      }
+      // 平台是出生阶段唯一允许的地形写入；写完重算岛表并复验，防平台/平滑意外架桥。
+      this.clampSlope(0.4);
+      this.smoothReport = MapSmoother.smooth(this.h, this.fmask);
+      this.refreshIslands();
+      if (!SpawnPlanner.validate(this, planned.plan, split)) {
+        rejects.push(`attempt${attempt}:${this.templateId}:post-pad-invalid`);
+        continue;
+      }
+
+      this.genAttempt = attempt;
+      this.genRejects = rejects;
+      this.markAll();
+      return;
     }
-    // v0.24 强制地图平滑（第 1 遍）：抹掉 0.25 格尺度上的"陆→水→陆"毛刺，让点判据
-    // walkableAt 与单位每帧 0.12 格的步长口径一致（见 map-smoother.ts）。
-    // 放在填海/出生平台之前，后面几步才是在干净地形上做决策。
-    this.smoothReport = MapSmoother.smooth(this.h, this.fmask);
-    // v0.24 单块可通行大陆：填平与最大陆域不连通的飞地（并把被迫落在飞地上的出生点
-    // 迁进保留域）。必须在滩涂之后、出生平台整平之前——见 floodDisconnectedLand 注释。
-    // v0.25 水系连通性修复：必须在填海**之前**。河/湖把大陆切开的话，
-    // floodDisconnectedLand 会把切下来的那半张图（可能含一方基地）整块降成浅海。
-    this.fordCount = this.repairWaterCuts();
-    // v0.33 分裂填海（Q2-A）：代表格定保留集；连通模式代表格恒 1 个＝旧语义。
-    this.splitIsles = gen.split;
-    this.floodSplit(gen.keepSeeds);
-    for (const s of this.starts) {
-      // v0.13 出生平台高度随当地地形（+0.25）：避免固定高度在平台边造出海崖。
-      const sh = Math.max(this.heightAt(s.x, s.z), 0.8) + 0.25;
-      this.flattenPad(s.x, s.z, 3.2, 3.2, s.yaw, sh);
-    }
-    // v0.24 坡度钳制（管线最后一步）：ridge 窄脊陡壁靠盒滤压不平、出生平台在山脚的
-    // 接缝也会产生新陡壁——统一在收尾逐对削峰到每采样高差 ≤0.40（差分口径的上界 2.26，
-    // 低于坡度检查阈值 2.5，见 clampSlope 注释）。
-    this.clampSlope(0.4);
-    // v0.24 强制地图平滑（终遍，权威）：出生平台整平与削峰都会重新刻出亚格毛刺
-    // （平台边缘的环形缓坡、pad 内高精度格与 pad 外低格之间的落差），所以出图前
-    // 必须再扫一遍。residualSeams 就是"还能把单位绊倒的边"的数量，检查脚本断言它为 0。
-    this.smoothReport = MapSmoother.smooth(this.h, this.fmask);
-    this.refreshIslands(); // v0.33 终局岛屿表（flood 之后算，所见即所得）
-    this.markAll();
+    // 安全双岛模板仍失败只可能是生成不变量被代码破坏；宁可明确报错，也不偷偷同岛开局。
+    throw new Error(`地图生成失败 seed=${this.genSeed} mode=${split ? "split" : "connected"} ${rejects.join(" | ")}`);
   }
 
   startPad(team: Team): StartPad {

@@ -5,7 +5,7 @@
 
 import { logger } from "../logger";
 import type { Sim } from "../sim";
-import { astar } from "../path";
+import { astar, nearestLand } from "../path";
 import { BLUE, Cell, dist2, RED, Team, TOWER_GARRISON_MAX, UnitKind } from "../types";
 import { AIProfile } from "./ai-profile";
 import type { IWarDirector } from "./types";
@@ -300,7 +300,12 @@ export class WarDirector implements IWarDirector {
   private seaProbe(sim: Sim, fx: number, fz: number, mx: number, mz: number): boolean {
     const key = `${Math.round(fx / 2)}:${Math.round(fz / 2)}:${Math.round(mx / 2)}:${Math.round(mz / 2)}`;
     if (key === this.probeCache.key && sim.time - this.probeCache.t < 15) return this.probeCache.ok;
-    const ok = astar(sim.world, mx, mz, fx, fz, 20736, 0).length > 0;
+    // astar 在访问上限/不可达时可能返回“朝目标走了一段”的部分路径，非空不代表到达。
+    // 分岛后这会随机把隔海残路误判为可达并记一波进攻；必须与吸附后的真实终点逐点核对。
+    const target = nearestLand(sim.world, fx, fz);
+    const path = target ? astar(sim.world, mx, mz, target.x, target.z, 20736, 0) : [];
+    const end = path[path.length - 1];
+    const ok = !!target && !!end && Math.hypot(end.x - target.x, end.z - target.z) < 0.01;
     this.probeCache = { key, t: sim.time, ok };
     return ok;
   }

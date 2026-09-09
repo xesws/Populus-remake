@@ -15,7 +15,7 @@
 
 import { RNG } from "./types";
 import { makeNoiseKit } from "./world-gen/noise";
-import type { GenStart } from "./world-gen/world-gen";
+import type { ProtectedZone } from "./world-gen/world-gen";
 import { MASK_CHANNEL, type FeatureEnv } from "./world-gen/terrain-features";
 import { Lake, LAKE_DEFAULTS, lakePlanFor } from "./world-gen/features/lake";
 
@@ -70,9 +70,9 @@ function labelLand(h: Float32Array): { labels: Int32Array; maxLabel: number } {
   return { labels, maxLabel };
 }
 
-const STARTS: GenStart[] = [
-  { x: 14, z: 14, yaw: 0, h: 1.2 },
-  { x: 58, z: 58, yaw: Math.PI, h: 1.2 },
+const PROTECTED_ZONES: ProtectedZone[] = [
+  { x: 14, z: 14 },
+  { x: 58, z: 58 },
 ];
 /** 三处显式洼地（抛物线碟盘）：保证"局部洼地"一定存在，不依赖 fbm 的运气。 */
 const DIPS: ReadonlyArray<readonly [number, number]> = [
@@ -115,7 +115,7 @@ function makeEnv(seed: number): { env: FeatureEnv; h0: Float32Array } {
     mask: new Uint8Array(n),
     labels,
     maxLabel,
-    starts: STARTS,
+    protectedZones: PROTECTED_ZONES,
     rng: new RNG((seed * 2654435761) >>> 0),
     noise,
   };
@@ -195,7 +195,7 @@ function runAndCheck(seed: number): RunResult {
       const x = ix * STEP;
       const z = iz * STEP;
       let d = Infinity;
-      for (const s of STARTS) d = Math.min(d, Math.hypot(x - s.x, z - s.z));
+      for (const s of PROTECTED_ZONES) d = Math.min(d, Math.hypot(x - s.x, z - s.z));
       if (d > 3.5) continue;
       const i = iz * SAMPLES + ix;
       assert(h[i] === h0[i] && env.mask[i] === 0, `seed=${seed} 出生点 ${d.toFixed(2)} 格内被污染`);

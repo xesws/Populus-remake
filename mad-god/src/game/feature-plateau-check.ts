@@ -33,7 +33,7 @@ import {
   type FeatureEnv,
 } from "./world-gen/terrain-features";
 import { Plateau, plateauPlanFor, type PlateauBlock } from "./world-gen/features/plateau";
-import type { GenStart } from "./world-gen/world-gen";
+import type { ProtectedZone } from "./world-gen/world-gen";
 
 /** 合成图参数：52 格世界、圆岛半径 20 格、两个对置出生点。SEA_H 与 WorldGen.SEA_H 同值。 */
 const SAMPLES_T = 209;
@@ -125,9 +125,9 @@ function labelLand(h: Float32Array): { labels: Int32Array; maxLabel: number } {
 function makeEnv(rngSeed: number, noiseSeed: number, withBand = false): FeatureEnv {
   const { h, mask } = buildField(noiseSeed, withBand);
   const { labels, maxLabel } = labelLand(h);
-  const starts: GenStart[] = [
-    { x: 10, z: 26, yaw: 0, h: 1.5 },
-    { x: 42, z: 26, yaw: Math.PI, h: 1.5 },
+  const protectedZones: ProtectedZone[] = [
+    { x: 10, z: 26 },
+    { x: 42, z: 26 },
   ];
   return {
     samples: SAMPLES_T,
@@ -140,7 +140,7 @@ function makeEnv(rngSeed: number, noiseSeed: number, withBand = false): FeatureE
     mask,
     labels,
     maxLabel,
-    starts,
+    protectedZones,
     rng: new RNG(mixSeed(rngSeed)),
     noise: makeNoiseKit(mixSeed(noiseSeed)),
   };
@@ -242,7 +242,7 @@ function testCommonContract(): void {
     assert(Number.isFinite(v) && v >= 0 && v <= MAX_H, `高度越界/非有限（#${i} ${v}）`);
   }
   // f) 出生点 8 格内零改动（特征保证中心距 ≥ 8+半径，rim 不会探进保护圈）
-  for (const s of env.starts) {
+  for (const s of env.protectedZones) {
     const cx = Math.round(s.x / env.step);
     const cz = Math.round(s.z / env.step);
     const r = Math.round(8 / env.step);

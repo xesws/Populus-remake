@@ -362,6 +362,8 @@ export function createSimMirror(): SimMirror {
     templateName: "",
     // v0.33 岛屿表（镜像不撒资源，读不到也无妨；给空值防未来误读崩）。
     splitIsles: false,
+    genAttempt: 0,
+    genRejects: [],
     islands: [],
     islandGrid: new Int32Array(n),
     fordCount: 0,
@@ -525,6 +527,9 @@ export function encodeWorld(world: World, sim: Sim): WorldMsg {
     seed: world.genSeed,
     templateId: world.templateId,
     templateName: world.templateName,
+    splitIsles: world.splitIsles,
+    genAttempt: world.genAttempt,
+    genRejects: [...world.genRejects],
     smoothReport: world.smoothReport ? { ...world.smoothReport } : null,
     fordCount: world.fordCount,
     genFeatures: world.genFeatures.map((f) => ({ ...f })),
@@ -759,6 +764,9 @@ export function applyWorld(mirror: SimMirror, msg: WorldMsg): void {
   w.genSeed = msg.seed;
   w.templateId = msg.templateId;
   w.templateName = msg.templateName;
+  w.splitIsles = msg.splitIsles;
+  w.genAttempt = msg.genAttempt;
+  w.genRejects = [...msg.genRejects];
   w.smoothReport = msg.smoothReport ? { ...msg.smoothReport } : null;
   w.fordCount = msg.fordCount;
   w.genFeatures = msg.genFeatures.map((f) => ({ ...f }));

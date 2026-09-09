@@ -24,7 +24,7 @@
 
 import {
   MASK_CHANNEL,
-  distToStartCells,
+  distToProtectedZone,
   isMainland,
   mesaProfile,
   sidx,
@@ -152,7 +152,7 @@ function scanDepressions(env: FeatureEnv, cfg: LakeConfig, minBowl: number): Dep
   for (let iz = marginS; iz < env.samples - marginS; iz++) {
     for (let ix = marginS; ix < env.samples - marginS; ix++) {
       if (!isMainland(env, ix, iz)) continue;
-      if (distToStartCells(env, ix, iz) < cfg.minStartDist) continue;
+      if (distToProtectedZone(env, ix, iz) < cfg.minStartDist) continue;
       let inland = true;
       for (const [dx, dz] of RING16) {
         if (!isMainland(env, Math.round(ix + dx * clearS), Math.round(iz + dz * clearS))) {

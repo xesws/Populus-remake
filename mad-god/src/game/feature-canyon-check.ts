@@ -18,7 +18,7 @@
  *   j) 安全线    —— 每条已落地干谷的 floorTarget ≥ water + 0.25
  */
 import { RNG } from "./types";
-import type { GenStart } from "./world-gen";
+import type { ProtectedZone } from "./world-gen";
 import { makeNoiseKit, mixSeed } from "./world-gen/noise";
 import { MASK_CHANNEL, MASK_PEAK, type FeatureEnv } from "./world-gen/terrain-features";
 import { Canyon, canyonPlanFor } from "./world-gen/features/canyon";
@@ -60,9 +60,9 @@ function makeEnv(rngSeed: number): { env: FeatureEnv; h0: Float32Array } {
       }
     }
   }
-  const starts: GenStart[] = [
-    { x: 20, z: 20, yaw: 0, h: 1 },
-    { x: 52, z: 52, yaw: 0, h: 1 },
+  const protectedZones: ProtectedZone[] = [
+    { x: 20, z: 20 },
+    { x: 52, z: 52 },
   ];
   const env: FeatureEnv = {
     samples: S,
@@ -75,7 +75,7 @@ function makeEnv(rngSeed: number): { env: FeatureEnv; h0: Float32Array } {
     mask: new Uint8Array(S * S),
     labels,
     maxLabel: 1,
-    starts,
+    protectedZones,
     rng: new RNG(mixSeed(rngSeed)),
     noise,
   };
@@ -142,8 +142,8 @@ function checkInvariants(env: FeatureEnv, h0: Float32Array, label: string): void
       if (v !== h0[i]!) {
         const x = ix * STEP;
         const z = iz * STEP;
-        for (const s of env.starts) {
-          if (Math.hypot(x - s.x, z - s.z) < 6.8) {
+        for (const zone of env.protectedZones) {
+          if (Math.hypot(x - zone.x, z - zone.z) < 6.8) {
             startDirty++;
             break;
           }
@@ -153,7 +153,7 @@ function checkInvariants(env: FeatureEnv, h0: Float32Array, label: string): void
   }
   assert(seaRaised === 0, `${label}: ${seaRaised} 个海格被改动（不许海变陆）`);
   assert(outOfRange === 0, `${label}: ${outOfRange} 格超出 [0, maxH]`);
-  assert(startDirty === 0, `${label}: 出生点 6.8 格内有 ${startDirty} 格被改动`);
+  assert(startDirty === 0, `${label}: 基地保护区 6.8 格内有 ${startDirty} 格被改动`);
   assert(countMask(env.mask, MASK_CHANNEL) === 0, `${label}: 干谷登记了 MASK_CHANNEL（谷底被刻到水下）`);
 }
 

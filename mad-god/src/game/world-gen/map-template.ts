@@ -12,7 +12,7 @@ import { makeNoiseKit } from "./noise";
 import type { NoiseKit } from "./noise";
 import type { RNG } from "../types";
 
-/** 出生/结构锚点（世界坐标，格）。 */
+/** 地形保护区建议锚点（世界坐标，格）；不是玩家出生点。 */
 export interface Anchor {
   x: number;
   z: number;
@@ -21,7 +21,7 @@ export interface Anchor {
 /**
  * 地貌模板：决定一张图的宏观海陆格局（陆地概率场）与起伏增益。
  * - landFactor 返回 0~1：1 = 稳定陆地、0 = 稳定海洋；与 fBm 起伏在编排器里组合成高度场。
- * - anchors 是出生点搜索的建议位（编排器在最大陆地连通域内向锚点吸附，保证公平对称）。
+ * - anchors 只建议地物避让的通用开阔区；最终玩家出生点由 SpawnPlanner 读取终局岛表后决定。
  */
 export interface MapTemplate {
   readonly id: string;
@@ -32,7 +32,7 @@ export interface MapTemplate {
   reliefScale(): number;
   /** 山脊权重：乘到 ridge 分量上（0 = 无山脉带，~1 = 纵贯山脊）。 */
   mountainWeight(): number;
-  /** 双方出生锚点（大致对称、在模板的稳定陆地区内）。 */
+  /** 两块通用开阔保护区的建议锚点（不含队伍/出生语义）。 */
   anchors(world: number): [Anchor, Anchor];
 }
 
@@ -428,6 +428,96 @@ export class HighlandsTemplate extends ContinentTemplate {
   }
   reliefScale(): number {
     return 1.35;
+  }
+}
+
+/**
+ * v0.36 严格分裂模板：模式掷币命中后使用，直接生成两座可玩主岛，可选第三座资源岛。
+ * 旧 Archipelago 是“一座大陆 + 3~5 颗小卫星”，第二岛经常装不下完整基地，只能同岛回退；
+ * 这里把“至少两座可玩岛”写进模板几何，而不是事后碰运气找出生点。
+ */
+export class SplitIslandsTemplate extends BaseTemplate {
+  private readonly islands: ReadonlyArray<readonly [number, number, number]>;
+
+  constructor(rng: RNG) {
+    super("split-islands", "分裂群岛", rng);
+    const angle = rng.next() * Math.PI * 2;
+    const ax = Math.cos(angle);
+    const az = Math.sin(angle);
+    const d = 0.235 + rng.next() * 0.015;
+    const r1 = 0.18 + rng.next() * 0.02;
+    const r2 = 0.18 + rng.next() * 0.02;
+    const islands: Array<readonly [number, number, number]> = [
+      [0.5 + ax * d, 0.5 + az * d, r1],
+      [0.5 - ax * d, 0.5 - az * d, r2],
+    ];
+    if (rng.next() < 0.5) {
+      const sign = rng.next() < 0.5 ? 1 : -1;
+      const px = -az * sign;
+      const pz = ax * sign;
+      const d3 = 0.29 + rng.next() * 0.02;
+      islands.push([0.5 + px * d3, 0.5 + pz * d3, 0.10 + rng.next() * 0.02]);
+    }
+    this.islands = islands;
+  }
+
+  landFactor(x: number, z: number, world: number): number {
+    const u = x / world;
+    const v = z / world;
+    let out = 0;
+    for (const [cx, cz, baseR] of this.islands) {
+      const r = baseR + this.noise.fbm(x, z, 3, 0.04) * 0.012;
+      out = Math.max(out, diskFactor(Math.hypot(u - cx, v - cz), r, 0.022));
+    }
+    return out;
+  }
+
+  anchors(world: number): [Anchor, Anchor] {
+    return [
+      { x: this.islands[0]![0] * world, z: this.islands[0]![1] * world },
+      { x: this.islands[1]![0] * world, z: this.islands[1]![1] * world },
+    ];
+  }
+}
+
+/**
+ * v0.36 分岛安全模板：只供常规群岛连续失败后的确定性兜底，不参加六模板随机池。
+ * 两座等大的圆岛沿横轴或纵轴对置，岛心到图边、两岛间水道都留足开局基地的完整占地。
+ * 起伏刻意偏缓，保证每岛都有足够的低坡林地；随机只决定旋转轴，仍由图 seed 复现。
+ */
+export class DuelIslandsTemplate extends BaseTemplate {
+  private readonly horizontal: boolean;
+
+  constructor(rng: RNG) {
+    super("duel-islands", "双岛对峙", rng);
+    this.horizontal = rng.next() < 0.5;
+  }
+
+  landFactor(x: number, z: number, world: number): number {
+    const u = x / world;
+    const v = z / world;
+    const a = this.horizontal ? [0.26, 0.5] as const : [0.5, 0.26] as const;
+    const b = this.horizontal ? [0.74, 0.5] as const : [0.5, 0.74] as const;
+    const r = 0.18;
+    const soft = 0.025;
+    return Math.max(
+      diskFactor(Math.hypot(u - a[0], v - a[1]), r, soft),
+      diskFactor(Math.hypot(u - b[0], v - b[1]), r, soft),
+    );
+  }
+
+  reliefScale(): number {
+    return 0.8;
+  }
+
+  mountainWeight(): number {
+    return 0.2;
+  }
+
+  anchors(world: number): [Anchor, Anchor] {
+    return this.horizontal
+      ? [{ x: 0.26 * world, z: 0.5 * world }, { x: 0.74 * world, z: 0.5 * world }]
+      : [{ x: 0.5 * world, z: 0.26 * world }, { x: 0.5 * world, z: 0.74 * world }];
   }
 }
 

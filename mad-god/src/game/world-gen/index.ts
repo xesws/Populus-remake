@@ -4,4 +4,7 @@ export * from "./map-template";
 // v0.25 地貌特征层：契约（terrain-features）+ 各特征的独立实现（features/）。
 export * from "./terrain-features";
 export * from "./features/mountain-range";
+export * from "./island-analyzer";
+export * from "./spawn-planner";
+export * from "./start-layout";
 export * from "./world-gen";

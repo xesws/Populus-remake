@@ -1,15 +1,14 @@
 // v0.24 地图生成编排器（Agent G）。
-// 职责：把「六模板之一 × seeded 噪声」编排成一张完整高度场与双方出生点，
-// 替代 v0.23 及更早的固定 sin 叠加 + 固定圆轮廓 + 写死山脊生成器——同 seed 必复现同图。
+// 职责：把「模板 × seeded 噪声」编排成纯地形、地物与通用基地保护区；不再生成玩家出生点。
+// 最终出生点必须等待 World 完成平滑/水系/填海并刷新岛表后，由 SpawnPlanner 独立规划。
 // 只依赖 noise.ts / map-template.ts 的契约段与 types.ts 的 RNG（模板、噪声实现可独立替换）。
 // 性能：SAMPLES≈209（WORLD 放大后 ≈289）时要求单遍生成毫秒级，
 // 因此除结果与少量工具数组外，热路径（每格循环）不做任何对象分配。
 
-import { clamp, ISLE_BASE_MIN, ISLE_FOREST_MIN, ISLE_MIN_CELLS, ISLE_SPLIT_CHANCE, MAX_H, RNG, WATER } from "../types";
+import { clamp, ISLE_MIN_CELLS, ISLE_SPLIT_CHANCE, MAX_H, RNG, WATER } from "../types";
 import { makeNoiseKit, mixSeed, type NoiseKit } from "./noise";
-import { ArchipelagoTemplate, pickTemplate, type MapTemplate } from "./map-template";
-// v0.33 红岛森林门槛与撒树规则同源（FOREST_DEFAULTS）：门槛数的是“可种树格”，撒树时同一套判据能落地。
-import { FOREST_DEFAULTS } from "./forests";
+import { DuelIslandsTemplate, SplitIslandsTemplate, pickTemplate, type MapTemplate } from "./map-template";
+import { IslandAnalyzer } from "./island-analyzer";
 import { FeatureComposer, MASK_CHANNEL, MASK_PEAK, type FeatureEnv, type FeatureStat } from "./terrain-features";
 import { MountainRange, mountainPlanFor } from "./features/mountain-range";
 import { Plateau, plateauPlanFor } from "./features/plateau";
@@ -18,7 +17,7 @@ import { River, riverPlanFor } from "./features/river";
 import { Lake, lakePlanFor } from "./features/lake";
 
 /**
- * 出生点开阔度判据（v0.24）：从候选点沿 8 个罗盘方向各伸出 OPEN_REACH 格，
+ * 通用基地保护区开阔度判据：从候选点沿 8 个罗盘方向各伸出 OPEN_REACH 格，
  * 统计仍落在最大连通陆域内的方向数；少于 OPEN_MIN 个方向即判为"狭长地"。
  * 为什么需要：原判据只有「3.2 格半径内同域覆盖 ≥80%」——蜂腰、尖嘴上也能满足，
  * 结果出生平台 + 3 座初始房的地基把开局区围成一个封死的口袋
@@ -38,7 +37,7 @@ const START_HIGH_PENALTY = 12;
  * 5.2 是实测定的：偏好高程只挡住"平均高"的台地，挡不住"旁边一根尖峰"——
  * 均值对单点尖峰不敏感（seed 99 红方基地周边均值不高、中心却坐在 7.34 的雪顶上）。
  * 留出 5.2 而不是 4.2：highlands 这类图本来就全图是高台，卡太紧会一个候选都不剩，
- * 那时宁可降级用高台，也不能让 findStarts 退化成"对角线硬编码点"（可能落进海里）。
+ * 那时宁可降级用高台，也不能让保护区搜索退化成可能落海的任意点。
  */
 const START_MAX_H = 5.2;
 /** 8 个罗盘方向（4 正 + 4 斜），单位向量。 */
@@ -84,22 +83,25 @@ const RELIEF_POW = 3.2;
 /** v0.25 起伏满量程：shaped=1 时相对 LAND_BASE 的高差，配合 MAX_H=8 留足余量。 */
 const RELIEF_SPAN = 6.5;
 
-/** 单方出生点：世界坐标（格）、朝向地图中心的 yaw、平台高度 h。 */
-export interface GenStart {
+/**
+ * v0.36 地形保护区：岛形初成后选出的通用开阔地，仅供地物避让。
+ * 它不是玩家出生点、不含队伍与朝向；真正出生点由 SpawnPlanner 在终局岛表上决定。
+ */
+export interface ProtectedZone {
   x: number;
   z: number;
-  yaw: number;
-  h: number;
+}
+
+export interface WorldGenOptions {
+  /** 固定地图模式；省略时由主 seed 的独立随机流做 50% 掷币。 */
+  split?: boolean;
+  /** 常规分裂尝试耗尽后的双岛安全模板。 */
+  safeSplit?: boolean;
 }
 
 /**
- * 一次完整生成的产物：高度场 + 特征掩膜 + 模板信息 + 双方出生点 + 特征统计。
- * v0.33 分裂扩展：split＝本局是否多岛；keepSeeds＝保留岛屿的代表格（labelLand 首格），
- * World 侧据此在最终高度场上 flood-fill 定保留集（天然免疫平滑/渡口带来的标签漂移）；
- * splitFallback＝true 表示红岛不够大、红回退到最大岛与蓝同岛（地形仍分裂）。
- * heights 不做松弛/滩涂/pad——这些由 world.ts 既有管线在接入后统一处理。
- * mask 必须与 heights 一起交给 world.ts：它是"特征感知平滑"的输入
- *（见 terrain-features.ts 里 MASK_PEAK / MASK_CHANNEL 的说明）。
+ * v0.36 纯地形产物：高度场 + 特征掩膜 + 岛屿保留种子，不再携带玩家出生点。
+ * World 先完成平滑/水系修复/填海并刷新权威岛表，再交 SpawnPlanner 选双方出生点。
  */
 export interface WorldGenResult {
   heights: Float32Array;
@@ -107,21 +109,16 @@ export interface WorldGenResult {
   mask: Uint8Array;
   templateId: string;
   templateName: string;
-  starts: [GenStart, GenStart];
+  /** 地物避让的通用基地保护区；不是最终出生点。 */
+  protectedZones: ProtectedZone[];
   /** 各地物落地统计，供日志与检查脚本断言。 */
   features: FeatureStat[];
-  /** v0.33 本局是否分裂多岛（保留代表格≥2 个）。 */
+  /** 本次请求的地图模式；分裂模式绝不在此降级为同岛。 */
   split: boolean;
-  /** v0.33 填海保留岛屿的代表格（每岛 labelLand 首格；连通模式恒为 1 个）。 */
+  /** 填海保留岛屿的代表格（每岛 labelLand 首格；连通模式恒为 1 个）。 */
   keepSeeds: Array<{ ix: number; iz: number }>;
-  /** v0.33 红岛不够大时的同岛回退（仍分裂地形，出生点同岛）。 */
-  splitFallback: boolean;
-  /**
-   * v0.33 回退原因（splitFallback＝true 时有效，供检查脚本断言回退合法性）：
-   * small＝第二大地＜ISLE_BASE_MIN；noforest＝可种格＜ISLE_FOREST_MIN；
-   * nostart＝岛上有地无位（findSplitRed 无可用候选）；null＝未回退。
-   */
-  redReject: "small" | "noforest" | "nostart" | null;
+  /** 是否用了确定性双岛安全模板。 */
+  safeSplit: boolean;
 }
 
 /**
@@ -130,29 +127,39 @@ export interface WorldGenResult {
  * 各阶段拆为私有静态方法，职责互不耦合，便于单独替换与调试。
  */
 export class WorldGen {
-  static generate(seed: number, samples: number, step: number): WorldGenResult {
+  /** 主 seed 只决定模式一次；地形重试不得把分裂局悄悄改成连通局。 */
+  static splitForSeed(seed: number): boolean {
+    const splitRng = new RNG(mixSeed(seed ^ 0x1e55ab1e));
+    return splitRng.float(0, 1) < ISLE_SPLIT_CHANCE;
+  }
+
+  /** v0.36 确定性重试种子：attempt=0 保留原图序列，后续尝试与主 seed 稳定派生。 */
+  static attemptSeed(seed: number, attempt: number): number {
+    if (attempt <= 0) return seed;
+    return mixSeed(seed ^ Math.imul(attempt, 0x6d2b79f5));
+  }
+
+  static generate(seed: number, samples: number, step: number, options: WorldGenOptions = {}): WorldGenResult {
     const world = (samples - 1) * step; // 世界边长（格）
-    // v0.24 两条独立随机流：模板抽取（含模板参数）消费 RNG，地形起伏噪声另建一条流——
-    // 两者都由图 seed 派生（不再用 Math.random），故同 seed 下各自确定、整图跨进程可复现。
-    // seed 必须先 mixSeed 混淆再预热 8 拍：LCG 的首次输出与 seed 线性相关，
-    // 不混淆时 RNG(1..303) 几乎抽不出不同模板（实测 15 个 seed 里 14 个同一模板）。
+    const split = options.split ?? this.splitForSeed(seed);
+    // 模板与特征共用本次 attempt 的地形流；模式由主 seed 在 World 外层固定。
     const rng = new RNG(mixSeed(seed));
     for (let i = 0; i < 8; i++) rng.next();
-    // v0.33 分裂掷币（独立种子流：连通模式 rng 消费序列与旧版逐数一致，地形零扰动）。
-    // Q2-A：分裂必出群岛系；连通走既有 pickTemplate（群岛也可能被抽中＝填成单块，即现状）。
     const splitRng = new RNG(mixSeed(seed ^ 0x1e55ab1e));
-    const splitRoll = splitRng.float(0, 1) < ISLE_SPLIT_CHANCE;
-    const tpl = splitRoll ? new ArchipelagoTemplate(splitRng) : pickTemplate(rng);
+    const safeSplit = split && options.safeSplit === true;
+    const tpl = safeSplit
+      ? new DuelIslandsTemplate(splitRng)
+      : split
+        ? new SplitIslandsTemplate(splitRng)
+        : pickTemplate(rng);
     const noise = makeNoiseKit(mixSeed(seed ^ 0x5bf03635));
     const heights = new Float32Array(samples * samples);
     const mask = new Uint8Array(samples * samples);
     this.fillHeights(heights, samples, step, world, tpl, noise);
-    // v0.25 阶段2 顺序调整：连通域与出生点必须在**特征之前**算好——地物要拿"最大陆域"
-    // 和"出生点位置"当落位判据（山不能压在基地门口、不能印进海里）。
-    // 山脉只抬升、不造新水格，所以 labels 在特征之后依然有效；River/Lake 会改变海陆格局，
-    // 那时必须重算 labels（契约里已注明这一条）。
-    const { labels, maxLabel, reps } = this.labelLand(heights, samples);
-    // v0.33 保留集：连通只留最大（即现状）；分裂留最大的 ≤3 座成岛（≥ISLE_MIN_CELLS）。
+
+    // 第一份岛表只服务地物落位与填海代表格；它不是最终出生点依据。
+    // 真正出生点必须等 World 完成特征、平滑、水系修复和填海后再由 SpawnPlanner 选择。
+    const { labels, maxLabel, reps } = this.labelLand(heights, samples, step);
     const sizes = new Map<number, number>();
     for (let i = 0; i < labels.length; i++) {
       const lb = labels[i]!;
@@ -160,34 +167,27 @@ export class WorldGen {
       sizes.set(lb, (sizes.get(lb) ?? 0) + 1);
     }
     const ranked = [...sizes.entries()].sort((a, b) => b[1] - a[1]);
-    const kept = splitRoll ? ranked.filter(([, n]) => n >= ISLE_MIN_CELLS).slice(0, 3).map(([lb]) => lb) : [maxLabel];
-    // 代表格（labelLand 首格）交 World 做 flood-fill 定保留集——标签编号不跨管线，坐标跨。
-    const keepSeeds = kept.map((lb) => {
+    const kept = split
+      ? ranked.filter(([, n]) => n >= ISLE_MIN_CELLS).slice(0, 3).map(([lb]) => lb)
+      : [maxLabel];
+    const keepSeeds = kept.filter((lb) => lb >= 0).map((lb) => {
       const rep = reps.get(lb)!;
       return { ix: rep % samples, iz: (rep / samples) | 0 };
     });
-    const split = splitRoll && keepSeeds.length >= 2;
-    // 出生点：蓝恒最大岛（既有 findStarts 不动）；分裂时红去第二大地，
-    // 不够大/无可用候选则回退同岛（splitFallback，地形仍分裂）。
-    let starts = this.findStarts(heights, labels, maxLabel, samples, step, world, tpl);
-    let splitFallback = false;
-    let redReject: "small" | "noforest" | "nostart" | null = null;
-    if (split) {
-      const second = kept[1]!;
-      // v0.33 红岛双门槛：够大（建基地）＋够种树（开局有木头），任一不够都回退同岛（原因记录供查）。
-      if (sizes.get(second)! < ISLE_BASE_MIN) {
-        splitFallback = true;
-        redReject = "small";
-      } else if (!this.isleForestable(heights, labels, second, samples, step)) {
-        splitFallback = true;
-        redReject = "noforest";
-      } else {
-        const red = this.findSplitRed(heights, labels, second, samples, step, world, tpl);
-        if (red) starts = [starts[0], red];
-        else {
-          splitFallback = true;
-          redReject = "nostart";
-        }
+
+    // 地物只拿“通用开阔保护区”，不拿玩家/队伍出生点。分裂模式保护区分别来自前两座岛；
+    // 找不到第二保护区时不回退同岛，外层会在终局 SpawnPlanner 阶段拒绝并重生成。
+    const baseZones = this.findProtectedZones(heights, labels, maxLabel, samples, step, world, tpl);
+    let protectedZones: ProtectedZone[] = [...baseZones];
+    if (safeSplit) {
+      // 安全模板的两座岛心就是构造级保证的开阔地，不能再用“最大岛上的最远点”把保护区带偏。
+      protectedZones = tpl.anchors(world).map((p) => ({ x: p.x, z: p.z }));
+    } else if (split) {
+      const second = kept[1];
+      if (second === undefined) protectedZones = [baseZones[0]!];
+      else {
+        const other = this.findProtectedZoneOnIsland(heights, labels, second, samples, step, world, tpl);
+        protectedZones = other ? [baseZones[0]!, other] : [baseZones[0]!];
       }
     }
     const features = this.composeFeatures(
@@ -202,16 +202,24 @@ export class WorldGen {
         mask,
         labels,
         maxLabel,
-        starts,
+        protectedZones,
         rng,
         noise,
       },
       tpl,
     );
-    // 平原修饰挪到特征**之后**，且必须特征感知：它原本把选区内每格往邻域均值拉近 60%，
-    // 不排除山体的话刚撒好的山脉会被它抹掉大半。
     this.smoothPlains(heights, samples, step, noise, mask);
-    return { heights, mask, templateId: tpl.id, templateName: tpl.name, starts, features, split, keepSeeds, splitFallback, redReject };
+    return {
+      heights,
+      mask,
+      templateId: tpl.id,
+      templateName: tpl.name,
+      protectedZones,
+      features,
+      split,
+      keepSeeds,
+      safeSplit,
+    };
   }
 
   /**
@@ -367,75 +375,23 @@ export class WorldGen {
     }
   }
 
-  /**
-   * v0.24 连通域标记：4 邻接 BFS，h>SEA_H 即陆地（本生成器只产 0.04 海格与 ≥0.06 陆格，
-   * 故该判据与「h>0」等价，但不会把浅海误算成陆地）。
-   * 返回每格 label 与最大连通域编号（出生点只落在最大陆地上，保证双方可达同一片大陆）。
-   */
+  /** 原始地形按 SEA_H 分岛；复用 IslandAnalyzer，另扫一遍记录每个 label 的首格代表点。 */
   private static labelLand(
     heights: Float32Array,
     samples: number,
+    step: number,
   ): { labels: Int32Array; maxLabel: number; reps: Map<number, number> } {
-    const n = samples * samples;
-    const labels = new Int32Array(n);
-    labels.fill(-1);
-    const queue = new Int32Array(n); // 一次性预分配：BFS 队列入队总次数 ≤ 格数
-    // v0.33 每岛代表格（该 label 首格）：World 侧 flood-fill 定保留集用（编号不跨管线，坐标跨）。
+    const topology = IslandAnalyzer.analyze(heights, samples, step, SEA_H);
     const reps = new Map<number, number>();
-    let maxLabel = -1;
-    let maxCount = 0;
-    let label = 0;
-    for (let i = 0; i < n; i++) {
-      if (heights[i]! <= SEA_H || labels[i]! !== -1) continue;
-      reps.set(label, i);
-      let head = 0;
-      let tail = 0;
-      queue[tail++] = i;
-      labels[i] = label;
-      while (head < tail) {
-        const cur = queue[head++]!;
-        const iz = (cur / samples) | 0;
-        const ix = cur - iz * samples;
-        if (ix > 0) {
-          const nb = cur - 1;
-          if (labels[nb]! === -1 && heights[nb]! > SEA_H) {
-            labels[nb] = label;
-            queue[tail++] = nb;
-          }
-        }
-        if (ix < samples - 1) {
-          const nb = cur + 1;
-          if (labels[nb]! === -1 && heights[nb]! > SEA_H) {
-            labels[nb] = label;
-            queue[tail++] = nb;
-          }
-        }
-        if (iz > 0) {
-          const nb = cur - samples;
-          if (labels[nb]! === -1 && heights[nb]! > SEA_H) {
-            labels[nb] = label;
-            queue[tail++] = nb;
-          }
-        }
-        if (iz < samples - 1) {
-          const nb = cur + samples;
-          if (labels[nb]! === -1 && heights[nb]! > SEA_H) {
-            labels[nb] = label;
-            queue[tail++] = nb;
-          }
-        }
-      }
-      if (tail > maxCount) {
-        maxCount = tail;
-        maxLabel = label;
-      }
-      label++;
+    for (let i = 0; i < topology.grid.length; i++) {
+      const label = topology.grid[i]!;
+      if (label >= 0 && !reps.has(label)) reps.set(label, i);
     }
-    return { labels, maxLabel, reps };
+    return { labels: topology.grid, maxLabel: topology.largestLabel, reps };
   }
 
   /**
-   * v0.33 候选打分（findStarts 本体抽出，逐岛复用）：forLabel 岛内每 4 采样取候选，
+   * v0.36 保护区候选打分（逐岛复用）：forLabel 岛内每 4 采样取候选，
    * 逐个算 3.2 格覆盖率/均值/最高格/8 向开阔度。连通模式传 maxLabel 即旧行为。
    */
   private static scoreCandidates(
@@ -462,7 +418,7 @@ export class WorldGen {
     const maxHc = new Float32Array(cap);
     const open = new Uint8Array(cap);
     let candN = 0;
-    // v0.24 集成修正：出生点候选必须距图边 ≥4 格（16 采样）——贴边出生会让
+    // 保护区候选必须距图边 ≥4 格（16 采样）——贴边会让
     // world 管线的 flattenPad/松弛邻域越界（曾致半岛模板 8 格 NaN 传播）。
     const margin = Math.round(4 / step);
     for (let iz = margin; iz < samples - margin; iz += stride) {
@@ -510,46 +466,10 @@ export class WorldGen {
   }
 
   /**
-   * v0.33 红岛森林门槛：该岛“严格可种格”≥ ISLE_FOREST_MIN。
-   * 严格＝四角一致（与 cellLand 同式，岸边碎格不算）＋林线下＋格点坡度（与 slopeAt 同式）；
-   * 与 ForestSeeder 判据同源（近似口径：门槛只求“有没有一片林子的量”，精确落位由撒树保证）。
-   * 计数到门槛即停，整图一遍封顶。注意 WATER 取游戏海平面（0.20）而非 SEA_H（0.04），
-   * 与撒树走的 walkableAt 同口径——0.04~0.2 的滩涂格撒树时本就种不上，门限里也不该算数。
+   * v0.36 第二座岛的通用保护区：按锚点[1]吸附，失败则全岛按
+   * “覆盖率→开阔度→低地”取最优。无候选返回 null，由外层终局规划拒绝整次地形。
    */
-  private static isleForestable(
-    heights: Float32Array,
-    labels: Int32Array,
-    forLabel: number,
-    samples: number,
-    step: number,
-  ): boolean {
-    const treeline = FOREST_DEFAULTS.treelineH;
-    const maxSlope = FOREST_DEFAULTS.maxSlope;
-    const at = (ix: number, iz: number): number => heights[iz * samples + ix]!;
-    let n = 0;
-    for (let iz = 1; iz < samples - 2; iz++) {
-      for (let ix = 1; ix < samples - 2; ix++) {
-        const i = iz * samples + ix;
-        if (labels[i]! !== forLabel) continue;
-        if (at(ix, iz) <= WATER || at(ix + 1, iz) <= WATER || at(ix, iz + 1) <= WATER || at(ix + 1, iz + 1) <= WATER)
-          continue;
-        const h = at(ix, iz);
-        if (h >= treeline) continue;
-        const gx = (at(ix + 1, iz) - at(ix - 1, iz)) / (2 * step);
-        const gz = (at(ix, iz + 1) - at(ix, iz - 1)) / (2 * step);
-        if (Math.hypot(gx, gz) > maxSlope) continue;
-        if (++n >= ISLE_FOREST_MIN) return true;
-      }
-    }
-    return false;
-  }
-
-  /**
-   * v0.33 分岛红出生点：第二大地岛上按锚点[1]吸附（与蓝对称落位），失败则全岛按
-   * “覆盖率→开阔度→低地”取最优（两轮：先禁山顶，全山岛放宽，attachToAnchor 同规）。
-   * 无可用候选返回 null（调用方回退同岛，见 generate splitFallback）。
-   */
-  private static findSplitRed(
+  private static findProtectedZoneOnIsland(
     heights: Float32Array,
     labels: Int32Array,
     redLabel: number,
@@ -557,13 +477,13 @@ export class WorldGen {
     step: number,
     world: number,
     tpl: MapTemplate,
-  ): GenStart | null {
+  ): ProtectedZone | null {
     const sc = this.scoreCandidates(heights, labels, redLabel, samples, step);
     const { candX, candZ, cov, meanH, maxHc, open, candN } = sc;
     if (candN === 0) return null;
     const anchors = tpl.anchors(world);
     const cb = this.attachToAnchor(anchors[1].x, anchors[1].z, candX, candZ, cov, meanH, maxHc, open, candN, step);
-    if (cb >= 0) return this.makeStart(candX[cb]!, candZ[cb]!, meanH[cb]!, step, world);
+    if (cb >= 0) return this.makeProtectedZone(candX[cb]!, candZ[cb]!, step);
     for (let strict = 1; strict >= 0; strict--) {
       let best = -1;
       let bestScore = -Infinity;
@@ -576,18 +496,16 @@ export class WorldGen {
           best = c;
         }
       }
-      if (best >= 0) return this.makeStart(candX[best]!, candZ[best]!, meanH[best]!, step, world);
+      if (best >= 0) return this.makeProtectedZone(candX[best]!, candZ[best]!, step);
     }
     return null;
   }
 
   /**
-   * v0.24 出生点搜索：向模板锚点吸附（保证开局格局遵循模板的对称设计）。
-   * 先取最大连通域内每 4 采样（=1 格）的候选，逐个预计算 3.2 格半径圆内的
-   * 连通域覆盖率与局部平均高度；两起点过近（<world*0.45）或锚点吸附失败时，
-   * 回退为连通域内相距最远的两点（扫描步 8），保证开局分隔公平。
+   * v0.36 通用基地保护区搜索：向模板锚点吸附，供山/河/湖避让。
+   * 它只保护两块开阔地，不分配队伍；最终出生点仍由终局 SpawnPlanner 独立选择。
    */
-  private static findStarts(
+  private static findProtectedZones(
     heights: Float32Array,
     labels: Int32Array,
     maxLabel: number,
@@ -595,37 +513,34 @@ export class WorldGen {
     step: number,
     world: number,
     tpl: MapTemplate,
-  ): [GenStart, GenStart] {
+  ): [ProtectedZone, ProtectedZone] {
     // v0.33 候选打分抽出复用（连通模式传 maxLabel，行为与旧版逐数一致）。
     const sc = this.scoreCandidates(heights, labels, maxLabel, samples, step);
     const { candX, candZ, cov, meanH, maxHc, open, candN } = sc;
     const anchors = tpl.anchors(world);
-    let startA: GenStart | null = null;
-    let startB: GenStart | null = null;
+    let zoneA: ProtectedZone | null = null;
+    let zoneB: ProtectedZone | null = null;
     const ca = this.attachToAnchor(anchors[0].x, anchors[0].z, candX, candZ, cov, meanH, maxHc, open, candN, step);
     const cb = this.attachToAnchor(anchors[1].x, anchors[1].z, candX, candZ, cov, meanH, maxHc, open, candN, step);
     if (ca >= 0 && cb >= 0) {
       const d = Math.hypot((candX[ca]! - candX[cb]!) * step, (candZ[ca]! - candZ[cb]!) * step);
       if (d >= world * 0.45) {
-        startA = this.makeStart(candX[ca]!, candZ[ca]!, meanH[ca]!, step, world);
-        startB = this.makeStart(candX[cb]!, candZ[cb]!, meanH[cb]!, step, world);
+        zoneA = this.makeProtectedZone(candX[ca]!, candZ[ca]!, step);
+        zoneB = this.makeProtectedZone(candX[cb]!, candZ[cb]!, step);
       }
     }
-    if (!startA || !startB) {
-      // 锚点吸附失败或两起点过近：改取最大连通域内最远两点对，保证双方开局分隔公平
-      const far = this.farthestPair(heights, labels, maxLabel, samples, step, world);
+    if (!zoneA || !zoneB) {
+      // 锚点吸附失败或两区过近：改取最大连通域内最远两块开阔区。
+      const far = this.farthestProtectedPair(heights, labels, maxLabel, samples, step);
       if (far) return far;
       // 兜底：全图无可用陆地（模板退化，理论不出现）——四分之一对角点落位，保证结构永远有效
       const q = world * 0.25;
-      const yawA = Math.atan2(world * 0.5 - q, world * 0.5 - q);
-      const yawB = Math.atan2(q - world * 0.5, q - world * 0.5);
-      const h = 0.8 + 0.25;
       return [
-        { x: q, z: q, yaw: yawA, h },
-        { x: world - q, z: world - q, yaw: yawB, h },
+        { x: q, z: q },
+        { x: world - q, z: world - q },
       ];
     }
-    return [startA, startB];
+    return [zoneA, zoneB];
   }
 
   /**
@@ -705,14 +620,13 @@ export class WorldGen {
    * seed 11 红方 4.51、seed 23 蓝方 5.25）。所以在保留"分隔公平"这个本职的前提下，
    * 把高度惩罚算进点对得分，并先用 START_MAX_H 硬筛一轮、无解再放宽。
    */
-  private static farthestPair(
+  private static farthestProtectedPair(
     heights: Float32Array,
     labels: Int32Array,
     maxLabel: number,
     samples: number,
     step: number,
-    world: number,
-  ): [GenStart, GenStart] | null {
+  ): [ProtectedZone, ProtectedZone] | null {
     const stride = 8;
     const cap = Math.ceil(samples / stride) ** 2;
     const fx = new Int32Array(cap);
@@ -720,7 +634,7 @@ export class WorldGen {
     const fMean = new Float32Array(cap);
     const fMax = new Float32Array(cap);
     let fn = 0;
-    const margin = Math.round(4 / step); // 同 findStarts：距图边 ≥4 格，防 pad 管线越界
+    const margin = Math.round(4 / step); // 距图边 ≥4 格，防后续 pad 管线越界
     const r = 3.2 / step;
     const rS = Math.ceil(r);
     const r2 = r * r;
@@ -771,8 +685,8 @@ export class WorldGen {
     }
     if (ba < 0) return null;
     return [
-      this.makeStart(fx[ba]!, fz[ba]!, fMean[ba]!, step, world),
-      this.makeStart(fx[bb]!, fz[bb]!, fMean[bb]!, step, world),
+      this.makeProtectedZone(fx[ba]!, fz[ba]!, step),
+      this.makeProtectedZone(fx[bb]!, fz[bb]!, step),
     ];
   }
 
@@ -816,19 +730,9 @@ export class WorldGen {
   }
 
   /**
-   * 组装出生点：yaw 朝地图中心（与全局 atan2(dx,dz) 朝向约定一致，神像正面朝内）；
-   * h = max(局部均值, 0.8)+0.25——与 world.ts 旧出生平台逻辑同源，近岸低地也有 1.05 起步。
+   * 组装无队伍、无朝向的地形保护区；只保留世界坐标。
    */
-  private static makeStart(
-    ix: number,
-    iz: number,
-    mean: number,
-    step: number,
-    world: number,
-  ): GenStart {
-    const x = ix * step;
-    const z = iz * step;
-    const yaw = Math.atan2(world * 0.5 - x, world * 0.5 - z);
-    return { x, z, yaw, h: Math.max(mean, 0.8) + 0.25 };
+  private static makeProtectedZone(ix: number, iz: number, step: number): ProtectedZone {
+    return { x: ix * step, z: iz * step };
   }
 }

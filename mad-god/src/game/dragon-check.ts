@@ -137,6 +137,10 @@ function findLandSpot(sim: Sim, cx: number, cz: number, dist: number): { x: numb
 /** e. 全自动索敌 + 脱锁：10 格内锁定；目标跑出 10 格弃锁；无目标不锁。 */
 function testAutoTargetAndLeash(): void {
   const sim = new Sim(new World(42));
+  // v0.36 出生点改由终局地形规划后，初始红村民位置不再是该测试可依赖的固定远点；隔离唯一目标。
+  sim.units = sim.units.filter((u) => u.team !== RED);
+  sim.buildings = sim.buildings.filter((b) => b.team !== RED);
+  sim.markHouseBlocks();
   const pad = sim.world.startPad(BLUE);
   const dragon = sim.addUnit(BLUE, "dragon", pad.x + 2, pad.z);
   dragon.y = sim.world.heightAt(dragon.x, dragon.z) + 2.2;

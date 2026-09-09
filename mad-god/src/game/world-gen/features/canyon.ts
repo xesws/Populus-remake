@@ -37,7 +37,7 @@
 import {
   MASK_PEAK,
   carveBed,
-  distToStartCells,
+  distToProtectedZone,
   domeProfile,
   isMainland,
   raiseTo,
@@ -372,7 +372,7 @@ export class Canyon implements TerrainFeature {
         const ix = env.rng.int(lim, env.samples - 1 - lim);
         const iz = env.rng.int(lim, env.samples - 1 - lim);
         if (!hasRoom(env, ix, iz, roomS)) continue;
-        if (distToStartCells(env, ix, iz) < keepStart) continue;
+        if (distToProtectedZone(env, ix, iz) < keepStart) continue;
         if (tooCloseTo(ix * env.step, iz * env.step)) continue;
         cx = ix;
         cz = iz;
@@ -394,7 +394,7 @@ export class Canyon implements TerrainFeature {
     const base: number[] = [];
     for (let p = 0; p < nSteps; p++) {
       if (p === bendAt) dir += bend;
-      if (distToStartCells(env, cx, cz) < keepStart) break; // 逼近基地就截断，宁可谷短
+      if (distToProtectedZone(env, cx, cz) < keepStart) break; // 逼近保护区就截断，宁可谷短
       if (tooCloseTo(cx * env.step, cz * env.step)) break; // 撞上已有谷的禁入带同样截断
       pts.push({ x: cx * env.step, z: cz * env.step });
       base.push(env.h[sidx(env, cx, cz)]!);

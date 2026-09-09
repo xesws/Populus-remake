@@ -69,6 +69,10 @@ export interface WorldMsg {
   seed: number;
   templateId: string;
   templateName: string;
+  /** v0.36 终局地图模式与确定性重试诊断。 */
+  splitIsles: boolean;
+  genAttempt: number;
+  genRejects: string[];
   smoothReport: SmoothReport | null;
   fordCount: number;
   genFeatures: FeatureStat[];

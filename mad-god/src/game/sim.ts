@@ -61,6 +61,7 @@ import {
 } from "./types";
 import { inDoorSlit, inPad, Pad, padsOverlap, PAD_STAND_INFLATE, worldOnPad, World } from "./world";
 import { ForestSeeder, FOREST_DEFAULTS } from "./world-gen/forests";
+import { initialBaseLayout } from "./world-gen/start-layout";
 import type { FirePatch } from "./entities/fire-patch";
 import type { BreathShot } from "./systems/dragon-system";
 import {
@@ -228,24 +229,16 @@ export class Sim {
 
   placeStart(team: Team): void {
     const s = this.world.startPad(team);
-    const rebirth = this.placeComplete(team, s.x, s.z, s.yaw, "rebirth", 1, 3.2, 3.2);
-    const toCx = WORLD * 0.5 - s.x;
-    const toCz = WORLD * 0.5 - s.z;
-    const len = Math.hypot(toCx, toCz) || 1;
-    const fx = toCx / len;
-    const fz = toCz / len;
-    const px = -fz;
-    const pz = fx;
-    const h1x = s.x + fx * 4.0 + px * 4.0;
-    const h1z = s.z + fz * 4.0 + pz * 4.0;
-    const h2x = s.x + fx * 4.0 - px * 4.0;
-    const h2z = s.z + fz * 4.0 - pz * 4.0;
-    const hut1 = this.placeComplete(team, h1x, h1z, s.yaw + 0.12, "hut", 1);
-    const hut2 = this.placeComplete(team, h2x, h2z, s.yaw - 0.12, "hut", 1);
+    // v0.36 与 SpawnPlanner 共用同一份完整开局布局，规划器验证的正是实际落地的三个 pad。
+    const [rebirthPad, hut1Pad, hut2Pad] = initialBaseLayout(s);
+    const rebirth = this.placeComplete(team, rebirthPad.x, rebirthPad.z, rebirthPad.yaw, "rebirth", 1, rebirthPad.w, rebirthPad.d);
+    const hut1 = this.placeComplete(team, hut1Pad.x, hut1Pad.z, hut1Pad.yaw, "hut", 1, hut1Pad.w, hut1Pad.d);
+    const hut2 = this.placeComplete(team, hut2Pad.x, hut2Pad.z, hut2Pad.yaw, "hut", 1, hut2Pad.w, hut2Pad.d);
     const sh = this.spawnNear(rebirth) ?? { x: s.x + 0.4, z: s.z + 1.8 };
     this.addUnit(team, "shaman", sh.x, sh.z);
-    const w1 = this.spawnNear(hut1) ?? { x: h1x + 1.6, z: h1z + 1.2 };
-    const w2 = this.spawnNear(hut2) ?? { x: h2x - 1.6, z: h2z + 1.2 };
+    // 村民直接从各自茅屋正门出生；spawnNear 的圆周首命中可能落到屋背面，首个移动指令会穿屋卡住。
+    const w1 = this.hutDoor(hut1);
+    const w2 = this.hutDoor(hut2);
     this.addUnit(team, "walker", w1.x, w1.z);
     this.addUnit(team, "walker", w2.x, w2.z);
   }

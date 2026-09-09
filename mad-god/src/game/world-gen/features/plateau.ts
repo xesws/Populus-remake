@@ -38,7 +38,7 @@
 
 import {
   MASK_PEAK,
-  distToStartCells,
+  distToProtectedZone,
   isMainland,
   mesaProfile,
   raiseTo,
@@ -192,7 +192,7 @@ export class Plateau implements TerrainFeature {
         const ix = env.rng.int(lim, env.samples - 1 - lim);
         const iz = env.rng.int(lim, env.samples - 1 - lim);
         if (!hasRoomForPlateau(env, ix, iz, roomS)) continue;
-        if (distToStartCells(env, ix, iz) < cfg.minStartDist + rCells) continue;
+        if (distToProtectedZone(env, ix, iz) < cfg.minStartDist + rCells) continue;
         const fit = this.footprintFit(env, ix, iz, rCells / env.step, rimStart, target, false);
         if (fit !== null) return fit;
       }
@@ -221,7 +221,7 @@ export class Plateau implements TerrainFeature {
       const iz = Math.round(main.cz + Math.sin(dir) * (dist / env.step));
       if (ix < lim || iz < lim || ix >= env.samples - lim || iz >= env.samples - lim) continue;
       if (!isMainland(env, ix, iz)) continue;
-      if (distToStartCells(env, ix, iz) < cfg.minStartDist + rCells) continue;
+      if (distToProtectedZone(env, ix, iz) < cfg.minStartDist + rCells) continue;
       const fit = this.footprintFit(env, ix, iz, rCells / env.step, rimStart, target, true);
       // 爬坡预算可能把叠块顶面裁到主块顶面 ±topJitter 之外——那种"一大一小两只台阶"
       // 不是高原群，是随机山包，宁可不叠（规格第 5 条）。

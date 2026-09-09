@@ -95,7 +95,10 @@ export class ForestSeeder {
       if (!center) continue;
       const n = rng.int(plan.perCluster[0], plan.perCluster[1]);
       const r = rng.float(plan.clusterRadius[0], plan.clusterRadius[1]);
-      for (let k = 0; k < n; k++) {
+      // v0.36 n 是“目标树数”而不是“只尝试 n 次”。旧循环遇到坡地/新出生布局避让时会把
+      // 6~14 棵的配置静默缩水成 2~4 棵；现在在 tries 上限内补足目标，放不下才自然少放。
+      let placed = 0;
+      for (let k = 0; k < plan.tries && placed < n; k++) {
         // 簇内用 sqrt(u) 分布：中心密、边缘疏，看起来像自然林缘而不是一个圆盘
         const ang = rng.float(0, Math.PI * 2);
         const rad = r * Math.sqrt(rng.next());
@@ -103,6 +106,7 @@ export class ForestSeeder {
         const z = center.z + Math.sin(ang) * rad;
         if (!ForestSeeder.ok(ground, plan, pads, starts, spots, x, z, world, accept)) continue;
         spots.push({ x, z });
+        placed++;
       }
     }
     return spots;
@@ -147,6 +151,22 @@ export class ForestSeeder {
       if (starts.some((s) => Math.hypot(x - s.x, z - s.z) < plan.minStartDist)) continue;
       return { x, z };
     }
+    // v0.36 锚定簇的随机尝试全部落空时，按半径→方位稳定扫描终局可种地。
+    // SpawnPlanner 已保证 16 格内存在这类格；这里不能再让 RNG 运气把基地木头保底静默丢掉。
+    if (near) {
+      for (let d = plan.minStartDist + 1; d <= plan.maxNearestTreeDist; d += 1) {
+        for (let k = 0; k < 48; k++) {
+          const a = (k / 48) * Math.PI * 2;
+          const x = near.x + Math.cos(a) * d;
+          const z = near.z + Math.sin(a) * d;
+          if (x < plan.margin || z < plan.margin || x > world - plan.margin || z > world - plan.margin) continue;
+          if (!ForestSeeder.terrainOk(ground, plan, pads, x, z)) continue;
+          if (accept && !accept(x, z)) continue;
+          if (starts.some((s) => Math.hypot(x - s.x, z - s.z) < plan.minStartDist)) continue;
+          return { x, z };
+        }
+      }
+    }
     return null;
   }
 
@@ -166,6 +186,7 @@ export class ForestSeeder {
       return false;
     }
     if (!ForestSeeder.terrainOk(ground, plan, pads, x, z)) return false;
+    if (accept && !accept(x, z)) return false;
     if (starts.some((s) => Math.hypot(x - s.x, z - s.z) < plan.minStartDist)) return false;
     const m2 = plan.minSpacing * plan.minSpacing;
     for (const t of spots) {

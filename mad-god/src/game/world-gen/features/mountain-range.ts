@@ -12,7 +12,7 @@
 
 import {
   MASK_PEAK,
-  distToStartCells,
+  distToProtectedZone,
   domeProfile,
   isMainland,
   raiseTo,
@@ -142,7 +142,7 @@ export class MountainRange implements TerrainFeature {
         const ix = env.rng.int(lim, env.samples - 1 - lim);
         const iz = env.rng.int(lim, env.samples - 1 - lim);
         if (!hasRoom(env, ix, iz, roomS)) continue;
-        if (distToStartCells(env, ix, iz) < cfg.minStartDist) continue;
+        if (distToProtectedZone(env, ix, iz) < cfg.minStartDist) continue;
         cx = ix;
         cz = iz;
         break;
@@ -172,11 +172,11 @@ export class MountainRange implements TerrainFeature {
       const target = crestH * (0.42 + 0.58 * near * near);
       const rCells = env.rng.float(cfg.radius[0], cfg.radius[1]) * (0.65 + 0.35 * near);
       const rS = rCells / env.step;
-      // 每个峰头单独过出生点判据。只校验起点是不够的：山脉会一路走回基地门口，
-      // 而 findStarts 在特征之前就跑完了，它挑好的低地会被后来的山压掉
+      // 每个峰头单独过保护区判据。只校验起点是不够的：山脉会一路走回开阔地，
+      // 而保护区在特征之前就选好了，不能让后来的山把它压掉
       //（实测 seed 11 / seed 99 的红方基地旁边 3 格被印上 6+ 高的雪峰）。
       // 处理方式：跳过这一峰但**继续往前走**，让山脊绕出一条走廊，而不是整条山脉作废。
-      if (distToStartCells(env, cx, cz) >= cfg.minStartDist) {
+      if (distToProtectedZone(env, cx, cz) >= cfg.minStartDist) {
         stamped++;
         touched += raiseTo(env, cx, cz, rS, target, domeProfile, MASK_PEAK);
         if (p === crestAt) {

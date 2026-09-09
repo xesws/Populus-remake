@@ -16,12 +16,12 @@
 //    由平滑工序按掩膜决定力度——而不是绕开平滑。
 // 3. 一切随机只许走 env.rng，**禁止 Math.random**：同图 seed 必须逐格可复现
 //    （terrain-gen-check 的 testReproducible 会直接挂）。
-// 4. 特征落位只许在**最大连通陆域**内（用 isMainland），且要避开出生点
-//    （用 distToStartCells）——否则会出现"基地扎在山肚子里""开局门口一条河"这类坏图。
+// 4. 特征落位只许在**最大连通陆域**内（用 isMainland），且要避开岛形阶段产出的
+//    通用基地保护区（用 distToProtectedZone）。保护区不属于玩家/队伍；真正出生点在终局岛表后选。
 
 import type { RNG } from "../types";
 import type { NoiseKit } from "./noise";
-import type { GenStart } from "./world-gen";
+import type { ProtectedZone } from "./world-gen";
 
 /**
  * 山体核心：后续平滑/削峰要轻手对待这一格。
@@ -88,8 +88,8 @@ export interface FeatureEnv {
   readonly labels: Int32Array;
   /** 最大连通域编号。 */
   readonly maxLabel: number;
-  /** 双方出生点（世界坐标），用于"别贴着基地放山/放河"。 */
-  readonly starts: ReadonlyArray<GenStart>;
+  /** 岛形阶段选出的通用基地保护区；不是玩家出生点。 */
+  readonly protectedZones: ReadonlyArray<ProtectedZone>;
   /** 本座图专属随机流（已由图 seed 派生，禁止另起 Math.random）。 */
   readonly rng: RNG;
   /** 本座图专属噪声场（特征内部的次级抖动从这里取）。 */
@@ -109,13 +109,13 @@ export function isMainland(env: FeatureEnv, ix: number, iz: number): boolean {
   return env.labels[sidx(env, ix, iz)] === env.maxLabel;
 }
 
-/** 采样点到最近出生点的距离（格）。出生点附近的地物会毁掉开局，几乎所有特征都要用它。 */
-export function distToStartCells(env: FeatureEnv, ix: number, iz: number): number {
+/** 采样点到最近通用基地保护区的距离（格）；不含任何队伍或最终出生点语义。 */
+export function distToProtectedZone(env: FeatureEnv, ix: number, iz: number): number {
   const x = ix * env.step;
   const z = iz * env.step;
   let best = Infinity;
-  for (const s of env.starts) {
-    const d = Math.hypot(x - s.x, z - s.z);
+  for (const zone of env.protectedZones) {
+    const d = Math.hypot(x - zone.x, z - zone.z);
     if (d < best) best = d;
   }
   return best;

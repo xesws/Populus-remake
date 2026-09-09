@@ -48,7 +48,7 @@
 import {
   MASK_CHANNEL,
   carveBed,
-  distToStartCells,
+  distToProtectedZone,
   isMainland,
   sidx,
   type FeatureEnv,
@@ -239,7 +239,7 @@ export class River implements TerrainFeature {
       if (!isMainland(env, ix, iz)) continue;
       const i = sidx(env, ix, iz);
       if (env.h[i] < cfg.sourceH) continue;
-      if (distToStartCells(env, ix, iz) < cfg.minStartDist) continue;
+      if (distToProtectedZone(env, ix, iz) < cfg.minStartDist) continue;
       if (this.nearChannel(env, ix, iz, chanR)) continue;
       cands.push({ ix, iz, h: env.h[i] });
     }
@@ -283,7 +283,7 @@ export class River implements TerrainFeature {
     const pz: number[] = [cz];
     const visited = new Set<number>([sidx(env, cx, cz)]);
     for (let step = 0; step <= maxSteps; step++) {
-      if (distToStartCells(env, cx, cz) < cfg.keepStartDist) {
+      if (distToProtectedZone(env, cx, cz) < cfg.keepStartDist) {
         return { ok: false, why: "流径进入出生点禁区" };
       }
       if (this.atCoast(env, cx, cz)) {

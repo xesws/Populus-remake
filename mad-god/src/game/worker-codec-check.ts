@@ -83,6 +83,8 @@ function testWorldRoundtrip(): void {
   }
   assert(mw.lava.length === w.lava.length && mw.scorch.length === w.scorch.length, "lava/scorch 全量落地");
   assert(mw.genSeed === w.genSeed && mw.templateId === w.templateId, `世界元数据一致（${mw.templateId}）`);
+  assert(mw.splitIsles === w.splitIsles && mw.genAttempt === w.genAttempt, "分岛模式与生成 attempt 元数据一致");
+  assert(mw.genRejects.join("|") === w.genRejects.join("|"), "生成拒绝原因元数据一致");
   assert(mw.starts[0]!.x === w.starts[0]!.x && mw.starts[1]!.z === w.starts[1]!.z, "starts 一致");
   // 镜像 world 的纯数据方法可用且与源同值（主线程渲染/寻路判据的数据基础）。
   for (let k = 0; k < 20; k++) {

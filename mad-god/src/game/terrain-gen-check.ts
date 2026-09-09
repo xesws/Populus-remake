@@ -127,8 +127,8 @@ function testDiversity(): void {
   console.log(`testDiversity ok（${ids.size} 种模板，陆地 ${lo.toFixed(0)}%~${hi.toFixed(0)}%）`);
 }
 
-/** c) 连通/分裂双模式：连通图走旧口径（单连通＋同域＋分隔）；分裂图只验成岛数与出生点可走
- *（深断言：分岛/回退/填平合法性＋资源均等＋红方自理见 island-check.ts）。 */
+/** c) 连通/分裂双模式：连通图单连通＋同域＋分隔；分裂图 2~3 岛且双方严格分岛。
+ *（资源均等、红方自理、重试与安全模板深断言见 island-check/spawn-planner-check）。 */
 function testLandmassMode(): void {
   for (const seed of [1, 5, 7, 11, 42, 88]) {
     const w = new World(seed);
@@ -151,8 +151,12 @@ function testLandmassMode(): void {
     assert(big >= 2 && big <= 3, `seed ${seed}(${w.templateId}) 分裂图须 2~3 座成岛（实际 ${big}）`);
     assert(w.walkableAt(a.x, a.z), `seed=${seed} 分裂图蓝出生点须可走`);
     assert(w.walkableAt(b.x, b.z), `seed=${seed} 分裂图红出生点须可走`);
+    assert(
+      w.islandAt(a.x, a.z) !== w.islandAt(b.x, b.z),
+      `seed=${seed} 分裂图双方出生点必须属于不同终局岛`,
+    );
   }
-  console.log("testLandmassMode ok（连通单域＋分隔 / 分裂 2~3 岛）");
+  console.log("testLandmassMode ok（连通单域＋分隔 / 分裂 2~3 岛且严格分岛）");
 }
 
 /** d) 平滑度：零 NaN、坡度达标（含图边框——曾经整圈没被钳制）。 */

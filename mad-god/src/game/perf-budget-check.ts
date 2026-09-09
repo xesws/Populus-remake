@@ -1,8 +1,8 @@
 /**
  * v0.29 · perf-budget · 性能预算检查——固定步长/索敌网格/寻路预算的回归门。
  *
- * 做法：固定 seed 建图（World+Sim，套路同 combat-auto-check），地图中南部开阔带（seed 4242 实测
- * 唯一能容纳 550 人的连贯可站区）摆两团相邻敌对军团（蓝 350 + 红 200，相距 18，前沿交叠进视野，
+ * 做法：固定 seed 构造 World 后改成合成平坦竞技场（性能门不依赖随机岛形），
+ * 摆两团相邻敌对军团（蓝 350 + 红 200，相距 18，前沿交叠进视野，
  * 混编 walker/warrior/firewarrior，全部置于 fight 谕令），
  * 连跑 1800 个 sim.tick(1/60)（= 30 秒模拟），performance.now 逐 tick 计时，输出 mean/p99/max ms。
  *
@@ -15,7 +15,7 @@
  * 检查脚本直调 sim.tick(dt)，不经过 game.ts 的固定步长累加器。
  */
 import { Sim } from "./sim";
-import { BLUE, inMap, Owner, RED, UnitKind } from "./types";
+import { BLUE, inMap, Owner, RED, SAMPLES, STEP, UnitKind, WATER } from "./types";
 import { World } from "./world";
 
 const SEED = 4242;
@@ -64,9 +64,29 @@ function hpSums(sim: Sim): { blue: number; red: number; total: number } {
   return { blue, red, total: blue + red };
 }
 
+function arenaWorld(): World {
+  const w = new World(SEED);
+  // v0.36 分裂图严格把双方放到不同岛后，固定世界坐标不再保证能容纳 550 人。
+  // 性能预算只想测 tick，不想测地图 seed：改成四周一格海框、内部全平的确定性竞技场。
+  for (let iz = 0; iz < SAMPLES; iz++) {
+    for (let ix = 0; ix < SAMPLES; ix++) {
+      const border = ix < 4 || iz < 4 || ix >= SAMPLES - 4 || iz >= SAMPLES - 4;
+      w.h[iz * SAMPLES + ix] = border ? 0.04 : 1;
+    }
+  }
+  w.fmask.fill(0);
+  w.starts = [
+    { x: 10, z: 10, yaw: Math.PI / 2, h: 1.25 },
+    { x: 62, z: 10, yaw: -Math.PI / 2, h: 1.25 },
+  ];
+  w.refreshIslands();
+  assert(w.heightAt(36, 56) > WATER && STEP === 0.25, "性能竞技场必须是可走平地且采样口径稳定");
+  return w;
+}
+
 function main(): void {
   const t0 = performance.now();
-  const sim = new Sim(new World(SEED));
+  const sim = new Sim(arenaWorld());
   const bluePlaced = spawnLegion(sim, BLUE, 28, 56, 350);
   const redPlaced = spawnLegion(sim, RED, 46, 56, 200);
   assert(bluePlaced >= 315, `spawn: 蓝军团落位 ${bluePlaced}/350（可站格子不足）`);

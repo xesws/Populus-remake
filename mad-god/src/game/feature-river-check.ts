@@ -22,7 +22,7 @@
  * （不进 package.json 的 check 链；与管线的集成由主 agent 负责。）
  */
 import { RNG } from "./types";
-import { FeatureComposer, MASK_CHANNEL, isMainland, type FeatureEnv, type GenStart } from "./world-gen";
+import { FeatureComposer, MASK_CHANNEL, isMainland, type FeatureEnv, type ProtectedZone } from "./world-gen";
 import { makeNoiseKit, mixSeed } from "./world-gen";
 import { River, RIVER_DEFAULTS, riverPlanFor } from "./world-gen/features/river";
 
@@ -112,9 +112,9 @@ function makeEnv(terrainSeed: number, riverSeed: number): { env: FeatureEnv; h0:
     }
   }
   const { labels, maxLabel } = labelLand(h);
-  const starts: GenStart[] = [
-    { x: 16, z: 54, yaw: 0, h: 1.1 },
-    { x: 54, z: 16, yaw: 0, h: 1.1 },
+  const protectedZones: ProtectedZone[] = [
+    { x: 16, z: 54 },
+    { x: 54, z: 16 },
   ];
   const env: FeatureEnv = {
     samples: SAMPLES,
@@ -127,7 +127,7 @@ function makeEnv(terrainSeed: number, riverSeed: number): { env: FeatureEnv; h0:
     mask: new Uint8Array(n),
     labels,
     maxLabel,
-    starts,
+    protectedZones,
     rng,
     noise,
   };
@@ -314,14 +314,14 @@ function testBounds(t: ReturnType<typeof applyFresh>, label: string): void {
 /** f) 出生点周围 2 格内零污染（高度逐比特不变 + 无 CHANNEL）。 */
 function testStartsClean(t: ReturnType<typeof applyFresh>, label: string): void {
   const rCells = 2;
-  for (const s of t.env.starts) {
+  for (const s of t.env.protectedZones) {
     for (let iz = 0; iz < SAMPLES; iz++) {
       for (let ix = 0; ix < SAMPLES; ix++) {
         const d = Math.hypot(ix * STEP - s.x, iz * STEP - s.z);
         if (d >= rCells) continue;
         const i = sidxOf(ix, iz);
-        assert((t.env.mask[i]! & MASK_CHANNEL) === 0, `${label}: 出生点 ${rCells} 格内出现河床（i=${i}）`);
-        assert(t.env.h[i] === t.h0[i], `${label}: 出生点 ${rCells} 格内高度被改动（i=${i}）`);
+        assert((t.env.mask[i]! & MASK_CHANNEL) === 0, `${label}: 保护区 ${rCells} 格内出现河床（i=${i}）`);
+        assert(t.env.h[i] === t.h0[i], `${label}: 保护区 ${rCells} 格内高度被改动（i=${i}）`);
       }
     }
   }
