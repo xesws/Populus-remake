@@ -1,6 +1,7 @@
 // v0.17 敌方 AI 系统测试（feature：分层 TribeBrain——经济/军事/神力子脑 + 难度 Profile + 多敌人架构）。
 // 覆盖三条断链修复：红方入住（生产恢复）、红方人口增长、远程被打还手（火球死角冲锋）；
 // 外加进攻波次、难度参数单调、多 brain 状态隔离。纯 node 可跑。
+// v0.37 军事升级后：波次门槛改 waveForce、发波不再 setOrder(team,"fight")（见 ai-army-check）。
 
 import { AIProfile, AIDirector, TribeBrain } from "./ai";
 import { CombatSystem } from "./systems/combat-system";
@@ -98,16 +99,30 @@ function testRedAttackWave(): void {
   const sim = new Sim(new World(42));
   const profile = AIProfile.normal();
   const brain = new TribeBrain(RED, profile);
-  // 补足波次兵力：3 名士兵（warSize=3），放在红方老家空地。
+  // 补足波次兵力：v0.37 门槛为首波 waveForce（normal=8），全波一起出发。
   const home = sim.buildings.find((b) => b.team === RED && b.kind === "hut")!;
   const kinds: UnitKind[] = ["warrior", "warrior", "firewarrior"];
-  for (const k of kinds) sim.addUnit(RED, k, home.x + 1.5, home.z + 1.5);
-  assert(brain.war.waveReady(sim), "兵力 3 ≥ waveSize 且波次冷却未起，应就绪");
+  for (let i = 0; i < profile.waveForce; i++) {
+    sim.addUnit(RED, kinds[i % kinds.length]!, home.x + 1.5 + i * 0.25, home.z + 1.5);
+  }
+  assert(brain.war.readyForce(sim) === profile.waveForce, `可出击兵力 ${profile.waveForce}`);
+  assert(brain.war.waveReady(sim), "兵力达门槛且波次冷却未起，应就绪");
   assert(brain.war.launchWave(sim), "发波成功");
-  assert(sim.teams[RED].order === "fight", "发波后全队 order=fight");
   const blueHome = sim.buildings.find((b) => b.team === BLUE && b.kind === "hut")!;
   const magnetOff = Math.hypot(sim.teams[RED].magnetX - blueHome.x, sim.teams[RED].magnetZ - blueHome.z);
   assert(magnetOff < 6, `magnet 锁定蓝方聚落（偏移 ${magnetOff.toFixed(1)} 格）`);
+  // v0.37 军令/民令分离：发波不再走 setOrder(team,"fight")（那会把全队村民的任务清空），
+  // 而是逐兵 sendMove + 统一集火焦点目标，团队 order 保持 settle。
+  assert(sim.teams[RED].order === "settle", "发波不再改团队 order（村民任务不被清空）");
+  const marchers = sim.units.filter(
+    (u) =>
+      u.team === RED &&
+      u.hp > 0 &&
+      u.homeId === 0 &&
+      (u.kind === "warrior" || u.kind === "firewarrior" || u.kind === "preacher"),
+  );
+  const focusIds = new Set(marchers.map((m) => m.atkId));
+  assert(focusIds.size === 1 && !focusIds.has(0), `全波集火同一焦点目标（实际 ${[...focusIds].join(",")}）`);
   console.log("testRedAttackWave ok");
 }
 
@@ -116,9 +131,14 @@ function testDifficultyProfilesDiffer(): void {
   const n = AIProfile.normal();
   const h = AIProfile.hard();
   assert(e.reactSec > n.reactSec && n.reactSec > h.reactSec, "反应延迟 easy > normal > hard");
-  assert(e.waveSize < n.waveSize && n.waveSize < h.waveSize, "波次规模 easy < normal < hard");
-  assert(e.armyCap < n.armyCap && n.armyCap < h.armyCap, "常备军 easy < normal < hard");
+  // v0.37 波次规模/常备军改口径：门槛 waveForce、上限 armyMax（旧 waveSize/armyCap 已删除）
+  assert(e.waveForce < n.waveForce && n.waveForce < h.waveForce, "波次门槛 easy < normal < hard");
+  assert(e.armyMax < n.armyMax && n.armyMax < h.armyMax, "常备军上限 easy < normal < hard");
+  assert(e.armyRatio < n.armyRatio && n.armyRatio < h.armyRatio, "常备军占人口比例 easy < normal < hard");
   assert(e.spellAggro < n.spellAggro && n.spellAggro < h.spellAggro, "施法激进度 easy < normal < hard");
+  // v0.37 大龙计划：easy 不追龙，hard 比 normal 更早启动
+  assert(e.dragonPopMin === 0 && e.dragonCap === 0, "easy 档不追龙");
+  assert(h.dragonPopMin < n.dragonPopMin, "hard 比 normal 更早启动大龙计划");
   console.log("testDifficultyProfilesDiffer ok");
 }
 

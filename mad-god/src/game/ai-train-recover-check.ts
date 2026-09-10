@@ -1,5 +1,7 @@
 // v0.34 敌方 AI 测试（feature：独立 TrainingDirector + 并行常备配额 + 雷电拆营后重建）。
 // v0.35 村民保底：补编制不得把入住/建营村民训光，否则茅屋停产、再也盖不了营。
+// v0.37 军事升级：配额表改由 ArmyPolicy 的常备军缺口驱动（nextTrainKind 阶梯已删除），
+// 本文件的 T0 改为验证 RosterPolicy 的愿望单/特种线小配额/村民保底三条纯策略。
 // 背景：旧链路把建营挂在失败的 train() 副作用上——村民不足静默跳过、火战士被 2 武士+1 传教士
 // 阶梯锁死、雷电拆营后 trainCd 空转。本文件验证：武士营 L1 即开训火战士营、无武士仍训牛战士、
 // 村民不足仍从茅屋拉人重建、重建到 L1 后立刻复训、武士营与火战士营独立恢复。
@@ -68,6 +70,10 @@ function emptyRoster(): RosterSnapshot {
     templeAny: false,
     spyHutL1: false,
     spyHutAny: false,
+    pop: 8,
+    dragonFactoryAny: false,
+    dragonFactoryL1: false,
+    dragonProgram: false,
   };
 }
 
@@ -78,13 +84,19 @@ function testRosterPolicyParallel(): void {
   const wanted = p.wantedCamps(s);
   assert(wanted.includes("warriorHut") && wanted.includes("fireHut"), "L1 武士营即要火战士营（不等 2 名活武士）");
   assert(!wanted.includes("temple"), "常备下限未达标不要神庙");
+  assert(!wanted.includes("dragonFactory"), "人口未达标不要大龙训练营");
   const bothL1 = { ...s, fireHutL1: true };
-  assert(p.nextTrainKind(bothL1) === "warrior", "武士缺口 2 > 牛战士缺口 1，先补武士");
-  const warFloor = { ...bothL1, warrior: 2 };
-  assert(p.nextTrainKind(warFloor) === "firewarrior", "武士满员后并行补牛战士，不要求传教士");
-  const floors = { ...warFloor, firewarrior: 1 };
+  const floors = { ...bothL1, warrior: 2, firewarrior: 1 };
   assert(p.floorsMet(floors), "2 武士 + 1 牛战士即达标");
   assert(p.wantedCamps(floors).includes("temple"), "下限达标后神庙作为溢出");
+  assert(p.wantedCamps({ ...floors, pop: 30, dragonProgram: true }).includes("dragonFactory"), "人口达标 + 大龙计划 → 愿望单加入大龙训练营");
+  // v0.37 特种线改小配额 Trickle（不再走阶梯：常备编制满员时也要能出传教士/间谍）
+  const withTemple = { ...floors, templeL1: true };
+  assert(p.wantsPreacher(withTemple), "神庙 L1 + 敌方有村民 → 补传教士");
+  assert(!p.wantsPreacher({ ...withTemple, preacher: AIProfile.normal().preacherMax }), "传教士补满后不再出");
+  assert(!p.wantsPreacher({ ...withTemple, foeWalk: 0 }), "敌方无村民可感化则不出传教士");
+  assert(p.wantsSpy({ ...withTemple, spyHutL1: true }), "间谍营 L1 → 补 1 名间谍");
+  assert(!p.wantsSpy({ ...withTemple, spyHutL1: true, spy: 1 }), "间谍补满后不再出");
   assert(p.walkerReserve(4) === 5, "入住 4 + founderSlack 1 = 保底 5");
   assert(!p.canAffordTrain(4, 4), "4 村民不够保底，禁止开训（含补编制）");
   assert(!p.canAffordTrain(5, 4), "刚好保底仍禁止开训");
@@ -142,7 +154,10 @@ function testLightningCullFoundsFromDweller(): void {
   const outdoor = sim.units.filter((u) => u.team === RED && u.kind === "walker" && u.homeId === 0 && u.hp > 0);
   assert(outdoor.length === 0, "户外村民必须清空，才能验证 leaveBuilding 征召");
   const walkers = sim.countKind(RED, "walker");
-  assert(walkers < AIProfile.normal().armyCap + 2, `村民 ${walkers} 应 < armyCap+2，旧实现会静默跳过建营`);
+  assert(
+    sim.draftableWalkers(RED).length === 0,
+    `户外无空闲村民（村民 ${walkers} 全在茅屋内），旧实现会静默跳过建营`,
+  );
   wipeBuilding(sim, fire.x, fire.z);
   assert(!hasCamp(sim, "fireHut"), "两记雷电后火战士营应被拆没");
   const dir = new AIDirector([[RED, AIProfile.normal()]]);

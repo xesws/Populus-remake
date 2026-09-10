@@ -4,7 +4,8 @@ import { logger } from "../logger";
 import type { Sim } from "../sim";
 import { canUnlock, cast } from "../spells";
 import type { SpellResult } from "../spells";
-import { BLUE, RED, dist2, type Cell, type Team, type Tool } from "../types";
+import { BLUE, Cell, dist2, RED, type Team, type Tool } from "../types";
+import { Targeting } from "./targeting";
 import type { AIProfile } from "./ai-profile";
 import type { ISpellDirector } from "./types";
 
@@ -75,26 +76,15 @@ export class SpellDirector implements ISpellDirector {
     });
   }
 
-  /** 敌方建筑+单位密集点：点群中邻居最多者作靶心，无目标返回 null（抄自旧 ai.ts cluster）。 */
+  /** 敌方建筑+单位密集点：靶心为邻域内同伴最多者，无目标返回 null。
+   *  v0.37 改用 Targeting.densePoint（与军事子脑共用同一份聚类，删掉两处各自拄贝的副本）。 */
   private cluster(
     houses: { x: number; z: number }[],
     units: { x: number; z: number }[],
   ): Cell | null {
-    const pts = [
+    return Targeting.densePoint([
       ...houses.map((h) => ({ x: h.x, z: h.z })),
       ...units.map((u) => ({ x: u.x, z: u.z })),
-    ];
-    if (!pts.length) return null;
-    let best = pts[0]!;
-    let bestN = -1;
-    for (const p of pts) {
-      let n = 0;
-      for (const q of pts) if (dist2(p.x, p.z, q.x, q.z) < 20) n++;
-      if (n > bestN) {
-        bestN = n;
-        best = p;
-      }
-    }
-    return best;
+    ]);
   }
 }

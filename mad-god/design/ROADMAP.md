@@ -71,9 +71,27 @@
 
 稿：`DRAGON.md`。大龙训练营（工厂外观、6 木）→ 20 牛战士进驻满 → 60s 生产 → 大龙空降。600 血、10 格射程、吐息火 patch 衰减燃烧；魔法必中（只掉血）、牛战士/哨塔对空、近战够不着；剪影光标拾取修复半空误选。
 
-## 当前：敌方 AI 修复与增强（v0.31）
+## 已过：敌方 AI 修复与增强（v0.31）
 
 调研定位四类根因并修复：① 建营者被入住/批量训兵吞掉、`occupy` 不清 `foundKind` 永久占死名额——火战士/间谍线 0 产出的根因；② 训兵"全量入队"冲垮 `armyCap` 与兵种配比，特种兵档位被满员冻结；③ 营地选址固定朝敌方前线（反复被拆），现改自家后方、哨塔朝敌，且选址/落基按真实占地判定（营地 2.6 ≠ 茅屋 1.3）；④ 受袭上报只有火球一处触发（近战/法术装死），现 `applyUnitDamage`/`applyBuildingDamage`/面积杀伤全覆盖 + 1s 节流。新增：AI 自主建哨塔（towerCap/towerGapSec 入 AIProfile）并自动派牛战士驻塔。测试 `ai-founder-check.ts` + `ai-defense-check.ts`。
+
+## 当前：敌方 AI 军事升级（v0.37）
+
+用户口径："造兵特别不积极，从来不知道主动把大量村民转化为更多武士去发动进攻；通常只有不到 10 个武士，也不知道去出别的兵种（比如火武士），更不知道拿火武士去训练大龙；进攻方式特别单一，就是派一两个、三个武士过来骚扰一下，然后被打爆。"
+
+四类根因与修复：
+
+① **编制口径**：旧 `armyCap=8` + 全局单条 `trainCd` + 阶梯只点 1 名牛战士——常备军封顶 8 人、同一时刻只有一座营能出人。现改为 `ArmyPolicy` 纯策略：常备军 = clamp(人口 × armyRatio, armyFloor, armyMax)（normal 24 / hard 36），牛战士占比 `fireRatio`，四条产线（武士营/牛战士营/神庙/间谍营）各自排队（queueDepth）与各自节流。
+
+② **军令/民令分离**：旧 `launchWave/recall` 走 `setOrder(team,"fight"/"settle")`——进攻期间全队（含村民）的 `foundKind/targetId/settleX` 被清空（红方砍树/搬运/落基集体停摆），而 `finishTrain` 给新兵硬编码 `order="fight"`，每个新训成的武士各自冲向最近敌人逐个送命。新增 `Sim.setIdleArmyStance`（只改空闲士兵的 order，不碰 `teams[].order` 与村民）+ `hold/marshal` 姿态锚点。
+
+③ **集团波次与战损加码**：门槛 `waveForce`（normal 8）攒够才出发，在自家前沿集结点成型后整队压上；`Targeting.assaultFocus` 让全波**集火同一焦点目标**（敌方建筑密集点、茅屋优先），`commandWave` 焦点被拆后续压下一点；惨败（战损 ≥ waveRetreatRatio）后门槛 +waveForceStep（封顶 waveForceMax），不再重复"1~3 人送死"。受袭只从留守池抽 defenseSize 人，波次在外时老家告急则整波回防。
+
+④ **大龙计划**：人口达 `dragonPopMin` 后的大龙训练营当作第五座营地走既有建营链路；`DragonDirector` 逐批征召空闲牛战士进厂（20 名满员开工 → 60s → 大龙空降），出厂后按 `dragonOrderSec` 节拍压向敌方密集点，`dragonCrossSea` 决定分岛图是否跨海。
+
+顺带修掉两处探针实测死锁：**编制硬顶把厂家牛战士算成野战军**（名额收窄后反而卡死训练，工厂停在 12/20 出不了龙）；**"空闲村民 − batch ≥ laborFloor"把全队都在干活误判成无人可征**——保底改看户外村民总数，人口到顶时从茅屋动员住户入伍（战争经济）。
+
+观测量化（`npx tsx scripts/probe-ai-army.ts normal 8`，seed=42，蓝方木头玩家）：首波 123s/8 人，波次出击 8→25 人，常备军峰值 43，大龙训练营 104s、大龙 351s；easy 4~5 人/波且不追龙，hard 10→34 人/波、304s 出龙。测试 `ai-army-check.ts` + `ai-dragon-check.ts`。
 
 ## 不要做
 

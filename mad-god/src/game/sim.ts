@@ -1043,6 +1043,34 @@ export class Sim {
     this.teams[team].magnetZ = z;
   }
 
+  /**
+   * v0.37 军队姿态（AI 专用；军令/民令分离的核心）：
+   * 只改本队**空闲士兵**（无目标、非在途、未驻防）的 order 字段，
+   * 且**不改 teams[team].order**——否则新生村民会继承军事姿态，
+   * 从此不进入 repathSettle/advanceWalker（村民劳作分支要求 order==="settle"），
+   * 砍树/搬木/落基集体停摆。
+   *
+   * 为什么需要它：旧实现 launchWave/recall 直接 setOrder(team,"fight"/"settle")，
+   * ① setOrder 会把全队（含村民）的 foundKind/targetId/settleX 全部清空——进攻期间
+   *    红方村民停摆；② finishTrain 给新兵硬编码 order="fight"，每个新训成的武士
+   *    各自冲向最近敌人逐个送命（"只派一两个来骚扰"的根因之一）。
+   * 本方法每决策周期幂等调用一次：无任务士兵归入当前姿态（集结/进攻锚点由 magnet 决定），
+   * 交战中/在途/驻防/在训的单位一律不动。
+   */
+  setIdleArmyStance(team: Team, order: Order): void {
+    for (const u of this.units) {
+      if (u.team !== team || u.hp <= 0 || u.homeId > 0) continue;
+      if (!u.isSoldier() && u.kind !== "spy") continue;
+      if (u.job !== "idle" || u.atkId !== 0 || u.targetId !== 0) continue;
+      u.order = order;
+    }
+  }
+
+  /** v0.37 AI 训兵池（与 TrainingSystem.train 同一个出口，见 draftableWalkers）。 */
+  draftableWalkers(team: Team): Unit[] {
+    return this.trainingSystem.draftableWalkers(this, team);
+  }
+
   sendWalkerToCamp(u: Unit, camp: Building, kind: TrainKind): void {
     this.trainingSystem.sendWalkerToCamp(this, u, camp, kind);
   }

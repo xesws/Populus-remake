@@ -1,13 +1,28 @@
 // v0.17 敌方 AI：军事子脑（WarDirector）——进攻波次编成、受袭防御响应、哨塔防御工事。
-// 波次节奏（waveSize/waveGapSec/reactSec）与塔防节奏（towerCap/towerGapSec）全部取自 AIProfile；
-// 只通过 Sim 既有接口（setOrder/setMagnet/sendMove/atkId/assignCampFounder/targetId）下发意图，
+// 波次节奏（waveForce/waveGapSec/reactSec）与塔防节奏（towerCap/towerGapSec）全部取自 AIProfile；
+// 只通过 Sim 既有接口（sendMove/atkId/targetId/assignCampFounder/setMagnet/setIdleArmyStance）下发意图，
 // 不侵入寻路/战斗/生产系统内部。
+//
+// v0.37 军事升级（"只会派一两个、三个武士过来骚扰然后被打爆"的根因修复）：
+// ① **集团波次**：可出击兵力攒到 waveForce 门檻才出发，且在自家前沿集结点成型后整队出击；
+//    全波统一集火同一个焦点目标（Targeting.assaultFocus：敌方建筑密集点，茅屋优先），
+//    不再"每人挑最近的敌人各打各的"。
+// ② **战损加码**：惨败（战损 ≥ waveRetreatRatio）后下次门檻 +waveForceStep，封顶 waveForceMax；
+//    打得不错则回落。也就是说"派一两个送死"不会重复发生，而是越打越大。
+// ③ **军令/民令分离**：进攻/收兵/集结一律走 setIdleArmyStance（只改空闲士兵的 order）
+//    与逐兵 sendMove，不再 setOrder(team,...)——旧实现会在进攻期间把全队村民的建造/入住/
+//    搬木任务一起清空（红方进攻时经济停摆），新训成的士兵还会被硬编码 order=\"fight\"
+//    各自冲向最近敌人逐个送命。
+// ④ **留守池**：受袭驰援从\"空闲且不在波次里\"的士兵中就近抽 defenseSize 人，绝不拆散正在
+//    进攻的波次；波次在外时若老家（homeThreatR 内）告急，则整波回防。
 
-import { logger } from "../logger";
+import { LogLevel, logger } from "../logger";
 import type { Sim } from "../sim";
 import { astar, nearestLand } from "../path";
 import { BLUE, Cell, dist2, RED, Team, TOWER_GARRISON_MAX, UnitKind } from "../types";
-import { AIProfile } from "./ai-profile";
+import { ArmyPolicy } from "./army-policy";
+import { Targeting, type Focus } from "./targeting";
+import type { AIProfile } from "./ai-profile";
 import type { IWarDirector } from "./types";
 
 /** 受袭事件：某时刻 (x,z) 处本队单位/建筑被攻击。 */
@@ -18,15 +33,41 @@ interface HurtEvent {
   t: number;
 }
 
+/** 集结重下指令间隔（秒）：捞掉队的人，又不至于每 tick 刷 A*。 */
+const FORMUP_SEC = 5;
+/** 集结到位判定半径（格）：把士兵算作\"已到集结点\"的距离。 */
+const GATHERED_R = 10;
+/** 集结到位比例：按可出击兵力计的到位率，达线即出发（未达线由 marshalSec 超时兜底）。 */
+const GATHERED_RATIO = 0.7;
+
 export class WarDirector implements IWarDirector {
   readonly team: Team;
   readonly profile: AIProfile;
+  /** v0.37 编制口径（可出击兵力/大龙征召优先级），与训兵子脑共用同一份策略。 */
+  readonly army: ArmyPolicy;
   /** 决策节流累计（秒）：达到 profile.tickSec 才处理一次 */
   private acc = 0;
   /** 上一波进攻发起的游戏时刻（秒）；-1e9 表示从未发波 */
   lastWaveTime = -1e9;
   /** 已发波次计数（自 1 起） */
   waves = 0;
+  /**
+   * v0.37 当前波次门檻（军力）：初始 profile.waveForce，惨败后加码、打得好回落。
+   * 公开便于测试断言与日志观察。
+   */
+  waveThreshold: number;
+  /** 本波出发兵力（战损结算基准）与本波发起时刻 */
+  private waveLaunchForce = 0;
+  private waveStartedAt = 0;
+  /** 本波当前焦点（目标被拆后重新选点） */
+  private waveFocus: Focus | null = null;
+  /** 老家告警：波次在外时老家受袭 → 整波回防 */
+  private homeThreat = false;
+  /** 进入集结的时刻（秒）；-1e9 = 未在集结 */
+  /** 进入集结的时刻（秒）；-1e9 = 未在集结（公开便于测试与日志观察） */
+  marshalAt = -1e9;
+  /** 上一次重下集结令的时刻（秒） */
+  private lastFormUpAt = -1e9;
   /** 受袭事件队列：按 profile.reactSec 延迟后就近派兵，处理完出队 */
   private hurtQueue: HurtEvent[] = [];
   /** v0.31 受袭上报节流：DoT 类伤害（龙焰/火山等逐帧结算）1s 至多入队一条 */
@@ -43,6 +84,8 @@ export class WarDirector implements IWarDirector {
   constructor(team: Team, profile: AIProfile) {
     this.team = team;
     this.profile = profile;
+    this.army = new ArmyPolicy(profile);
+    this.waveThreshold = profile.waveForce;
   }
 
   /** 当前士兵总数（warrior/preacher/firewarrior/spy）。
@@ -57,35 +100,83 @@ export class WarDirector implements IWarDirector {
     return n;
   }
 
-  /** 波次就绪：兵力 ≥ waveSize 且距上一波 ≥ waveGapSec（纯 sim.time 计算，无内部计时器）。 */
+  /** v0.37 可出击兵力：野战军中未在途驻防的（排除赶往哨塔/大龙训练营的征召者）。 */
+  readyForce(sim: Sim): number {
+    return this.army.fieldForce(sim, this.team);
+  }
+
+  /** 波次就绪：可出击兵力 ≥ 当前门槛 且距上一波 ≥ waveGapSec（纯 sim.time 计算，无内部计时器）。 */
   waveReady(sim: Sim): boolean {
     return (
-      this.armySize(sim) >= this.profile.waveSize &&
+      this.readyForce(sim) >= this.waveThreshold &&
       sim.time - this.lastWaveTime >= this.profile.waveGapSec
     );
   }
 
-  /** 发动进攻：setOrder("fight") + magnet 锁定敌方建筑/单位密集点，并给每个士兵显式行军目标与攻击目标。 */
+  // ── 姿态：守家 / 集结 / 出击 ──────────────────────────────────────────────
+
+  /** 守家姿态（develop/growArmy/regroup 调用）：锚点回自家聚落，空闲士兵归队待命。 */
+  hold(sim: Sim): void {
+    const home = Targeting.homePoint(sim, this.team);
+    sim.setMagnet(this.team, home.x, home.z);
+    sim.setIdleArmyStance(this.team, "gather");
+    this.formUp(sim, home);
+    this.homeThreat = false; // 不在进攻态：老家告警归零，下次发波重新记账
+  }
+
+  /** 集结姿态（marshal 状态调用）：锚点前移到最靠敌的自家茅屋，波次在此成型。 */
+  marshal(sim: Sim): void {
+    if (this.marshalAt < 0) this.marshalAt = sim.time;
+    const focus = Targeting.assaultFocus(sim, this.team);
+    const anchor = focus ? Targeting.rallyPoint(sim, this.team, focus) : Targeting.homePoint(sim, this.team);
+    sim.setMagnet(this.team, anchor.x, anchor.z);
+    sim.setIdleArmyStance(this.team, "gather");
+    this.formUp(sim, anchor);
+  }
+
+  /** 集结完成：兵力够门槛，且（主力到位 或 集结窗口已过）。 */
+  gathered(sim: Sim): boolean {
+    if (this.readyForce(sim) < this.waveThreshold) return false;
+    if (sim.time - this.marshalAt >= this.profile.marshalSec) return true;
+    const anchor = { x: sim.teams[this.team].magnetX, z: sim.teams[this.team].magnetZ };
+    let on = 0;
+    let total = 0;
+    for (const u of sim.units) {
+      if (u.team !== this.team || u.hp <= 0 || u.homeId > 0 || u.targetId > 0) continue;
+      if (!this.isFighter(u.kind) && u.kind !== "spy") continue;
+      total++;
+      if (dist2(u.x, u.z, anchor.x, anchor.z) <= GATHERED_R * GATHERED_R) on++;
+    }
+    if (!total) return true;
+    if (on / total >= GATHERED_RATIO) return true;
+    // 到位率没达标：若还在收拢（上一拍还在下集结令）就继续等，等满窗口再放手。
+    return sim.time - this.lastFormUpAt > FORMUP_SEC * 2 && on / total >= 0.4;
+  }
+
+  /** 集结长期发不出去（隔海无路 / 敌方已无目标）→ 战略大脑放弃本轮，回重整重新滚经济。 */
+  marshalStalled(sim: Sim): boolean {
+    return this.marshalAt > 0 && sim.time - this.marshalAt > this.profile.marshalSec + 20;
+  }
+
+  /** 发动进攻：全波统一焦点目标，逐兵显式行军目标 + 挂焦点目标（焦点集火）。 */
   launchWave(sim: Sim): boolean {
     if (!this.waveReady(sim)) return false;
-    const foe: Team = this.team === RED ? BLUE : RED;
-    const foeHouses = sim.buildings.filter((b) => b.team === foe && b.hp > 0);
-    const foeUnits = sim.units.filter((u) => u.team === foe && u.hp > 0 && u.homeId === 0);
-    const focus = this.cluster(foeHouses, foeUnits);
+    const focus = Targeting.assaultFocus(sim, this.team);
     if (!focus) return false; // 敌方已无建筑/单位，无目标可打
-    // 先收集可参战士兵：无人可发（全员训练/战损/驻塔）则整波取消，避免空放波次。
+    // 参战名单：野战军里未在途驻防（排除正赶往哨塔/大龙训练营的征召者）且未在训练者。
     const marchers = sim.units.filter(
       (u) =>
         u.team === this.team &&
         u.hp > 0 &&
         u.homeId === 0 &&
+        u.targetId === 0 &&
         this.isFighter(u.kind) &&
         u.job !== "train",
     );
     if (!marchers.length) return false;
     // v0.33 隔海无路整波取消（分岛图红方无船）：不断重试由 15s 探路缓存吸收，不刷 A*。
     if (!this.seaProbe(sim, focus.x, focus.z, marchers[0]!.x, marchers[0]!.z)) {
-      logger.info("ai-war", "隔海无路，本波取消（分岛图等蓝方登陆再打）", {
+      logger.info("ai-war", "隔海无路，本波取消（分岛图等蓝方登陆再打；大龙照常跨海出击）", {
         team: this.team,
         x: +focus.x.toFixed(1),
         z: +focus.z.toFixed(1),
@@ -93,44 +184,84 @@ export class WarDirector implements IWarDirector {
       return false;
     }
     sim.setMagnet(this.team, focus.x, focus.z);
-    sim.setOrder(this.team, "fight");
-    // v0.17 repath 对 fight 没有 magnet 寻路分支，setOrder 也不会改士兵个体 order：
-    // 必须逐个 sendMove 显式下发行军目标，否则发波只是原地罚站。
+    sim.setIdleArmyStance(this.team, "gather");
+    this.homeThreat = false; // 本波开始记账：只有出击期间的新受袭才触发整波回防
     for (const u of marchers) {
-      sim.sendMove(u, focus.x, focus.z);
-      // sendMove 会清空 atkId：先行军、后挂最近敌方目标，到达密集点即转入 chaseAttack 进攻。
-      const tid = this.nearestEnemyId(sim, u.x, u.z, foe);
-      if (tid) u.atkId = tid;
+      const dest = Targeting.scatter(focus, u.id, 1.4);
+      sim.sendMove(u, dest.x, dest.z);
+      // sendMove 会清空 atkId：先行军、后挂焦点目标——全波打同一点，不再各挑各的近敌。
+      u.atkId = focus.targetId;
     }
+    this.waveFocus = focus;
+    this.waveLaunchForce = marchers.length;
+    this.waveStartedAt = sim.time;
     this.lastWaveTime = sim.time;
     this.waves++;
-    logger.info("ai-war", `第 ${this.waves} 波进攻`, {
+    logger.info("ai-war", `第 ${this.waves} 波进攻（门槛 ${this.waveThreshold}）`, {
       team: this.team,
       army: marchers.length,
       x: +focus.x.toFixed(1),
       z: +focus.z.toFixed(1),
+      targetId: focus.targetId,
     });
     return true;
   }
 
-  /** 收兵回防：全队转 settle，magnet 拉回最近的自家茅屋（无茅屋则保持原地）。 */
-  recall(sim: Sim): void {
-    sim.setOrder(this.team, "settle");
-    let hx = -1;
-    let hz = -1;
-    let bestD = 1e9;
-    const mx = sim.teams[this.team].magnetX;
-    const mz = sim.teams[this.team].magnetZ;
-    for (const b of sim.buildings) {
-      if (b.team !== this.team || b.hp <= 0 || b.kind !== "hut") continue;
-      const d = dist2(b.x, b.z, mx, mz);
-      if (d < bestD) {
-        bestD = d;
-        hx = b.x;
-        hz = b.z;
-      }
+  /** 波次进行中的队形维护：焦点被拆/漂移后，给"手上没目标的"士兵补挂新目标并压上去。 */
+  commandWave(sim: Sim): void {
+    const focus = Targeting.assaultFocus(sim, this.team);
+    if (!focus) return;
+    const stale =
+      !this.waveFocus ||
+      this.waveFocus.targetId !== focus.targetId ||
+      dist2(this.waveFocus.x, this.waveFocus.z, focus.x, focus.z) > 16;
+    if (stale) {
+      this.waveFocus = focus;
+      sim.setMagnet(this.team, focus.x, focus.z);
     }
-    if (hx >= 0) sim.setMagnet(this.team, hx, hz);
+    for (const u of sim.units) {
+      if (u.team !== this.team || u.hp <= 0 || u.homeId > 0 || u.targetId > 0) continue;
+      if (!this.isFighter(u.kind)) continue;
+      if (u.atkId !== 0) continue; // 交战中不动
+      const dest = Targeting.scatter(focus, u.id, 1.4);
+      sim.sendMove(u, dest.x, dest.z);
+      u.atkId = focus.targetId;
+    }
+  }
+
+  /** 是否该收兵：兵力被打残 / 超时 / 老家告急 / 无目标可打。 */
+  shouldRecall(sim: Sim): boolean {
+    if (this.homeThreat) return true;
+    const force = this.readyForce(sim);
+    if (this.waveLaunchForce > 0 && force <= this.waveLaunchForce * this.profile.waveRetreatRatio) return true;
+    if (sim.time - this.waveStartedAt > this.profile.waveTimeoutSec) return true;
+    return !Targeting.assaultFocus(sim, this.team);
+  }
+
+  /** 收兵回防：全波撤回自家聚落（逐兵 sendMove，不再 setOrder 清全村任务）+ 战损结算。 */
+  recall(sim: Sim): void {
+    const force = this.readyForce(sim);
+    const lost = this.waveLaunchForce > 0 ? Math.max(0, 1 - force / this.waveLaunchForce) : 0;
+    const prev = this.waveThreshold;
+    this.waveThreshold = this.army.clampWaveForce(this.army.nextWaveForce(this.waveThreshold, lost));
+    const home = Targeting.homePoint(sim, this.team);
+    sim.setMagnet(this.team, home.x, home.z);
+    sim.setIdleArmyStance(this.team, "gather");
+    for (const u of sim.units) {
+      if (u.team !== this.team || u.hp <= 0 || u.homeId > 0 || u.targetId > 0) continue;
+      if (!this.isFighter(u.kind) && u.kind !== "spy") continue;
+      const dest = Targeting.scatter(home, u.id, 2.0);
+      sim.sendMove(u, dest.x, dest.z);
+    }
+    this.homeThreat = false;
+    this.marshalAt = -1e9;
+    logger.info("ai-war", `收兵重整（战损 ${Math.round(lost * 100)}%，下一波门槛 ${prev}→${this.waveThreshold}）`, {
+      team: this.team,
+      force,
+      launched: this.waveLaunchForce,
+      threshold: this.waveThreshold,
+    });
+    this.waveLaunchForce = 0;
   }
 
   /** 防御响应入口：sim.onTeamHurt 按 team 分发调用；事件入队，由 update 按 reactSec 延迟派兵。
@@ -142,11 +273,16 @@ export class WarDirector implements IWarDirector {
     this.hurtQueue.push({ x, z, t: sim.time });
     // 队列上限：极端高频受袭时丢弃最旧事件，避免无限膨胀。
     if (this.hurtQueue.length > 8) this.hurtQueue.shift();
+    // v0.37 老家告警：波次在外时老家受袭 → 整波回防（shouldRecall 读取）。
+    const home = Targeting.homePoint(sim, this.team);
+    if (dist2(x, z, home.x, home.z) <= this.profile.homeThreatR * this.profile.homeThreatR) {
+      this.homeThreat = true;
+    }
   }
 
   /** 每帧驱动：按 tickSec 节流，处理受袭队列（事件过 reactSec 触发防御波次）+ 塔防维护。
    *  波次冷却无需在此维护——waveReady 由 sim.time 纯计算；
-   *  attack 状态的兵耗尽检测归 TribeBrain，本类只提供 armySize/waveReady。 */
+   *  进攻态的门槛与收兵判定归 TribeBrain，本类只提供 waveReady/shouldRecall。 */
   update(sim: Sim, dt: number): void {
     this.acc += dt;
     if (this.acc < this.profile.tickSec) return;
@@ -175,21 +311,25 @@ export class WarDirector implements IWarDirector {
     this.dispatchDefenders(sim, e.x, e.z);
   }
 
-  /** 就近派兵：取事发点最近的 min(waveSize, armySize) 名空闲士兵，sendMove 冲向事发点。
-   *  v0.31.1 池子排除 job==="move"：在途驰援者（sendMove 已清 atkId）不再被后续事件改道。 */
+  /**
+   * 就近派兵（v0.37 留守池口径）：取事发点最近的 min(defenseSize, 可用士兵) 名**空闲且不在波次里**
+   * 的士兵。在途者（job==="move"、atkId 已挂）与波次里的士兵一律不动——旧实现会把整波里的人
+   * 一个个改道回家救火，前线瞬间崩掉，看起来就是"派一两个来骚扰然后被打爆"。
+   */
   private dispatchDefenders(sim: Sim, x: number, z: number): void {
     const pool = sim.units.filter(
       (u) =>
         u.team === this.team &&
         u.hp > 0 &&
         u.homeId === 0 &&
+        u.targetId === 0 &&
         this.isFighter(u.kind) &&
         u.atkId === 0 &&
         u.job !== "train" &&
         u.job !== "move",
     );
     pool.sort((a, b) => dist2(a.x, a.z, x, z) - dist2(b.x, b.z, x, z));
-    const n = Math.min(this.profile.waveSize, this.armySize(sim), pool.length);
+    const n = Math.min(this.profile.defenseSize, this.armySize(sim), pool.length);
     // v0.33 隔海不驰援（与波次同理：红龙在敌岛挨打，地面部队过不去就不派）。
     if (n > 0 && !this.seaProbe(sim, x, z, pool[0]!.x, pool[0]!.z)) {
       logger.info("ai-war", "隔海无路，驰援取消", { team: this.team, x: +x.toFixed(1), z: +z.toFixed(1) });
@@ -198,6 +338,8 @@ export class WarDirector implements IWarDirector {
     for (let i = 0; i < n; i++) {
       const u = pool[i]!;
       sim.sendMove(u, x, z);
+      const tid = this.nearestEnemyId(sim, x, z);
+      if (tid) u.atkId = tid;
     }
     if (n > 0) {
       logger.info("ai-war", `受袭响应：${n} 兵驰援`, {
@@ -212,9 +354,11 @@ export class WarDirector implements IWarDirector {
    * v0.31 防御工事：存量未满（含 L0 地基）、冷却已过、且本队有活火战士（塔要有弹药才有意义）
    * 时，派一名空闲村民朝敌方向落哨塔地基。复用 assignCampFounder 的泛型落基链路
    * （foundSite 落 L0、1 捆木起升、completeStep 完工），零新系统。
+   * v0.37 大龙计划期间不建塔：牛战士都被征去喂工厂了，塔上没人开火等于白建。
    */
   private tryBuildTower(sim: Sim): void {
     if (this.profile.towerCap <= 0) return;
+    if (this.army.dragonNeedsConscripts(sim, this.team)) return;
     const towers = sim.buildings.filter((b) => b.team === this.team && b.kind === "tower" && b.hp > 0);
     if (towers.length >= this.profile.towerCap) return;
     if (sim.time - this.lastTowerTime < this.profile.towerGapSec) return;
@@ -251,8 +395,10 @@ export class WarDirector implements IWarDirector {
    * v0.31 驻塔：把空闲牛战士分配到有空位的自家 L1 哨塔——sendMove 到塔边 + targetId 指塔，
    * 与玩家右键路径完全同构，thinkUnits 既有 tryGarrison 在 2.6 格内自动爬塔。
    * 名额计算含在途者（targetId 已指向该塔），避免超派后堵在塔脚。
+   * v0.37 大龙计划期间挂起：同在征召牛战士，工厂优先（否则塔与工厂互相抢人、两头都填不满）。
    */
   private tryGarrisonTowers(sim: Sim): void {
+    if (this.army.dragonNeedsConscripts(sim, this.team)) return;
     const towers = sim.buildings.filter(
       (b) => b.team === this.team && b.kind === "tower" && b.level >= 1 && b.hp > 0,
     );
@@ -287,6 +433,31 @@ export class WarDirector implements IWarDirector {
     }
   }
 
+  /** v0.37 集结整队：把**落在集结区外**的士兵逐兵召回来（每 FORMUP_SEC 重下一次，捞掉队的人）。
+   *  已在集结区（GATHERED_R 内）的士兵一律不动——待在原地待命才能随时响应受袭，
+   *  也不会因为反复 sendMove 把 job 挂在 "move" 上而被防御池排除（旧实现每拍重下集合令）。 */
+  private formUp(sim: Sim, anchor: Cell): void {
+    if (sim.time - this.lastFormUpAt < FORMUP_SEC) return;
+    let sent = 0;
+    for (const u of sim.units) {
+      if (u.team !== this.team || u.hp <= 0 || u.homeId > 0 || u.targetId > 0) continue;
+      if (!this.isFighter(u.kind) && u.kind !== "spy") continue;
+      if (u.atkId !== 0 || u.job === "train") continue;
+      if (dist2(u.x, u.z, anchor.x, anchor.z) <= GATHERED_R * GATHERED_R) continue;
+      const dest = Targeting.scatter(anchor, u.id, 2.0);
+      sim.sendMove(u, dest.x, dest.z);
+      sent++;
+    }
+    if (sent) {
+      this.lastFormUpAt = sim.time;
+      logger.throttled("ai-war:formup", 4000, LogLevel.Info, "ai-war", `集结：${sent} 名士兵向集结点靠拢`, {
+        team: this.team,
+        x: +anchor.x.toFixed(1),
+        z: +anchor.z.toFixed(1),
+      });
+    }
+  }
+
   /** 战斗兵种判定（不含间谍：间谍只计入 armySize，不参与波次与防御）。 */
   private isFighter(kind: UnitKind): boolean {
     return kind === "warrior" || kind === "preacher" || kind === "firewarrior";
@@ -310,28 +481,9 @@ export class WarDirector implements IWarDirector {
     return ok;
   }
 
-  /** 敌方密集点：在敌方建筑/单位点集中取邻域（半径 √20 格）内同伴最多的点。 */
-  private cluster(houses: { x: number; z: number }[], units: { x: number; z: number }[]): Cell | null {
-    const pts = [
-      ...houses.map((h) => ({ x: h.x, z: h.z })),
-      ...units.map((u) => ({ x: u.x, z: u.z })),
-    ];
-    if (!pts.length) return null;
-    let best = pts[0]!;
-    let bestN = -1;
-    for (const p of pts) {
-      let n = 0;
-      for (const q of pts) if (dist2(p.x, p.z, q.x, q.z) < 20) n++;
-      if (n > bestN) {
-        bestN = n;
-        best = p;
-      }
-    }
-    return best;
-  }
-
   /** 离 (x,z) 最近的敌方单位/建筑 id（单位与建筑取更近者）；无目标返回 0。 */
-  private nearestEnemyId(sim: Sim, x: number, z: number, foe: Team): number {
+  private nearestEnemyId(sim: Sim, x: number, z: number): number {
+    const foe: Team = this.team === RED ? BLUE : RED;
     let best = 0;
     let bestD = 1e9;
     for (const u of sim.units) {

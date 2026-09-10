@@ -197,6 +197,28 @@ export class TrainingSystem implements ISystem {
     return dist2(x, z, dest.x, dest.z) <= 0.55 * 0.55;
   }
 
+  /**
+   * v0.37 AI 训兵池（唯一出口）：真正空闲的户外村民。
+   * 在途入住（targetId>0）/建营者/搬运砍树若进池，会把刚被 assignHomes 指派的人拉去训武士，
+   * 茅屋空置、人口停产。AI 侧要用**同一个池子**算"还能征多少人"（劳动力保底），
+   * 故从 train() 里抽成公开方法——否则两处条件漂移，AI 会以为有人可征、train() 却空转。
+   */
+  draftableWalkers(sim: Sim, team: Team): Unit[] {
+    return sim.units.filter(
+      (u) =>
+        u.team === team &&
+        u.kind === "walker" &&
+        u.hp > 0 &&
+        u.homeId === 0 &&
+        u.carry === 0 &&
+        u.foundKind === null &&
+        u.targetId === 0 &&
+        u.job !== "haul" &&
+        u.job !== "chop" &&
+        !sim.inSwamp(u),
+    );
+  }
+
   train(sim: Sim, team: Team, kind: TrainKind, maxWalkers = Infinity): boolean {
     const selected = sim.selectedOf(team);
     let walkers: Unit[];
@@ -211,21 +233,8 @@ export class TrainingSystem implements ISystem {
         return false;
       }
     } else {
-      // v0.35 AI 训兵池：只收真正空闲的户外村民。在途入住（targetId>0）/建营者/
-      // 搬运砍树若进池，会把刚被 assignHomes 指派的人拉去训武士，茅屋空置、人口停产。
-      walkers = sim.units.filter(
-        (u) =>
-          u.team === team &&
-          u.kind === "walker" &&
-          u.hp > 0 &&
-          u.homeId === 0 &&
-          u.carry === 0 &&
-          u.foundKind === null &&
-          u.targetId === 0 &&
-          u.job !== "haul" &&
-          u.job !== "chop" &&
-          !sim.inSwamp(u),
-      );
+      // v0.35 AI 训兵池：只收真正空闲的户外村民（唯一出口见 draftableWalkers）。
+      walkers = this.draftableWalkers(sim, team);
       if (!walkers.length) return false;
     }
     const campKind = CAMP_FOR[kind];
