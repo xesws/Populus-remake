@@ -12,10 +12,11 @@
 
 import { AIProfile, ArmyPolicy } from "./ai";
 import { AIDirector } from "./ai/ai-director";
+import { EconomyDirector } from "./ai/economy-director";
 import { Targeting } from "./ai/targeting";
 import { WarDirector } from "./ai/war-director";
 import { Sim } from "./sim";
-import { Building, BuildingKind, dist2, DRAGON_GARRISON_MAX, inMap, POP_CAP, RED, Team, Unit } from "./types";
+import { Building, BuildingKind, dist2, DRAGON_GARRISON_MAX, DRAGON_HP, inMap, POP_CAP, RED, Team, Unit } from "./types";
 import { World } from "./world";
 
 function assert(cond: boolean, msg: string): void {
@@ -163,6 +164,21 @@ function testDragonProgramGate(): void {
   assert(pol.dragonCount(sim, RED) === 1, "满员生产中算 1 条大龙（避免叠加第二条计划）");
   assert(!pol.dragonProgramActive(sim, RED), "名额已满 → 计划关闭");
 
+  // v0.38 龙账本：出厂后龙被打死 → **不得重启龙厂**
+  // （旧口径按“场上存活数”算名额，龙一被集火秒掉就又囤 20 名牛战士；实测一局 9 分钟被喂掉 40 名）
+  const dragon = sim.addUnit(RED, "dragon", f.x, f.z);
+  dragon.hp = DRAGON_HP;
+  f.dwell = 0; // 出厂：进驻者化为龙、工厂计数清零
+  pol.syncDragons(sim, RED);
+  assert(pol.dragonsBuilt === 1, "出厂即记账：本局已造 1 条");
+  assert(!pol.dragonProgramActive(sim, RED), "本局名额用完 → 计划保持关闭");
+  dragon.hp = 0;
+  sim.tick(0.05);
+  pol.syncDragons(sim, RED);
+  assert(pol.dragonsBuilt === 1 && pol.dragonCount(sim, RED) === 0, "龙死了账本不回退");
+  assert(!pol.dragonProgramActive(sim, RED), "龙被打死也不重启龙厂（旧口径 9 分钟被喂掉 40 名牛战士）");
+  assert(pol.dragonConscriptNeed(sim, RED) === 0, "计划关闭 → 不再征召牛战士");
+
   // 不追龙的档位（easy：dragonCap=0）永远不征召
   const easy = new ArmyPolicy(AIProfile.easy());
   assert(!easy.dragonProgramActive(sim, RED) && easy.dragonConscriptNeed(sim, RED) === 0, "easy 档不追龙");
@@ -185,8 +201,8 @@ function testParallelCampsGrowArmy(): void {
   const warriors = sim.countKind(RED, "warrior");
   const fires = sim.countKind(RED, "firewarrior");
   assert(
-    fighterCount(sim, RED) >= 10,
-    `100s 内常备军应突破旧 armyCap=8（实际 武士${warriors} 牛战士${fires} 合计${fighterCount(sim, RED)}）`,
+    fighterCount(sim, RED) >= 14,
+    `100s 内两营应各出 6~8 人（trainGapSec=5 营地不停机）：实际 武士${warriors} 牛战士${fires} 合计${fighterCount(sim, RED)}`,
   );
   assert(warriors >= 3 && fires >= 3, `两条产线都应出人（武士${warriors} 牛战士${fires}）`);
   console.log(`testParallelCampsGrowArmy ok（武士${warriors} 牛战士${fires}）`);
@@ -346,6 +362,36 @@ function testWartimeConscriptionAtPopCap(): void {
   console.log("testWartimeConscriptionAtPopCap ok");
 }
 
+// ── T9：人口到顶时给劳力保底（不再把户外村民全塞进屋）──────────────────
+// 实测背景：红方 200 人口喂满了 27 座茅屋后"户外 0 人"——没人砍木/搬运，营地被拆了
+// 也重建不起来。测试临时把红方人口上限压低，用"被指派入住人数"这个可观测口径来断言。
+function testLaborFloorAtPopCap(): void {
+  const original = POP_CAP[RED];
+  const profile = AIProfile.normal();
+  try {
+    POP_CAP[RED] = 8;
+    const sim = new Sim(new World(42));
+    const hut = redHut(sim);
+    // 腾出足够住位：两座开局茅屋升到 L2（各 5 人）= 10 住位 > 村民数
+    for (const b of sim.buildings.filter((o) => o.team === RED && o.kind === "hut")) sim.upgradeBuilding(b, 2);
+    const eco = new EconomyDirector(RED, profile);
+    spawnWalkers(sim, hut, POP_CAP[RED] - sim.countPop(RED));
+    const outdoor = sim.units.filter((u) => u.team === RED && u.kind === "walker" && u.homeId === 0 && u.hp > 0);
+    assert(outdoor.length > profile.laborFloor, `户外村民应多于保底（${outdoor.length} > ${profile.laborFloor}）`);
+    assert(sim.countPop(RED) >= POP_CAP[RED], "人口应已到临时上限");
+    eco.update(sim, profile.tickSec + 0.1); // 触发一轮 assignHomes
+    const assigned = outdoor.filter((u) => u.targetId > 0).length;
+    assert(
+      assigned <= outdoor.length - profile.laborFloor,
+      `人口到顶时最多指派 ${outdoor.length - profile.laborFloor} 人入住（实际 ${assigned}）——必须留 ${profile.laborFloor} 名户外劳力`,
+    );
+    assert(assigned > 0, "仍未到保底线时应正常安排入住（保底不是停工）");
+    console.log(`testLaborFloorAtPopCap ok（户外${outdoor.length} 指派${assigned} 保底${profile.laborFloor}）`);
+  } finally {
+    POP_CAP[RED] = original;
+  }
+}
+
 testArmyPolicyScalesWithPop();
 testDragonProgramGate();
 testParallelCampsGrowArmy();
@@ -354,4 +400,5 @@ testLossEscalatesThreshold();
 testDefenseKeepsAssaultIntact();
 testDefensePoolCapped();
 testWartimeConscriptionAtPopCap();
-console.log("ai-army-check ok (v0.37 编制配额 + 双营并行 + 集团焦点集火 + 战损加码 + 留守池 + 战争经济动员)");
+testLaborFloorAtPopCap();
+console.log("ai-army-check ok (v0.38 编制 100 人上限 + 双营不停机 + 集团焦点集火 + 战损加码 + 留守池 + 战争经济动员)");

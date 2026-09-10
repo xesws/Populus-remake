@@ -6,7 +6,7 @@
 import { LogLevel, logger } from "../logger";
 import type { Sim } from "../sim";
 import { flattenToward } from "../spells";
-import { BLUE, Building, Cell, dist2, houseMaxPop, inMap, RED, Team, WORLD } from "../types";
+import { BLUE, Building, Cell, dist2, houseMaxPop, inMap, POP_CAP, RED, Team, WORLD } from "../types";
 import type { World } from "../world";
 import type { AIProfile } from "./ai-profile";
 import type { IEconomyDirector } from "./types";
@@ -65,13 +65,24 @@ export class EconomyDirector implements IEconomyDirector {
       (b) => b.team === this.team && b.kind === "hut" && b.level >= 1 && b.hp > 0 && this.freeSpots(sim, b) > 0,
     );
     if (!huts.length) return;
+    // v0.38 劳动力保底：人口已到分队上限时茅屋本就在停产边缘（dwellers 产不出新生儿），
+    // 再把户外村民全塞进屋就是自断劳力——伐木/搬运/建营全停，营被拆了也重建不起来。
+    // 这一档下最多只替 laborFloor 名之外的村民安排入住。
+    const atPopCap = sim.countPop(this.team) >= POP_CAP[this.team] - 1;
+    let outdoor = 0;
+    for (const u of sim.units) {
+      if (u.team === this.team && u.kind === "walker" && u.hp > 0 && u.homeId === 0) outdoor++;
+    }
+    let assigned = 0;
     for (const u of free) {
+      if (atPopCap && outdoor - assigned <= this.profile.laborFloor) break;
       const hut = this.neediestHut(sim, huts);
       if (!hut) break;
       const door = sim.hutDoor(hut);
       sim.sendMove(u, door.x, door.z);
       u.targetId = hut.id;
       u.atkId = 0;
+      assigned++;
       logger.throttled("ai-economy:occupy", 2000, LogLevel.Info, "ai-economy", `指派村民#${u.id} 入住茅屋#${hut.id}`, {
         level: hut.level,
         dwell: hut.dwell,

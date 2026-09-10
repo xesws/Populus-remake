@@ -1,4 +1,7 @@
 // v0.37 敌方 AI：大龙计划子脑（DragonDirector）——"拿火武士训练大龙"这条链路的执行端。
+// v0.38 两处战术修正：① 出动改打**软目标**（附近敌方军事单位/塔最少的建筑）——旧实现扑敌方
+// 密集点＝玩家主力与塔群正上方，600 血的龙孤身进去必被集火；② 低血撤离（dragonRetreatHp）。
+// 另外 dragonCap 语义改为每局总条数（龙死了不再重开龙厂又喂 20 名牛战士）。
 //
 // 职责边界（OOP 可分离）：
 //   - 大龙训练营**怎么建**不在这里：人口达标即由 ArmyPolicy.dragonProgramActive 通告，
@@ -24,15 +27,16 @@ export class DragonDirector implements IDragonDirector {
   readonly team: Team;
   readonly profile: AIProfile;
   readonly army: ArmyPolicy;
-
   private acc = 0;
   /** 上一次给大龙下出动令的时刻（秒）；-1e9 = 从未下令 */
   lastOrderAt = -1e9;
+  /** v0.38 撤离冷却：低血龙召回后的一段时间内不再给出动令（让它待在家养伤） */
+  private retreatUntil = -1e9;
 
-  constructor(team: Team, profile: AIProfile) {
+  constructor(team: Team, profile: AIProfile, army: ArmyPolicy = new ArmyPolicy(profile)) {
     this.team = team;
     this.profile = profile;
-    this.army = new ArmyPolicy(profile);
+    this.army = army;
   }
 
   update(sim: Sim, dt: number): void {
@@ -40,6 +44,7 @@ export class DragonDirector implements IDragonDirector {
     if (this.acc < this.profile.tickSec) return;
     this.acc = 0;
     if (sim.winner !== null) return;
+    this.army.syncDragons(sim, this.team); // v0.38 龙账本：抬到当前存活数（出厂即记账）
     this.tryFillFactory(sim);
     this.commandDragons(sim);
   }
@@ -101,33 +106,48 @@ export class DragonDirector implements IDragonDirector {
   }
 
   /**
-   * 大龙出动：出厂的大龙只要手上没目标，就按 dragonOrderSec 节拍重新压向敌方密集点。
-   * 不跨海档（dragonCrossSea=false）用岛屿标签挡一道——同岛才给令，避免龙独自飞过海送死。
+   * 大龙出动：出厂的大龙只要手上没目标，就按 dragonOrderSec 节拍重新压向**软目标**
+   * （v0.38 改：不再扑敌方密集点——那是玩家主力与塔群顶上）。
+   * 低血龙（hp < dragonRetreatHp）改为召回自家聚落并进入撤离冷却：龙不回血，
+   * 硬拼到底就是白送一条 600 血的兵器。
+   * 不跨海档（dragonCrossSea=false）用岛屿标签挡一道——同岛才给令。
    */
   private commandDragons(sim: Sim): void {
-    if (sim.time - this.lastOrderAt < this.profile.dragonOrderSec) return;
     const dragons = sim.units.filter(
       (u) => u.team === this.team && u.kind === "dragon" && u.hp > 0 && u.homeId === 0,
     );
     if (!dragons.length) return;
-    const focus = Targeting.assaultFocus(sim, this.team);
-    if (!focus) return;
-    let sent = 0;
+    const home = Targeting.homePoint(sim, this.team);
     for (const d of dragons) {
+      // ① 低血保命（不受出动节流限制：救命优先）
+      if (d.hp <= d.maxHp * this.profile.dragonRetreatHp) {
+        if (sim.time >= this.retreatUntil) {
+          sim.sendMove(d, home.x, home.z);
+          this.retreatUntil = sim.time + this.profile.dragonOrderSec * 3;
+          logger.info("ai-dragon", `大龙#${d.id} 低血撤离（${Math.round((d.hp / d.maxHp) * 100)}%）`, {
+            team: this.team,
+            hp: Math.round(d.hp),
+          });
+        }
+        continue;
+      }
+      if (sim.time < this.retreatUntil) continue; // 撤离冷却中：别又把残血龙送回去
+      if (sim.time - this.lastOrderAt < this.profile.dragonOrderSec) continue;
       if (d.atkId !== 0) continue; // 正在吐息，别打扰
+      const focus = Targeting.softFocus(sim, this.team, { x: d.x, z: d.z }, this.profile.dragonSoftRadius);
+      if (!focus) continue;
       if (!this.profile.dragonCrossSea && sim.world.islandAt(d.x, d.z) !== sim.world.islandAt(focus.x, focus.z)) {
         continue;
       }
       sim.sendMove(d, focus.x, focus.z);
-      sent++;
-    }
-    if (sent) {
       this.lastOrderAt = sim.time;
-      logger.info("ai-dragon", `大龙出动×${sent} → (${focus.x.toFixed(1)},${focus.z.toFixed(1)})`, {
+      logger.info("ai-dragon", `大龙出动 → 软目标#${focus.targetId}(${focus.x.toFixed(1)},${focus.z.toFixed(1)})`, {
         team: this.team,
         targetId: focus.targetId,
         crossSea: this.profile.dragonCrossSea,
+        hp: Math.round(d.hp),
       });
+      break; // 一次决策周期只给一条龙下令，避免多龙抢同一下令节拍
     }
   }
 }

@@ -8,7 +8,7 @@
 //   - densePoint：通用密集点聚类（神力子脑砸法术复用，删掉各自抄写的副本）。
 
 import type { Sim } from "../sim";
-import { BLUE, Cell, dist2, RED, Team } from "../types";
+import { BLUE, Cell, dist2, isSoldier, RED, Team } from "../types";
 
 /** 突击焦点：集结点坐标 + 全波统一集火的目标 id（建筑优先，无建筑则取单位）。 */
 export interface Focus extends Cell {
@@ -101,6 +101,40 @@ export class Targeting {
       return sim.hutDoor(best);
     }
     return { x: pad.x, z: pad.z };
+  }
+
+  /**
+   * v0.38 软目标（大龙专用）：在敌方建筑里挑**附近敌方军事力量最少**的那座。
+   * 为何不能给龙用 assaultFocus：那挑的是“最密集点”＝玩家主力与塔群正上方，
+   * 600 血的龙孤身飞进去必被集火（用户实测“大龙一过来就被集火”）。
+   * 评分：威胁分 = 半径内敌方军事单位数 + 塔 × 2；同分取离 from 更近的（省飞行时间）。
+   */
+  static softFocus(sim: Sim, team: Team, from: Cell, radius = 12): Focus | null {
+    const foe: Team = team === RED ? BLUE : RED;
+    const houses = sim.buildings.filter((b) => b.team === foe && b.hp > 0 && b.kind !== "rebirth");
+    if (!houses.length) return null;
+    const threats = sim.units.filter(
+      (u) => u.team === foe && u.hp > 0 && u.homeId === 0 && (isSoldier(u.kind) || u.kind === "dragon"),
+    );
+    const towers = sim.buildings.filter((b) => b.team === foe && b.hp > 0 && b.kind === "tower");
+    const r2 = radius * radius;
+    let best = houses[0]!;
+    let bestScore = 1e9;
+    let bestD = 1e9;
+    for (const h of houses) {
+      let score = 0;
+      for (const u of threats) if (dist2(h.x, h.z, u.x, u.z) <= r2) score++;
+      for (const t of towers) if (dist2(h.x, h.z, t.x, t.z) <= r2) score += 2;
+      // 茅屋优先扣 1 分：拆屋即拆人口与胜负，同威胁度时先拆屋
+      if (h.kind === "hut") score -= 1;
+      const d = dist2(h.x, h.z, from.x, from.z);
+      if (score < bestScore || (score === bestScore && d < bestD)) {
+        bestScore = score;
+        bestD = d;
+        best = h;
+      }
+    }
+    return { x: best.x, z: best.z, targetId: best.id };
   }
 
   /** 集结点附近的散兵落点：按单位 id 确定性摊开（避免整队挤一个点对撞打转）。 */

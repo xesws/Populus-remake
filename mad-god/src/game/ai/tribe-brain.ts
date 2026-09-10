@@ -20,6 +20,7 @@ import { TrainingDirector } from "./training-director";
 import { WarDirector } from "./war-director";
 import { SpellDirector } from "./spell-director";
 import { DragonDirector } from "./dragon-director";
+import { ArmyPolicy } from "./army-policy";
 
 /** 重整状态持续时间（秒）：收兵回防、休整完毕后回到发展期 */
 const REGROUP_SEC = 3;
@@ -47,11 +48,14 @@ export class TribeBrain {
   constructor(team: Team, profile: AIProfile) {
     this.team = team;
     this.profile = profile;
+    // v0.38 共享一份编制策略：编制目标/兵种配比/龙账本只有一个来源，
+    // 否则训兵/军事/大龙三个子脑各自 new 一份 → 龙账本与征召名额互不相通。
+    const army = new ArmyPolicy(profile);
     this.economy = new EconomyDirector(team, profile);
-    this.training = new TrainingDirector(team, profile);
-    this.war = new WarDirector(team, profile);
+    this.training = new TrainingDirector(team, profile, army);
+    this.war = new WarDirector(team, profile, army);
     this.spell = new SpellDirector(team, profile);
-    this.dragon = new DragonDirector(team, profile);
+    this.dragon = new DragonDirector(team, profile, army);
   }
 
   /** 每帧驱动：到决策周期才让子脑思考一次，并推进战略状态机。 */

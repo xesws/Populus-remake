@@ -12,6 +12,8 @@
 // ③ **劳动力保底**：留 laborFloor 名户外村民给伐木/搬木/建营/入住——征召再凶也不许把
 //    工地上的人抽空（大龙训练营 6 捆木头还是要有人搬）。
 // ④ **大龙训练营纳入营地愿望单**：人口达标即由既有建营链路（落基/看门狗/重建）自动建厂。
+// v0.38 群众路线：常备军上限 100（normal）+ 单营节流 5s（营地不停机）——两座营约 22 人/分钟，
+// 才能把 100 人的编制真切填满。
 
 import { LogLevel, logger } from "../logger";
 import type { Sim } from "../sim";
@@ -104,7 +106,8 @@ export class TrainingDirector implements ITrainingDirector {
   readonly team: Team;
   readonly profile: AIProfile;
   readonly policy: RosterPolicy;
-  /** v0.37 编制口径（常备军目标/兵种配比/大龙征召名额）——与军事子脑共用同一份策略。 */
+  /** v0.37 编制口径（常备军目标/兵种配比/大龙征召名额）；v0.38 起由 TribeBrain 建好**共享注入**，
+   *  四个子脑读同一份（否则龙账本/名额在各自实例里不互通）。 */
   readonly army: ArmyPolicy;
 
   private acc = 0;
@@ -115,11 +118,11 @@ export class TrainingDirector implements ITrainingDirector {
   /** v0.31.1 建营者看门狗：foundKind 超 90s 未落基则卸任。 */
   private founderSeen = new Map<number, number>();
 
-  constructor(team: Team, profile: AIProfile) {
+  constructor(team: Team, profile: AIProfile, army: ArmyPolicy = new ArmyPolicy(profile)) {
     this.team = team;
     this.profile = profile;
     this.policy = new RosterPolicy(profile);
-    this.army = new ArmyPolicy(profile);
+    this.army = army;
   }
 
   update(sim: Sim, dt: number): void {

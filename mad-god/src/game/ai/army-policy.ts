@@ -19,6 +19,15 @@ import { DRAGON_GARRISON_MAX, isSoldier, POP_CAP, Team, UnitKind } from "../type
 import type { AIProfile } from "./ai-profile";
 
 export class ArmyPolicy {
+  /**
+   * v0.38 龙账本：**本局已出厂过几条大龙**（单调递增，龙死了也不减）。
+   * 为什么需要它：旧口径“场上大龙数 < dragonCap”意味着龙一被集火秒掉，
+   * 计划立即重新启动、又吞 20 名牛战士（用户实测 9 分钟被喂掉 40 名）。
+   * 本字段由 DragonDirector 每周期 syncDragons() 同步；同一部落的四个子脑**共享同一个
+   * ArmyPolicy 实例**（由 TribeBrain 建好注入），所以账本天然唯一。
+   */
+  dragonsBuilt = 0;
+
   constructor(readonly profile: AIProfile) {}
 
   /** 野战军构成（人数口径，见文件头注释）。 */
@@ -149,22 +158,37 @@ export class ArmyPolicy {
 
   // ── 大龙计划 ────────────────────────────────────────────────────────────
 
-  /** 大龙计划是否推进中：人口达标、名额未满（含在生产中的龙）。 */
-  dragonProgramActive(sim: Sim, team: Team): boolean {
-    const p = this.profile;
-    if (p.dragonCap <= 0 || p.dragonPopMin <= 0) return false;
-    if (sim.countPop(team) < p.dragonPopMin) return false;
-    return this.dragonCount(sim, team) < p.dragonCap;
+  /** 场上存活的大龙数。 */
+  dragonsAlive(sim: Sim, team: Team): number {
+    return this.countKind(sim, team, "dragon");
   }
 
-  /** 大龙条数：已出厂的 + 工厂满员生产中（60s 后必然出厂）的。 */
-  dragonCount(sim: Sim, team: Team): number {
-    let n = this.countKind(sim, team, "dragon");
+  /** 正在生产（进驻满 20、60s 后必出厂）的大龙数。 */
+  dragonsProducing(sim: Sim, team: Team): number {
+    let n = 0;
     for (const b of sim.buildings) {
       if (b.team !== team || b.hp <= 0 || b.kind !== "dragonFactory" || b.level < 1) continue;
       if (b.dwell >= DRAGON_GARRISON_MAX) n++;
     }
     return n;
+  }
+
+  /** 大龙条数（存活 + 生产中）：展示口径（日志/探针/测试）。 */
+  dragonCount(sim: Sim, team: Team): number {
+    return this.dragonsAlive(sim, team) + this.dragonsProducing(sim, team);
+  }
+
+  /** v0.38 龙账本同步：把“已出厂过”抬到当前存活数（DragonDirector 每决策周期调一次）。 */
+  syncDragons(sim: Sim, team: Team): void {
+    this.dragonsBuilt = Math.max(this.dragonsBuilt, this.dragonsAlive(sim, team));
+  }
+
+  /** 大龙计划是否推进中：人口达标、且**本局总条数**（已出厂 + 生产中）未达上限。 */
+  dragonProgramActive(sim: Sim, team: Team): boolean {
+    const p = this.profile;
+    if (p.dragonCap <= 0 || p.dragonPopMin <= 0) return false;
+    if (sim.countPop(team) < p.dragonPopMin) return false;
+    return this.dragonsBuilt + this.dragonsProducing(sim, team) < p.dragonCap;
   }
 
   /** 本队 L1 大龙训练营（无则 null）。 */

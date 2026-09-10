@@ -8,20 +8,31 @@
 //   - 每座训练营独立排队（queueDepth）与独立节流（trainGapSec）→ 武士营与牛战士营并行出人；
 //   - 波次门槛 waveForce 随战损加码（waveForceStep / waveForceMax），失败越大下次来得越多；
 //   - 人口达 dragonPopMin 后启动大龙计划：建大龙训练营 → 囤 20 名牛战士 → 空降大龙。
+//
+// v0.38 群众路线（用户拍板 "军事人口上限改成 100"）：
+//   - armyMax normal 24→**100**（= 红方 200 人口的一半）、hard 140；armyRatio 0.3→**0.5**。
+//     旧上限下 AI 常常 200 人口只养 24 个兵，其余全在茅屋里待着。
+//   - trainGapSec normal 8→**5**：单营训完一人需 TRAIN_TIME/0.75 ≈ 5.33s，节流 8s 会让每座营
+//     每轮空转 2.7s—
+//     100 人的编制要靠两座营一刻不停地出人才能填满（双营约 22 人/分钟）。
+//   - waveForceMax normal 20→**40**：大军压上时不要再被 20 人的门槛卡住。
+//   - dragonCap 语义改为"**每局总共几条**"（不再看场上存活数）：旧口径下龙一死就重新开龙厂，
+//     实测 9 分钟喂掉 40 名牛战士；另加龙的软目标与低血撤离（见 dragonRetreatHp）。
 
 export class AIProfile {
   /** 决策周期（秒）：TribeBrain 每隔该时长思考一次 */
   tickSec = 1.0;
   /** 每座茅屋期望入住村民数（经济优先度；越高人口滚得越快） */
   occupyTarget = 2;
-  /** 每座训练营自己的训兵节流（秒）：v0.37 起按营独立计时，不再全局串行 */
-  trainGapSec = 8;
+  /** 每座训练营自己的训兵节流（秒）：v0.37 起按营独立计时，不再全局串行；
+   *  v0.38：normal 8→5（红方单营训一人约 5.33s，节流 5 = 营地近乎不停机） */
+  trainGapSec = 5;
   /** 出兵下限（军力）：人口再少也保底的常备军规模 */
   armyFloor = 4;
   /** 常备军占人口比例：目标军力 = clamp(round(人口 × armyRatio), armyFloor, armyMax) */
-  armyRatio = 0.3;
-  /** 常备军上限（含野战军；大龙计划的进厂牛战士另计配额） */
-  armyMax = 24;
+  armyRatio = 0.5;
+  /** 常备军上限（含野战军；大龙计划的进厂牛战士另计配额）：normal 100 = 红方 200 人口的一半 */
+  armyMax = 100;
   /** 牛战士（firewarrior）占常备军的目标比例：0 = 只出武士 */
   fireRatio = 0.5;
   /** 村民劳动保底（名）：始终留出不参与征召的户外村民 伐木/搬运/建营/入住 */
@@ -31,9 +42,9 @@ export class AIProfile {
   /** 首波进攻门槛（军力 = 可出击士兵数） */
   waveForce = 8;
   /** 每惨败一波（战损 ≥ waveRetreatRatio）下一次波次门槛加码 */
-  waveForceStep = 3;
-  /** 波次门槛上限：再惨败也不超过这个兵力才出发 */
-  waveForceMax = 20;
+  waveForceStep = 4;
+  /** 波次门槛上限：再惨败也不超过这个兵力才出发（normal 40 = 常备军上限的 4 成） */
+  waveForceMax = 40;
   /** 两波进攻之间的冷却（秒） */
   waveGapSec = 45;
   /** 单波最长持续时间（秒）：超时即收兵重整，不许在外面磨成添油 */
@@ -68,8 +79,13 @@ export class AIProfile {
   spyMax = 1;
   /** v0.37 大龙计划启动人口：人口达到该值开始建大龙训练营并囤 20 牛战士；0 = 本档不追龙 */
   dragonPopMin = 24;
-  /** v0.37 大龙条数上限（含在生产中的）：0 = 不追龙 */
+  /** v0.37 大龙条数上限：v0.38 起口径为**每局总条数**（不为场上存活数）——
+   *  旧口径下龙一被集火秒掉就重新开龙厂又喂 20 名牛战士，实测 9 分钟能把整支牛战士军团喂光。 */
   dragonCap = 1;
+  /** v0.38 大龙低血撤离线（血量占比）：低于此比例飞回自家保命（龙不回血，硬拼就是白送） */
+  dragonRetreatHp = 0.35;
+  /** v0.38 大龙软目标威胁半径（格）：候选建筑此半径内的敌方军事单位（含塔）越少越优先 */
+  dragonSoftRadius = 12;
   /** v0.37 大龙出动指令节流（秒）：无目标时每隔这么久把龙重新压向敌方密集点 */
   dragonOrderSec = 8;
   /** v0.37 大龙是否允许跨海作战（分岛图：红方无船，只有龙够得到对岸） */
@@ -79,16 +95,16 @@ export class AIProfile {
     const p = new AIProfile();
     p.tickSec = 1.6;
     p.occupyTarget = 1;
-    p.trainGapSec = 14;
+    p.trainGapSec = 10;
     p.armyFloor = 2;
-    p.armyRatio = 0.18;
-    p.armyMax = 8;
+    p.armyRatio = 0.25;
+    p.armyMax = 30;
     p.fireRatio = 0.3;
     p.laborFloor = 1;
     p.queueDepth = 1;
     p.waveForce = 4;
     p.waveForceStep = 2;
-    p.waveForceMax = 8;
+    p.waveForceMax = 10;
     p.waveGapSec = 90;
     p.waveTimeoutSec = 45;
     p.waveRetreatRatio = 0.6;
@@ -115,16 +131,16 @@ export class AIProfile {
     const p = new AIProfile();
     p.tickSec = 0.7;
     p.occupyTarget = 3;
-    p.trainGapSec = 5;
+    p.trainGapSec = 3;
     p.armyFloor = 6;
-    p.armyRatio = 0.4;
-    p.armyMax = 36;
+    p.armyRatio = 0.6;
+    p.armyMax = 140;
     p.fireRatio = 0.5;
     p.laborFloor = 3;
     p.queueDepth = 3;
     p.waveForce = 10;
-    p.waveForceStep = 4;
-    p.waveForceMax = 28;
+    p.waveForceStep = 5;
+    p.waveForceMax = 60;
     p.waveGapSec = 30;
     p.waveTimeoutSec = 75;
     p.waveRetreatRatio = 0.4;

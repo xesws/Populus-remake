@@ -1,6 +1,6 @@
 // v0.37 敌方 AI 行为探针（脚本，不进 npm run check）：无头长局观测量化"AI 打得凶不凶"。
 //
-// 用法：npx tsx scripts/probe-ai-army.ts [easy|normal|hard] [分钟]
+// 用法：npx tsx scripts/probe-ai-army.ts [easy|normal|hard] [分钟] [seed] [--log]
 //
 // 观测口径（对应用户实测抱怨的三条）：
 //   ① 常备军规模：只记红方战斗兵（武士/牛战士/传教士）峰值与人口，看它会不会把村民转成兵；
@@ -18,6 +18,7 @@ import { World } from "../src/game/world";
 
 const level = (process.argv[2] ?? "normal") as "easy" | "normal" | "hard";
 const minutes = Number(process.argv[3] ?? "6");
+const seed = Number(process.argv[4] ?? "42");
 const profile = level === "easy" ? AIProfile.easy() : level === "hard" ? AIProfile.hard() : AIProfile.normal();
 
 // --log：把 AI 子脑日志收进内存并分类打印（无头排查专用；默认关闭避免刷屏）
@@ -43,7 +44,7 @@ function keepBlueAlive(sim: Sim): void {
   if (shaman) shaman.hp = shaman.maxHp;
 }
 
-const sim = new Sim(new World(42));
+const sim = new Sim(new World(seed));
 const dir = new AIDirector([[RED, profile]]);
 dir.attach(sim);
 const brain = dir.brains[0]!;
@@ -55,9 +56,10 @@ let firstWaveAt = -1;
 let firstFireAt = -1;
 let factoryAt = -1;
 let dragonAt = -1;
+let dragonsBuilt = 0;
 const factory0 = () => sim.buildings.find((b) => b.team === RED && b.kind === "dragonFactory");
 
-console.log(`probe-ai-army: level=${level} 时长=${minutes} 分钟（seed=42，蓝方为木头玩家）`);
+console.log(`probe-ai-army: level=${level} 时长=${minutes} 分钟（seed=${seed}，蓝方为木头玩家）`);
 console.log("  t(s)  红人口  武士  牛战  传教  战场军力  状态      波次  门槛  工厂  大龙  蓝人口");
 const total = minutes * 60;
 for (let t = 0; t < total; t += 0.05) {
@@ -78,6 +80,7 @@ for (let t = 0; t < total; t += 0.05) {
   const f = factory0();
   if (factoryAt < 0 && f && f.level >= 1) factoryAt = t;
   if (dragonAt < 0 && sim.countKind(RED, "dragon") > 0) dragonAt = t;
+  dragonsBuilt = Math.max(dragonsBuilt, sim.countKind(RED, "dragon"));
 
   if (Math.round(t * 20) % 600 === 0) {
     console.log(
@@ -94,7 +97,7 @@ console.log(
   `      首波=${firstWaveAt < 0 ? "无" : `${firstWaveAt.toFixed(0)}s`} 波次=${waveSizes.length} 每波出击=${waveSizes.join(",") || "无"}`,
 );
 console.log(
-  `      首个牛战士=${firstFireAt < 0 ? "无" : `${firstFireAt.toFixed(0)}s`} 大龙训练营=${factoryAt < 0 ? "无" : `${factoryAt.toFixed(0)}s`} 大龙=${dragonAt < 0 ? "无" : `${dragonAt.toFixed(0)}s`}`,
+  `      首个牛战士=${firstFireAt < 0 ? "无" : `${firstFireAt.toFixed(0)}s`} 大龙训练营=${factoryAt < 0 ? "无" : `${factoryAt.toFixed(0)}s`} 大龙=${dragonAt < 0 ? "无" : `${dragonAt.toFixed(0)}s`} 累计造龙=${dragonsBuilt}`,
 );
 console.log(`      末态：红波次门槛=${brain.war.waveThreshold} 蓝方茅屋剩 ${blueHouses.length} 座`);
 // 兵源诊断：v0.37 战争经济的瓶颈一目了然（住户/户外空闲/可动员住户/上限）

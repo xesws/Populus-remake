@@ -43,7 +43,7 @@ const GATHERED_RATIO = 0.7;
 export class WarDirector implements IWarDirector {
   readonly team: Team;
   readonly profile: AIProfile;
-  /** v0.37 编制口径（可出击兵力/大龙征召优先级），与训兵子脑共用同一份策略。 */
+  /** v0.37 编制口径（可出击兵力/大龙征召优先级）；v0.38 起由 TribeBrain 建好**共享注入**。 */
   readonly army: ArmyPolicy;
   /** 决策节流累计（秒）：达到 profile.tickSec 才处理一次 */
   private acc = 0;
@@ -81,10 +81,10 @@ export class WarDirector implements IWarDirector {
    */
   private probeCache = { key: "", t: -1e9, ok: false };
 
-  constructor(team: Team, profile: AIProfile) {
+  constructor(team: Team, profile: AIProfile, army: ArmyPolicy = new ArmyPolicy(profile)) {
     this.team = team;
     this.profile = profile;
-    this.army = new ArmyPolicy(profile);
+    this.army = army;
     this.waveThreshold = profile.waveForce;
   }
 
@@ -468,8 +468,17 @@ export class WarDirector implements IWarDirector {
    * v0.33 隔海探路（陆地 astar 全图上限，prio=0 玩家级特权免预算）：
    * 同{目标,集结点} 15s 内复用结论——发波/驰援决策高频调用，跨海 astar 每次穷举
    * 全图（~60ms），无缓存会把主线程刷爆。单块图恒真，行为与旧版一致。
+   *
+   * v0.38 先比**岛屿标签**（O(1)）再跑 astar：旧实现把目标点 `nearestLand` 吸附后再比对终点，
+   * 而目标贴海岸时会吸附到**自己这一侧**的岸→判“可达”→发波；随后 sendMove 到对岸点找不到
+   * 路径，走了 `path=[{dest}]` 直线回退（忽略地形），于是红方士兵真的**徒步渡海**爬上蓝岛
+   *（实测 seed=1 时 9 名武士 + 2 名牛战士站在蓝岛上）。标签不同就是不同岛、不可达，
+   * 直接拒；标签相同或为 -1（整地填海产生的新陆地标签过期）才回退到原有的 astar 端点核对。
    */
   private seaProbe(sim: Sim, fx: number, fz: number, mx: number, mz: number): boolean {
+    const mineIsle = sim.world.islandAt(mx, mz);
+    const foeIsle = sim.world.islandAt(fx, fz);
+    if (mineIsle >= 0 && foeIsle >= 0 && mineIsle !== foeIsle) return false;
     const key = `${Math.round(fx / 2)}:${Math.round(fz / 2)}:${Math.round(mx / 2)}:${Math.round(mz / 2)}`;
     if (key === this.probeCache.key && sim.time - this.probeCache.t < 15) return this.probeCache.ok;
     // astar 在访问上限/不可达时可能返回“朝目标走了一段”的部分路径，非空不代表到达。

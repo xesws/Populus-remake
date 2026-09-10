@@ -25,7 +25,7 @@ function redHut(sim: Sim): Building {
   return hut!;
 }
 
-function spotFor(sim: Sim, kind: BuildingKind, cx: number, cz: number): { x: number; z: number } {
+function spotFor(sim: Sim, kind: BuildingKind, cx: number, cz: number, _team: Team = RED): { x: number; z: number } {
   for (let r = 3; r <= 14; r += 1) {
     for (let a = 0; a < 24; a++) {
       const ang = (a / 24) * Math.PI * 2;
@@ -157,15 +157,42 @@ function testConscriptProduceAndDeploy(): void {
   assert(d.hp === DRAGON_HP, "大龙血量 = DRAGON_HP");
   assert(f.dwell === 0 && f.prod === 0, "出厂后工厂计数清零");
 
-  // 出动：无目标时压向敌方建筑密集点
+  // 出动：无目标时压向**软目标**（v0.38：不再扑敌方密集点——那是玩家主力与塔群顶上）
   dragon.lastOrderAt = -1e9;
   dragon.update(sim, profile.tickSec);
-  const focus = Targeting.assaultFocus(sim, RED)!;
+  const focus = Targeting.softFocus(sim, RED, { x: d.x, z: d.z }, profile.dragonSoftRadius)!;
   assert(
     d.moveX >= 0 && Math.hypot(d.moveX - focus.x, d.moveZ - focus.z) < 2,
-    `大龙应被派往敌方密集点 (${focus.x.toFixed(1)},${focus.z.toFixed(1)})（实际 ${d.moveX.toFixed(1)},${d.moveZ.toFixed(1)}）`,
+    `大龙应被派往软目标 (${focus.x.toFixed(1)},${focus.z.toFixed(1)})（实际 ${d.moveX.toFixed(1)},${d.moveZ.toFixed(1)}）`,
+  );
+
+  // 低血撤离：掉到 dragonRetreatHp 以下应被召回自家聚落（龙不回血，硬拼到底就是白送）
+  d.hp = d.maxHp * (profile.dragonRetreatHp - 0.1);
+  dragon.lastOrderAt = -1e9;
+  dragon.update(sim, profile.tickSec);
+  const home = Targeting.homePoint(sim, RED);
+  assert(
+    Math.hypot(d.moveX - home.x, d.moveZ - home.z) < 2,
+    `低血大龙应撤回自家聚落 (${home.x.toFixed(1)},${home.z.toFixed(1)})（实际 ${d.moveX.toFixed(1)},${d.moveZ.toFixed(1)}）`,
   );
   console.log("testConscriptProduceAndDeploy ok");
+}
+
+// ── T3b：软目标选择——龙的靶子必须避开敌方主力（"一过来就被集火"的战术修正）─────
+function testSoftFocusAvoidsArmy(): void {
+  const sim = new Sim(new World(42));
+  // 蓝方：一座被 8 名火武士守着的茅屋（主场）vs 远处无人守的孤立茅屋
+  const guarded = sim.buildings.find((b) => b.team === 0 && b.kind === "hut")!;
+  for (let i = 0; i < 8; i++) sim.addUnit(0, "firewarrior", guarded.x + 2 + i * 0.3, guarded.z + 2);
+  const spot = spotFor(sim, "hut", guarded.x + 20, guarded.z + 20, 0);
+  const lonely = placeComplete(sim, "hut", spot.x, spot.z, 0);
+  const focus = Targeting.softFocus(sim, RED, { x: lonely.x - 12, z: lonely.z - 12 }, 12)!;
+  assert(focus !== null, "应选出软目标");
+  assert(
+    focus.targetId === lonely.id,
+    `应选无人驻守的孤立茅屋#${lonely.id}，而不是被 8 名火武士守着的#${guarded.id}（实际选了 #${focus.targetId}）`,
+  );
+  console.log("testSoftFocusAvoidsArmy ok");
 }
 
 // ── T4：dragonCrossSea 开关——分岛图大龙是否跨海 ────────────────────────
@@ -187,10 +214,10 @@ function testCrossSeaSwitch(): void {
   const redPad = sim.world.startPad(RED);
   const dragon = sim.addUnit(RED, "dragon", redPad.x, redPad.z);
   dragon.hp = DRAGON_HP;
-  const focus = Targeting.assaultFocus(sim, RED)!;
+  const focus = Targeting.softFocus(sim, RED, { x: redPad.x, z: redPad.z }, profile.dragonSoftRadius)!;
   assert(
     sim.world.islandAt(redPad.x, redPad.z) !== sim.world.islandAt(focus.x, focus.z),
-    `分岛图（seed=${splitSeed}）：敌方焦点确实在对岸`,
+    `分岛图（seed=${splitSeed}）：敌方软目标确实在对岸`,
   );
 
   const off = new DragonDirector(RED, Object.assign(AIProfile.normal(), { dragonCrossSea: false }));
@@ -208,5 +235,6 @@ function testCrossSeaSwitch(): void {
 testWantedCamps();
 testAiFoundsFactory();
 testConscriptProduceAndDeploy();
+testSoftFocusAvoidsArmy();
 testCrossSeaSwitch();
-console.log("ai-dragon-check ok (v0.37 大龙计划：愿望单建厂 + 牛战士征召 + 生产空降 + 跨海出动)");
+console.log("ai-dragon-check ok (v0.38 大龙计划：愿望单建厂 + 牛战士征召 + 生产空降 + 软目标出动 + 低血撤离 + 跨海开关)");

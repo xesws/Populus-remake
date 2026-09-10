@@ -162,7 +162,10 @@ function testAutoTargetAndLeash(): void {
 
   // 目标跑出 10 格 → 弃锁。落点必须是**可走的**陆地：钉进海里会被
   // resolveCollisions 的 nearestLand 弹回海岸（<10 格），脱锁判定就看不到了。
-  const far = findLandSpot(sim, dragon.x, dragon.z, 12);
+  // v0.38 脱锁距离 12→16：龙在无目标时会绕锚点盘旋（最远约 3 格/2s），
+  // 12 格落点在盘旋中可能自己飞进 10 格锁敌圈——本用例的语义是“超出射程不锁”，
+  // 不是“龙会不会飞过去”，因此拉开距离消除盘旋余量（偶发假失败）。
+  const far = findLandSpot(sim, dragon.x, dragon.z, 16);
   assert(Math.hypot(far.x - dragon.x, far.z - dragon.z) > DRAGON_RANGE, "target: 脱锁落点在 10 格外");
   for (let i = 0; i < 20; i++) {
     foe.x = far.x;
