@@ -122,6 +122,7 @@ export class WarDirector implements IWarDirector {
     sim.setIdleArmyStance(this.team, "gather");
     this.formUp(sim, home);
     this.homeThreat = false; // 不在进攻态：老家告警归零，下次发波重新记账
+    this.marshalAt = -1e9; // 集结窗口重置，下次进 marshal 重新计时
   }
 
   /** 集结姿态（marshal 状态调用）：锚点前移到最靠敌的自家茅屋，波次在此成型。 */
@@ -148,14 +149,14 @@ export class WarDirector implements IWarDirector {
       if (dist2(u.x, u.z, anchor.x, anchor.z) <= GATHERED_R * GATHERED_R) on++;
     }
     if (!total) return true;
-    if (on / total >= GATHERED_RATIO) return true;
-    // 到位率没达标：若还在收拢（上一拍还在下集结令）就继续等，等满窗口再放手。
-    return sim.time - this.lastFormUpAt > FORMUP_SEC * 2 && on / total >= 0.4;
+    // 主力到位即出发；没到位就等集结窗口（marshalSec）——窗口一满就走，
+    // 不让零散士兵把大军卡在集结点（真正的“等不到”由 marshalStalled 兜底）。
+    return on / total >= GATHERED_RATIO;
   }
 
   /** 集结长期发不出去（隔海无路 / 敌方已无目标）→ 战略大脑放弃本轮，回重整重新滚经济。 */
   marshalStalled(sim: Sim): boolean {
-    return this.marshalAt > 0 && sim.time - this.marshalAt > this.profile.marshalSec + 20;
+    return this.marshalAt >= 0 && sim.time - this.marshalAt > this.profile.marshalSec + 20;
   }
 
   /** 发动进攻：全波统一焦点目标，逐兵显式行军目标 + 挂焦点目标（焦点集火）。 */
