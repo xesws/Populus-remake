@@ -12,11 +12,21 @@
 import { Sim } from "./sim";
 import { BLUE, RED, BOAT_CAPACITY, BOATHOUSE_DWELL, canConvert, WATER } from "./types";
 import { World } from "./world";
-import { waterAt } from "./path";
+import { nearestLand, waterAt } from "./path";
 import { encodeSnapshot, applySnapshot, createSimMirror } from "./worker/codec";
 
 function assert(cond: unknown, msg: string): asserts cond {
   if (!cond) throw new Error(msg);
+}
+
+/**
+ * v0.39 水规则后，地面单位必须落在**干地**：旧实现会把落水单位每帧 nearestLand 弹回岸边，
+ * 所以本文件里带偏移的落点（门边、岸边 ±0.4）从不担心；现在落水会淹死（那是刻意设计的），
+ * 测试落点必须先纠到可走格，否则测的就不是船而是溺水。
+ */
+function onLand(sim: Sim, x: number, z: number): { x: number; z: number } {
+  if (sim.world.walkableAt(x, z)) return { x, z };
+  return nearestLand(sim.world, x, z) ?? { x, z };
 }
 
 /** 蓝出生点旁找"可走岸"：可走格＋3 格内有水（船屋/登船测试共用）。 */
@@ -71,7 +81,8 @@ function dwellCrew(sim: Sim, houseId: number, n: number): void {
   const b = sim.buildingById(houseId)!;
   const door = sim.hutDoor(b);
   for (let i = 0; i < n; i++) {
-    const u = sim.addUnit(BLUE, "walker", door.x + (i % 3) * 0.4, door.z + ((i / 3) | 0) * 0.4);
+    const p = onLand(sim, door.x + (i % 3) * 0.4, door.z + ((i / 3) | 0) * 0.4);
+    const u = sim.addUnit(BLUE, "walker", p.x, p.z);
     u.targetId = houseId;
   }
   for (let i = 0; i < 120; i++) sim.tick(0.05);
@@ -93,7 +104,8 @@ function testBoard(): void {
   assert(shore, "新船旁有可走岸");
   const sailors: number[] = [];
   for (let i = 0; i < 7; i++) {
-    const u = sim.addUnit(BLUE, "walker", shore.x + (i % 4) * 0.4, shore.z + ((i / 4) | 0) * 0.4);
+    const p = onLand(sim, shore.x + (i % 4) * 0.4, shore.z + ((i / 4) | 0) * 0.4);
+    const u = sim.addUnit(BLUE, "walker", p.x, p.z);
     sailors.push(u.id);
     sim.boatSystem.orderBoard(sim, boat, u);
   }

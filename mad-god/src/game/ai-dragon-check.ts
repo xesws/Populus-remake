@@ -11,6 +11,7 @@
 
 import { AIProfile, ArmyPolicy, DragonDirector, RosterPolicy, Targeting, type RosterSnapshot } from "./ai";
 import { AIDirector } from "./ai/ai-director";
+import { nearestLand } from "./path";
 import { Sim } from "./sim";
 import { Building, BuildingKind, DRAGON_GARRISON_MAX, DRAGON_HP, inMap, RED, Team } from "./types";
 import { World } from "./world";
@@ -128,9 +129,19 @@ function testConscriptProduceAndDeploy(): void {
   );
 
   // 场上有 22 名空闲牛战士（比名额多 2 名，多出来的不许被吞）
+  // 注意：v0.39 起落水必沉，所以每位牛战士都必须落在**干地**上（落在水里会淹死，不是测试意图）。
   for (let i = 0; i < 22; i++) {
     const ang = (i / 22) * Math.PI * 2;
-    sim.addUnit(RED, "firewarrior", f.x + Math.cos(ang) * 4.5, f.z + Math.sin(ang) * 4.5);
+    let x = f.x + Math.cos(ang) * 4.5;
+    let z = f.z + Math.sin(ang) * 4.5;
+    for (let k = 0; k < 8 && !sim.world.walkableAt(x, z); k++) {
+      const land = nearestLand(sim.world, x, z);
+      if (!land) break;
+      x = land.x;
+      z = land.z;
+    }
+    assert(sim.world.walkableAt(x, z), `牛战士落点必须是干地（${x.toFixed(1)},${z.toFixed(1)}）`);
+    sim.addUnit(RED, "firewarrior", x, z);
   }
   const dragon = new DragonDirector(RED, profile);
   let sawFull = false;

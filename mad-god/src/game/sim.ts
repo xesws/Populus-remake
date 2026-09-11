@@ -141,6 +141,8 @@ export class Sim {
   } | null = null;
   fxSplash: { x: number; z: number }[] = [];
   lavaHurt = false;
+  /** v0.39 溺水提示去重（与 lavaHurt 同款一次性开关；不进 worker 快照，纯 UI 提示） */
+  drownHurt = false;
   trainJoinN = 1;
   swampKill = false;
   swampKillX = 0;

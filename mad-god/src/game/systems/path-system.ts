@@ -9,6 +9,7 @@ import {
   sitePad,
   UNIT_RADIUS,
   Unit,
+  WATER,
   WORLD,
 } from "../types";
 import { applyUnitDamage } from "../damage";
@@ -288,11 +289,11 @@ export class PathSystem implements ISystem {
    * 抽成单一入口，免得正向与侧滑两处判据走偏。
    */
   canStandOn(sim: Sim, u: Unit, x: number, z: number): boolean {
-    return (
-      u.ghostT > 0 ||
-      sim.world.walkableAt(x, z) ||
-      sim.trainingSystem.trainAllows(sim, u, x, z)
-    );
+    // v0.39 鬼影（穿墙兜底）不得穿水：ghostT 原本对任何格都放行，于是“卡住的单位”会直接涉水
+    // 走向对岸（用户实测：敌人从水里穿过来直接进基地）。现在鬼影只对**干地**放行，
+    // 仍能穿房角/树根（那些格 cellLand 为真），但永远不会踏出水面那一步。
+    if (u.ghostT > 0 && sim.world.cellLand(x, z)) return true;
+    return sim.world.walkableAt(x, z) || sim.trainingSystem.trainAllows(sim, u, x, z);
   }
 
   onArrive(sim: Sim, u: Unit): void {
@@ -518,17 +519,24 @@ export class PathSystem implements ISystem {
       const r = UNIT_RADIUS[u.kind];
       const holdTrain = u.job === "train" && u.channel > 0;
       if (!sim.world.walkableAt(u.x, u.z) && !holdTrain && u.ghostT <= 0) {
-        const dest = this.goalCell(sim, u);
-        const keep = !!(dest && (u.path.length || u.job === "move" || u.moveX >= 0 || u.targetId || u.settleX >= 0));
-        const safe = nearestLand(sim.world, u.x, u.z);
-        if (safe) {
-          u.x = safe.x;
-          u.z = safe.z;
-        }
-        if (keep && dest) this.repathKeepJob(sim, u, dest);
-        else {
-          u.path = [];
-          u.pathI = 0;
+        // v0.39 水里不救援：旧实现只要单位踩进非可走格就瞬时 nearestLand 弹回岸边，
+        // 于是 HazardSystem 的溺水伤害只来得及秃 1/60 秒（≈0.07）——观感就是“水面没伤害”，
+        // 加上鬼影分支能跨水行走，才有了用户看到的“敌人从水里穿过来、水面造成不了伤害”。
+        // 区分两种非可走：**真的沉到水面以下**（h ≤ WATER）→ 交给溺水机制；
+        // 卡在房基/树里 / 站在海岸边（格心在干地、只是某角在水下）→ 仍按旧规则弹回可走格。
+        if (sim.world.heightAt(u.x, u.z) > WATER) {
+          const dest = this.goalCell(sim, u);
+          const keep = !!(dest && (u.path.length || u.job === "move" || u.moveX >= 0 || u.targetId || u.settleX >= 0));
+          const safe = nearestLand(sim.world, u.x, u.z);
+          if (safe) {
+            u.x = safe.x;
+            u.z = safe.z;
+          }
+          if (keep && dest) this.repathKeepJob(sim, u, dest);
+          else {
+            u.path = [];
+            u.pathI = 0;
+          }
         }
       }
       for (const b of sim.buildings) {
