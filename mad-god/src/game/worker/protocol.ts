@@ -58,7 +58,9 @@ export type MainCmd =
   | { t: "sail"; ids: number[]; x: number; z: number }
   | { t: "disembark"; ids: number[] }
   /** v0.29c-2 右键自家未完工工地 = sim.assignBuilders(BLUE, buildingById(targetId))（game.ts secondary）。 */
-  | { t: "assignBuilders"; targetId: number };
+  | { t: "assignBuilders"; targetId: number }
+  /** v0.40 右键自家破损建筑 = sim.orderRepair(BLUE, targetId)（orderMove 破损分支内联）。 */
+  | { t: "orderRepair"; targetId: number };
 
 /** 初始/重开后的世界全量（数据字段 + sim 初始实体）。字段枚举依据：主线程对 world 的读点
  * （render.ts 地形网格/沼泽/岩浆/焦土/熔岩流、ui.ts drawMini、game.ts logWorld）——方法都是

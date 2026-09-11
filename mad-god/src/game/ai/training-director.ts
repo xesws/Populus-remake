@@ -17,7 +17,7 @@
 
 import { LogLevel, logger } from "../logger";
 import type { Sim } from "../sim";
-import { BuildingKind, CAMP_FOR, houseMaxPop, POP_CAP, RED, Team, TrainKind, Unit } from "../types";
+import { BuildingKind, CAMP_FOR, houseMaxPop, POP_CAP, RED, REPAIR_CREW_MAX, Team, TrainKind, Unit } from "../types";
 import { ArmyPolicy } from "./army-policy";
 import type { AIProfile } from "./ai-profile";
 import type { ITrainingDirector } from "./types";
@@ -135,6 +135,7 @@ export class TrainingDirector implements ITrainingDirector {
     this.acc = 0;
     this.watchdogFounders(sim);
     this.maintainCamps(sim);
+    this.maintainRepairs(sim);
     this.tryTrain(sim);
   }
 
@@ -195,8 +196,39 @@ export class TrainingDirector implements ITrainingDirector {
     }
   }
 
-  private requestCamp(sim: Sim, kind: BuildingKind): void {
-    const founder = this.pickFounder(sim);
+  /**
+   * v0.40 红方自修：自家破损 L1 建筑无人修时派自由村民（户外空闲优先，不动住户/建营者/在训/在修），
+   * 走 sim.assignRepairers 同款身份（砍柴→扛木→开修全自动，木料规则与玩家完全一致）。
+   * 玩家不管、AI 不管就永远瘸着——破损停机后这是必备补偿，否则红方被拆一座营就少一座营。
+   */
+  private maintainRepairs(sim: Sim): void {
+    for (const b of sim.buildings) {
+      if (b.team !== this.team || b.level < 1 || b.hp <= 0 || !b.shell) continue;
+      const crew = sim.units.filter((u) => u.job === "repair" && u.repairId === b.id && u.hp > 0).length;
+      if (crew >= REPAIR_CREW_MAX) continue;
+      const hands = sim.units
+        .filter(
+          (u) =>
+            u.team === this.team &&
+            u.kind === "walker" &&
+            u.hp > 0 &&
+            u.homeId === 0 &&
+            u.carry === 0 &&
+            u.foundKind === null &&
+            u.targetId === 0 &&
+            u.job !== "train" &&
+            u.job !== "repair" &&
+            !sim.inSwamp(u),
+        )
+        .sort((a, c) => (a.x - b.x) ** 2 + (a.z - b.z) ** 2 - ((c.x - b.x) ** 2 + (c.z - b.z) ** 2))
+        .slice(0, REPAIR_CREW_MAX - crew);
+      if (!hands.length) continue;
+      const n = sim.assignRepairers(this.team, b, hands);
+      if (n > 0) logger.info("ai-train", `派 ${n} 名村民修理${b.kind}#${b.id}`, { team: this.team });
+    }
+  }
+
+  private requestCamp(sim: Sim, kind: BuildingKind): void {    const founder = this.pickFounder(sim);
     if (!founder) {
       logger.throttled("ai-train:no-founder", 2000, LogLevel.Warn, "ai-train", `缺 ${kind} 但无可用建营者`, {
         team: this.team,
@@ -216,7 +248,7 @@ export class TrainingDirector implements ITrainingDirector {
    * 再无户外则 leaveBuilding 一名茅屋住户。
    */
   private pickFounder(sim: Sim): Unit | null {
-    const busy = (u: Unit) => u.job === "train" || u.job === "haul" || u.job === "chop";
+    const busy = (u: Unit) => u.job === "train" || u.job === "haul" || u.job === "chop" || u.job === "repair";
     const outdoorIdle = sim.units.find(
       (u) =>
         u.team === this.team &&

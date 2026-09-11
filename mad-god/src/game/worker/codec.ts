@@ -83,7 +83,7 @@ export const UNIT_KINDS: readonly UnitKind[] = [
   // v0.32 战船：只许末尾追加（跨端序号必须稳定）。
   "boat",
 ];
-export const JOBS: readonly Job[] = ["idle", "chop", "haul", "train", "move"];
+export const JOBS: readonly Job[] = ["idle", "chop", "haul", "train", "move", "repair"];
 export const TRAIN_KINDS: readonly TrainKind[] = ["warrior", "preacher", "firewarrior", "spy"];
 const DISGUISE_NONE = 255;
 const TRAIN_NONE = 255;
@@ -126,8 +126,10 @@ export const UF = {
   str: 24,
   /** v0.29c-2 训练排队序号（trainQueue 按 channelId 排序，镜像上复刻训练队列渲染要读）。 */
   channelId: 25,
+  /** v0.40 攻击冷却（render.syncUnits 播挥砍/蓄力动画要读；旧快照无此槽，解码缺省 0）。 */
+  atkCd: 26,
 } as const;
-export const UF_N = 26;
+export const UF_N = 27;
 
 /** Unit 的 Uint8 槽位（枚举型字段）。 */
 export const UU = {
@@ -213,6 +215,7 @@ const UNIT_DEFAULTS: Record<string, unknown> = {
   downDmg: 0,
   flyKill: false,
   buildId: 0,
+  repairId: 0, // v0.40 修理目标建筑 id（快照不传，镜像端不读；与 entities/unit.ts 初始化器对齐）
   climbX: 0,
   climbY: 0,
   climbZ: 0,
@@ -475,6 +478,7 @@ export function encodeUnitSoA(units: Unit[]): { f32: Float32Array; u8: Uint8Arra
     f32[fo + UF.pathLen] = u.path.length;
     f32[fo + UF.str] = u.str;
     f32[fo + UF.channelId] = u.channelId;
+    f32[fo + UF.atkCd] = u.atkCd;
     u8[uo + UU.kind] = kindIdx.get(u.kind)!;
     u8[uo + UU.team] = u.team;
     u8[uo + UU.disguise] = u.disguise === null ? DISGUISE_NONE : u.disguise;
@@ -735,6 +739,7 @@ function applyUnits(mirror: SimMirror, f32: Float32Array, u8: Uint8Array): void 
     (u as unknown as { pathLen: number }).pathLen = f32[fo + UF.pathLen]!;
     u.str = f32[fo + UF.str]!;
     u.channelId = f32[fo + UF.channelId]!;
+    u.atkCd = f32[fo + UF.atkCd] ?? 0;
     u.kind = kind;
     u.team = u8[uo + UU.team]! as Owner;
     const dg = u8[uo + UU.disguise]!;

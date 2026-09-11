@@ -53,6 +53,9 @@ import {
   FIREBALL_IMPACT_DMG,
   FIREBALL_IMPACT_R,
   POP_CAP,
+  REPAIR_CREW_MAX,
+  REPAIR_HP_PER_SEC,
+  REPAIR_WOOD_SECONDS,
   TOWER_GARRISON_MAX,
   TOWER_CLIMB_T,
   FIREBALL_BURN_DPS,
@@ -724,6 +727,8 @@ export class Sim {
     u.atkId = 0;
     u.channel = 0;
     u.channelId = 0;
+    // v0.40 修理是“指令级”身份（不像 buildId 粘性）：任何新指令都让修理工卸任。
+    u.repairId = 0;
     u.trainKind = null;
     u.settleX = -1;
     u.settleZ = -1;
@@ -779,6 +784,11 @@ export class Sim {
       if (u.homeId > 0) this.leaveBuilding(u, "（玩家下令走出）");
     }
     const b = this.buildingAt(x, z);
+    // v0.40 修理优先于一切入住/训练/驻扎：点自家破损建筑 = 派修（选中里有村民才接单）。
+    if (b && b.team === team && b.hp > 0 && b.level >= 1 && b.shell) {
+      this.orderRepair(team, b.id);
+      return;
+    }
     if (b && b.team === team && b.hp > 0 && b.level >= 1 && b.kind === "hut") {
       let sent = 0;
       for (const u of selected) {
@@ -988,6 +998,147 @@ export class Sim {
       assigned++;
     }
     return assigned;
+  }
+
+  /**
+   * v0.40 修理指派（玩家右键破损建筑 / AI 派修共用，见 orderRepair 与 TrainingDirector.maintainRepairs）。
+   * 与建房对称但走独立身份（repairId + job repair）：没木先去砍（advanceRepair 内自带砍树链路），
+   * 扛木到场开修；1 捆木 = REPAIR_WOOD_SECONDS 修理工时，耗尽再砍；满血清骨架、全员卸任。
+   * 名额 REPAIR_CREW_MAX：已满则一个不加（多派也是站着看，还分薄别处劳力）。
+   */
+  assignRepairers(team: Team, site: Building, walkers: Unit[]): number {
+    if (site.hp <= 0 || site.level < 1 || !site.shell || site.team !== team) return 0;
+    const crew = this.units.filter((o) => o.job === "repair" && o.repairId === site.id && o.hp > 0).length;
+    let assigned = 0;
+    for (const u of walkers) {
+      if (u.kind !== "walker" || u.hp <= 0 || u.homeId > 0) continue;
+      if (crew + assigned >= REPAIR_CREW_MAX) break;
+      // sendMove 先走（它会清 targetId/repairId 并挂 job move），身份在后面重挂。
+      const edge = this.padEdge(site.x, site.z, site.padW, site.padD, site.yaw, u.x, u.z);
+      this.sendMove(u, edge.x, edge.z);
+      u.targetId = site.id;
+      u.repairId = site.id;
+      u.job = "repair";
+      u.atkId = 0;
+      u.channel = 0;
+      u.think = 0; // 指派即干活（sendMove 默认 think=40 罚站，修理工不等）
+      assigned++;
+    }
+    return assigned;
+  }
+
+  /**
+   * v0.40 修理下单（玩家指令面 + worker 协议面，与 assignBuilders 同构）：
+   * 对当前选中村民指派，返回实际人数（0 = 选中里没村民可派，game 层据此提示）。
+   */
+  orderRepair(team: Team, buildingId: number): number {
+    const site = this.buildingById(buildingId);
+    if (!site) return 0;
+    const n = this.assignRepairers(team, site, this.selectedOf(team));
+    if (team === BLUE) this.toast(n > 0 ? "前往修理" : "先选中村民");
+    return n;
+  }
+
+  /**
+   * v0.40 修理推进（advanceWalker 内 job repair 分支，advanceTrain 同款地位）：
+   * 扛木→到场→读条回血→耗尽再砍；targetId 在“建筑↔树”之间切换，repairId 始终认房。
+   * 任何时刻房子修好/没了/易主 → 当场卸任并让出（返回 false 回归正常分派）。
+   */
+  advanceRepair(u: Unit, dt: number): boolean {
+    const site = this.buildingById(u.repairId);
+    if (
+      u.kind !== "walker" || u.homeId > 0 ||
+      !site || site.team !== u.team || site.hp <= 0 || site.level < 1 || !site.shell
+    ) {
+      if (u.job === "repair") {
+        u.job = "idle";
+        u.targetId = 0;
+        u.channel = 0;
+      }
+      u.repairId = 0;
+      return false;
+    }
+    const rim = this.padEdge(site.x, site.z, site.padW, site.padD, site.yaw, u.x, u.z);
+    // 到场口径与建房/入住同款（沿边 1.6 / 临心 2.6 任一即算到）。
+    const arrived =
+      dist2(u.x, u.z, rim.x, rim.z) <= 1.6 || dist2(u.x, u.z, site.x, site.z) <= 2.6;
+    if (u.carry === 1) {
+      u.targetId = site.id;
+      if (!arrived) {
+        if (!u.path.length) {
+          const dest = this.world.walkableAt(rim.x, rim.z) ? rim : nearestLand(this.world, rim.x, rim.z);
+          if (dest) {
+            u.path = astar(this.world, u.x, u.z, dest.x, dest.z);
+            u.pathI = 0;
+          }
+        }
+        return true;
+      }
+      u.path = [];
+      u.pathI = 0;
+      u.yaw = Math.atan2(site.x - u.x, site.z - u.z);
+      u.channel += dt;
+      site.hp = Math.min(site.maxHp, site.hp + REPAIR_HP_PER_SEC * dt);
+      if (site.hp >= site.maxHp) {
+        site.shell = false;
+        for (const o of this.units) {
+          if (o.repairId !== site.id) continue;
+          o.job = "idle";
+          o.targetId = 0;
+          o.channel = 0;
+          o.repairId = 0;
+        }
+        if (site.team === BLUE) this.toast("修复完成");
+        logger.info("produce", `建筑#${site.id}(${site.kind}) 修复完成`, { team: site.team });
+        return true;
+      }
+      // 一捆木的工时用完 → 卸木（视觉上木头钉上去了），再去砍。
+      if (u.channel >= REPAIR_WOOD_SECONDS) {
+        u.channel = 0;
+        u.carry = 0;
+      }
+      return true;
+    }
+    // 没木：砍一捆回来（targetId 暂借给树，repairId 认房，修理工身份不断）。
+    let tree: Tree | null | undefined = this.trees.find((t) => t.id === u.targetId);
+    if (!tree || !tree.alive) {
+      tree = this.nearestTree(u.x, u.z);
+      if (!tree) return true; // 满地没树：原地等（极罕见，不改身份）
+      u.targetId = tree.id;
+      u.channel = 0;
+      const dest = this.treeRim(tree, u.x, u.z);
+      if (dest) {
+        u.path = astar(this.world, u.x, u.z, dest.x, dest.z);
+        u.pathI = 0;
+      }
+      return true;
+    }
+    if (dist2(u.x, u.z, tree.x, tree.z) > 0.95) {
+      if (!u.path.length) {
+        const dest = this.treeRim(tree, u.x, u.z);
+        if (dest) {
+          u.path = astar(this.world, u.x, u.z, dest.x, dest.z);
+          u.pathI = 0;
+        }
+      }
+      return true;
+    }
+    u.path = [];
+    u.pathI = 0;
+    u.channel += dt;
+    if (u.channel >= CHOP_TIME) {
+      u.channel = 0;
+      u.carry = 1;
+      tree.alive = false;
+      tree.regen = TREE_REGEN;
+      u.targetId = site.id;
+      const dest = this.world.walkableAt(rim.x, rim.z) ? rim : nearestLand(this.world, rim.x, rim.z);
+      if (dest) {
+        u.path = astar(this.world, u.x, u.z, dest.x, dest.z);
+        u.pathI = 0;
+      }
+    }
+    return true;
   }
 
   setOrder(team: Team, order: Order): void {
@@ -1303,6 +1454,12 @@ export class Sim {
         this.advanceTrain(u, dt);
         continue;
       }
+      // v0.40 修理走 train 同款独立分支（advanceWalker 返回 true 会被清 path，
+      // 在途行走的修理工必须绕过那条——train 也是这么绕的，见上）。
+      if (u.job === "repair") {
+        this.advanceRepair(u, dt);
+        continue;
+      }
       if (u.job === "move") {
         if (u.order === "fight" && u.atkId) {
           if (!u.path.length || u.think <= 0) this.chaseAttack(u);
@@ -1506,7 +1663,7 @@ export class Sim {
   tryGarrison(u: Unit): boolean {
     if (u.kind !== "firewarrior" || u.homeId > 0 || !u.targetId) return false;
     const t = this.buildingById(u.targetId);
-    if (!t || t.kind !== "tower" || t.hp <= 0 || t.level < 1 || t.team !== u.team) return false;
+    if (!t || t.kind !== "tower" || t.hp <= 0 || t.level < 1 || t.shell || t.team !== u.team) return false;
     if (this.towerGarrison(t).length >= TOWER_GARRISON_MAX) return false; // 塔满（容量 3）
     if (dist2(u.x, u.z, t.x, t.z) > 2.6 * 2.6) return false;
     u.homeId = t.id;
@@ -1889,6 +2046,7 @@ export class Sim {
         hut.kind === "hut" &&
         hut.level >= 1 &&
         hut.hp > 0 &&
+        !hut.shell && // v0.40 破损停机：骨架屋门口不再傻等（tryOccupy 不收，修好再来）
         hut.team === u.team &&
         hut.dwell < houseMaxPop(hut.level)
       ) {
@@ -2228,7 +2386,8 @@ export class Sim {
       if (t.hasShaman) continue;
       t.shamanRevive -= dt;
       if (t.shamanRevive > 0) continue;
-      const rebirth = this.buildings.find((b) => b.team === team && b.kind === "rebirth" && b.hp > 0);
+      // v0.40 破损停机：进骨架的再生点不再复活祭司（退到最近茅屋，同旧无再生点语义）。
+      const rebirth = this.buildings.find((b) => b.team === team && b.kind === "rebirth" && b.hp > 0 && !b.shell);
       const home = rebirth ?? this.nearestHouse(team, t.magnetX, t.magnetZ);
       const s = this.world.startPad(team);
       let x = s.x;

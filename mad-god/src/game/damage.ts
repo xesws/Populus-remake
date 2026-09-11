@@ -35,6 +35,8 @@ export function applyBuildingDamage(sim: Sim, b: Building, dmg: number): void {
   if (!b.shell && b.level >= 1 && b.hp - dmg <= 0) {
     b.shell = true;
     b.hp = Math.max(1, b.maxHp * 0.4);
+    // v0.40 破损停机：哨塔进骨架瞬间弹出驻军（塌了一半的瞭望台站不住人；茅屋/船屋里的人继续避难）。
+    if (b.kind === "tower") sim.ejectTower(b, "（哨塔被拆）");
     if (b.team === BLUE && (b.kind === "hut" || isCampKind(b.kind) || b.kind === "boathouse")) sim.toast("一座屋宇被拆成骨架");
     return;
   }

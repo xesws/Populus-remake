@@ -293,7 +293,8 @@ export class CombatSystem implements ISystem {
     const scan = this.towerAcc >= 0.2;
     if (scan) this.towerAcc = 0;
     for (const b of sim.buildings) {
-      if (b.kind !== "tower" || b.hp <= 0 || b.level < 1) continue;
+      // v0.40 破损停机：进骨架的哨塔全体哑火（塔上的人已在破损瞬间弹出，见 damage.ts）。
+      if (b.kind !== "tower" || b.hp <= 0 || b.level < 1 || b.shell) continue;
       // v0.28e 容量 3：塔上每名牛战士各自独立冷却/索敌/开火（塔 = 多炮位炮台）。
       // 爬塔中（enterT>0）的不开火。
       for (const g of sim.towerGarrison(b)) {

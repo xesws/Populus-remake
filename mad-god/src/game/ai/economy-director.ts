@@ -58,11 +58,13 @@ export class EconomyDirector implements IEconomyDirector {
         // 否则训练营工地永远没人起（旧实现 here 被吸走 + occupy 不清 foundKind 双重锁死）。
         u.foundKind === null &&
         u.job !== "train" &&
-        u.job !== "move",
+        u.job !== "move" &&
+        u.job !== "repair", // v0.40 修理工不拉去入住（修一半被吸进屋，营永远修不好）
     );
     if (!free.length) return;
+    // v0.40 破损停机：骨架茅屋不收新人（tryOccupy 会拒绝，指过去也是门口傻等）。
     const huts = sim.buildings.filter(
-      (b) => b.team === this.team && b.kind === "hut" && b.level >= 1 && b.hp > 0 && this.freeSpots(sim, b) > 0,
+      (b) => b.team === this.team && b.kind === "hut" && b.level >= 1 && b.hp > 0 && !b.shell && this.freeSpots(sim, b) > 0,
     );
     if (!huts.length) return;
     // v0.38 劳动力保底：人口已到分队上限时茅屋本就在停产边缘（dwellers 产不出新生儿），

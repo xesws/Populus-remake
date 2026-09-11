@@ -67,7 +67,8 @@ export class ProductionSystem implements ISystem {
    */
   arrangeDwellers(sim: Sim): void {
     for (const b of sim.buildings) {
-      if (b.hp <= 0 || b.level < 1) continue;
+      // v0.40 破损停机：骨架屋里的人躲在里面不露头（屋顶/甲板/塔顶站位全部隐藏，修好再出来）。
+      if (b.hp <= 0 || b.level < 1 || b.shell) continue;
       if (b.kind === "hut") {
         const lv = b.level >= 3 ? 3 : b.level;
         let i = 0;
@@ -244,7 +245,8 @@ export class ProductionSystem implements ISystem {
     }
     this.watchdogSites(sim);
     for (const b of sim.buildings) {
-      if (b.hp <= 0 || b.kind !== "hut" || b.level < 1) continue;
+      // v0.40 破损停机：进骨架的茅屋立即停止升级与生产（修好才恢复）。
+      if (b.hp <= 0 || b.kind !== "hut" || b.level < 1 || b.shell) continue;
       if (b.wantLevel > b.level) {
         if (b.level === 1) this.upgradeBuilding(sim, b, 2);
         else if (b.level === 2) this.upgradeBuilding(sim, b, 3);
@@ -314,7 +316,8 @@ export class ProductionSystem implements ISystem {
     // v0.32 船屋产船：住满 BOATHOUSE_DWELL 才涨进度（住不满一动不动），BOAT_BUILD_T 秒一条；
     // 同屋存活达 BOATHOUSE_FLEET_CAP 只暂停（进度保留，沉一补一）；下水点找不到同样等待。
     for (const b of sim.buildings) {
-      if (b.hp <= 0 || b.kind !== "boathouse" || b.level < 1) continue;
+      // v0.40 破损停机：进骨架的船屋暂停造船（进度保留，修好续产）。
+      if (b.hp <= 0 || b.kind !== "boathouse" || b.level < 1 || b.shell) continue;
       const bh = b as Boathouse;
       // 懒清理：沉没/被拆的船腾出名额（unitById 只认活船）。
       bh.producedBoatIds = bh.producedBoatIds.filter((id) => {
@@ -442,7 +445,7 @@ export class ProductionSystem implements ISystem {
   occupy(sim: Sim, u: Unit, hut: Building): boolean {
     if (u.kind !== "walker" || u.homeId > 0) return false;
     // v0.32 船屋同款入住（只收村民，住满 BOATHOUSE_DWELL 开工造船，无升级链）。
-    if ((hut.kind !== "hut" && hut.kind !== "boathouse") || hut.level < 1 || hut.hp <= 0) return false;
+    if ((hut.kind !== "hut" && hut.kind !== "boathouse") || hut.level < 1 || hut.hp <= 0 || hut.shell) return false;
     if (hut.team !== u.team) return false;
     const cap = hut.kind === "boathouse" ? BOATHOUSE_DWELL : houseMaxPop(hut.level);
     if (hut.dwell >= cap) return false;
@@ -454,6 +457,7 @@ export class ProductionSystem implements ISystem {
     u.job = "idle";
     u.think = 99;
     u.targetId = 0;
+    u.repairId = 0; // v0.40 住进屋就不再是修理工（房子若被别人先修好，门口等的人直接入住）
     u.atkId = 0;
     u.carry = 0;
     u.channel = 0;
@@ -478,7 +482,8 @@ export class ProductionSystem implements ISystem {
     if (u.kind !== "walker" || u.homeId > 0 || !u.targetId) return false;
     const hut = sim.buildingById(u.targetId);
     // v0.32 船屋同款到站入住（orderMove 船屋分支把 targetId 指向船屋）。
-    if (!hut || (hut.kind !== "hut" && hut.kind !== "boathouse") || hut.level < 1 || hut.hp <= 0 || hut.team !== u.team)
+    // v0.40 破损停机：骨架屋不再收新住户（里面的人继续避难，但不生产）。
+    if (!hut || (hut.kind !== "hut" && hut.kind !== "boathouse") || hut.level < 1 || hut.hp <= 0 || hut.shell || hut.team !== u.team)
       return false;
     const door = sim.hutDoor(hut);
     const d2 = (u.x - door.x) ** 2 + (u.z - door.z) ** 2;

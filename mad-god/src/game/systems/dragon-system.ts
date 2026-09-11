@@ -79,7 +79,8 @@ export class DragonSystem implements ISystem {
   private tickFactories(sim: Sim, dt: number): void {
     if (sim.freezeProd) return; // 与茅屋 produce() 同规：导演摆拍冻结期不生产
     for (const b of sim.buildings) {
-      if (b.kind !== "dragonFactory" || b.hp <= 0 || b.level < 1) continue;
+      // v0.40 破损停机：进骨架的工厂暂停孵龙（进度保留，修好续孵）。
+      if (b.kind !== "dragonFactory" || b.hp <= 0 || b.level < 1 || b.shell) continue;
       if (b.dwell < DRAGON_GARRISON_MAX) continue;
       b.prod += dt / DRAGON_PROD_T;
       if (b.prod >= 1) this.completeProduction(sim, b);
@@ -106,7 +107,8 @@ export class DragonSystem implements ISystem {
   tryEnterFactory(sim: Sim, u: Unit): boolean {
     if (u.kind !== "firewarrior" || u.homeId > 0 || !u.targetId) return false;
     const f = sim.buildingById(u.targetId);
-    if (!f || f.kind !== "dragonFactory" || f.hp <= 0 || f.level < 1 || f.team !== u.team) return false;
+    // v0.40 破损停机：骨架工厂不收新驻员（门口的人继续等，修好即进）。
+    if (!f || f.kind !== "dragonFactory" || f.hp <= 0 || f.level < 1 || f.shell || f.team !== u.team) return false;
     if (f.dwell >= DRAGON_GARRISON_MAX) return false;
     if (dist2(u.x, u.z, f.x, f.z) > DRAGON_FACTORY_DOOR_REACH * DRAGON_FACTORY_DOOR_REACH) return false;
     u.homeId = f.id;

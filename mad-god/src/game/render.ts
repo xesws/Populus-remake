@@ -1,6 +1,6 @@
 import * as THREE from "three";
 import type { SimClient } from "./client/sim-client";
-import { BLUE, BOATHOUSE_DWELL, clamp, FIRE_DOWN_TIME, FxBolt, houseMaxPop, isCampKind, SAMPLES, SINK_T, STEP, Team, TRAIN_TIME, WATER, WORLD } from "./types";
+import { attackInterval, BLUE, BOATHOUSE_DWELL, clamp, FIRE_DOWN_TIME, FxBolt, houseMaxPop, isCampKind, SAMPLES, SINK_T, STEP, Team, TRAIN_TIME, WATER, WORLD } from "./types";
 import { World } from "./world";
 import { TornadoFX } from "./render-parts/tornado-fx";
 import { LavaFX } from "./render-parts/lava-fx";
@@ -124,6 +124,8 @@ export class View {
   sprayChunkMat = new THREE.MeshBasicMaterial({ color: 0xffaa44 });
 
   unitMeshes = new Map<number, THREE.Group>();
+  /** v0.40 行走推导：上一帧位置＋时刻（算速度→摆动/前倾；纯本地，不读 sim 快照之外的量）。 */
+  unitTrail = new Map<number, { x: number; z: number; t: number }>();
   houseMeshes = new Map<number, THREE.Group>();
   trainBars = new Map<number, THREE.Group>();
   prodBars = new Map<number, THREE.Group>();
@@ -637,8 +639,19 @@ export class View {
       hornR.rotation.z = -0.55;
       g.add(hornL, hornR);
       const fire = new THREE.MeshLambertMaterial({ color: 0xffaa44, emissive: 0xaa3300 });
-      this.box(g, 0.10, 0.10, 0.10, fire, -0.16, 0.28, 0.08);
-      this.box(g, 0.10, 0.10, 0.10, fire, 0.16, 0.28, 0.08);
+      // v0.40 蓄力喷射：双手火块命名（syncUnits 按 atkCd 窗口放大蓄力），胸前 muzzle 闪光平时隐藏。
+      const handL = this.box(g, 0.10, 0.10, 0.10, fire, -0.16, 0.28, 0.08);
+      handL.name = "handL";
+      const handR = this.box(g, 0.10, 0.10, 0.10, fire, 0.16, 0.28, 0.08);
+      handR.name = "handR";
+      const muzzle = new THREE.Mesh(
+        new THREE.BoxGeometry(0.16, 0.16, 0.16),
+        new THREE.MeshBasicMaterial({ color: 0xffee88 }),
+      );
+      muzzle.name = "muzzle";
+      muzzle.position.set(0, 0.3, 0.3);
+      muzzle.visible = false;
+      g.add(muzzle);
       return g;
     }
 
@@ -685,8 +698,14 @@ export class View {
       this.box(g, 0.03, 0.08, 0.08, light, -0.205, 0.305, -0.04);
       this.box(g, 0.03, 0.08, 0.08, light, -0.205, 0.215, 0.04);
       this.box(g, 0.03, 0.08, 0.08, teamMat, -0.205, 0.215, -0.04);
-      this.box(g, 0.035, 0.36, 0.035, metal, 0.18, 0.32, 0);
-      this.box(g, 0.07, 0.07, 0.07, skin, 0.16, 0.24, 0);
+      // v0.40 挥砍：剑臂成组（肩部枢轴 swordArm，syncUnits 按 atkCd 窗口播上举→下劈）。
+      // 原剑身/持剑手坐标整体平移进组（组原点在肩 (0.16,0.34,0)，组内坐标为相对值）。
+      const swordArm = new THREE.Group();
+      swordArm.name = "swordArm";
+      swordArm.position.set(0.16, 0.34, 0);
+      this.box(swordArm, 0.035, 0.36, 0.035, metal, 0.02, -0.02, 0);
+      this.box(swordArm, 0.07, 0.07, 0.07, skin, 0, -0.1, 0);
+      g.add(swordArm);
       return g;
     }
 
@@ -791,6 +810,14 @@ export class View {
     this.box(g, 0.14, 0.14, 0.14, skin, 0, 0.34, 0);
     this.box(g, 0.18, 0.05, 0.18, teamMat, 0, 0.435, 0);
     this.box(g, 0.02, 0.16, 0.14, teamMat, 0, 0.375, -0.095);
+    // v0.40 修理：锤子成组（平时隐藏，job repair 时可见敲打；木料沿用既有 woodpack）。
+    const hammer = new THREE.Group();
+    hammer.name = "hammer";
+    hammer.position.set(0.2, 0.3, 0.05);
+    hammer.visible = false;
+    this.box(hammer, 0.04, 0.3, 0.04, new THREE.MeshLambertMaterial({ color: 0x8a6a28 }), 0, 0.1, 0);
+    this.box(hammer, 0.12, 0.08, 0.08, new THREE.MeshLambertMaterial({ color: 0x555560 }), 0, 0.28, 0);
+    g.add(hammer);
     return g;
   }
 
@@ -819,9 +846,23 @@ export class View {
         this.unitMeshes.set(u.id, g);
         this.unitGroup.add(g);
       }
-      const bob = Math.abs(Math.sin(this.t * 8 + u.phase)) * 0.03;
+      // v0.40 行走：速度本地推导（上一帧位移/渲染时钟），移动时摆动加大＋前倾＋左右晃；
+      // 静止恢复旧小摆动。不读 sim 速度场——快照里没有，本地推导与旧 bob 同口径。
+      const trail = this.unitTrail.get(u.id);
+      let spd = 0;
+      if (trail && this.t > trail.t) {
+        const dt = Math.min(0.5, this.t - trail.t);
+        spd = Math.hypot(u.x - trail.x, u.z - trail.z) / Math.max(1e-3, dt);
+      }
+      this.unitTrail.set(u.id, { x: u.x, z: u.z, t: this.t });
+      const moving = spd > 0.5 && u.kind !== "boat";
+      const bob = Math.abs(Math.sin(this.t * (moving ? 11 : 8) + u.phase)) * (moving ? 0.055 : 0.03);
       g.position.set(u.x, u.y + bob, u.z);
       g.rotation.y = u.yaw;
+      // 前倾：船/倒地/大龙不管，只给地面步行者（rotation.x 此前地面单位未用过）。
+      if (u.kind !== "boat" && u.kind !== "dragon" && u.downT <= 0) {
+        g.rotation.x = moving ? Math.min(0.22, spd * 0.05) : 0;
+      }
       // v0.32 沉没动画（主线程/镜像通用：按“hp≤0 且仍在场”本地计时推导进度，
       // 不依赖 sinkT 快照；首次看到即 spawn 白色涟漪，见 syncSinkRipples）。
       if (u.kind === "boat") {
@@ -844,6 +885,9 @@ export class View {
       if (u.downT > 0) {
         const f = Math.min(1, Math.min(u.downT, FIRE_DOWN_TIME - u.downT) / 0.2);
         g.rotation.z = f * 1.4;
+      } else if (moving && u.kind !== "boat" && u.kind !== "dragon") {
+        // v0.40 行走左右晃（倒地分支拥有 rotation.z 时不动，静止回零）。
+        g.rotation.z = Math.sin(this.t * 11 + u.phase) * 0.055;
       } else if (g.rotation.z !== 0) {
         g.rotation.z = 0;
       }
@@ -860,6 +904,52 @@ export class View {
           shadow.position.y = gy - (u.y + bob) + 0.04;
           const k = THREE.MathUtils.clamp(1.25 - (u.y - gy) * 0.16, 0.55, 1.15);
           shadow.scale.setScalar(k);
+        }
+      }
+      // v0.40 挥砍（武士）：atkCd 从满值回落的前 0.35s 播下劈→回位（与 combat 落刀同沿，无沿检测，丢帧也自洽）。
+      if (u.kind === "warrior") {
+        const arm = g.getObjectByName("swordArm");
+        if (arm) {
+          const since = attackInterval("warrior") - u.atkCd;
+          if (u.atkCd > 0 && since >= 0 && since < 0.35) {
+            const f = 1 - (1 - since / 0.35) ** 3; // easeOut：落刀位→回正
+            arm.rotation.x = 0.9 * (1 - f);
+          } else if (arm.rotation.x !== 0) {
+            arm.rotation.x = 0;
+          }
+        }
+      }
+      // v0.40 蓄力喷射（牛战士）：开火前 0.6s 双手聚气放大，开火瞬间 muzzle 闪＋后座。
+      if (u.kind === "firewarrior") {
+        const iv = attackInterval("firewarrior");
+        const since = iv - u.atkCd;
+        const charging = u.atkCd > 0 && u.atkCd < 0.6 && u.atkId !== 0;
+        for (const n of ["handL", "handR"] as const) {
+          const h = g.getObjectByName(n);
+          if (h) h.scale.setScalar(charging ? 1 + 0.45 * (1 - u.atkCd / 0.6) : 1);
+        }
+        const muzzle = g.getObjectByName("muzzle") as THREE.Mesh | undefined;
+        if (muzzle) {
+          const fired = u.atkCd > 0 && since >= 0 && since < 0.12;
+          muzzle.visible = fired;
+          if (fired) {
+            const s = 0.8 + Math.random() * 0.5;
+            muzzle.scale.set(s, s, s);
+          }
+        }
+        if (u.atkCd > 0 && since >= 0 && since < 0.18) g.rotation.x -= 0.12; // 后座（lean 之后叠）
+      }
+      // v0.40 修理（村民）：job repair 即亮锤子；贴到建筑边（3 格内）按节律敲打，路上垂着。
+      if (u.kind === "walker") {
+        const hammer = g.getObjectByName("hammer");
+        if (hammer) {
+          const onDuty = u.job === "repair";
+          hammer.visible = onDuty;
+          if (onDuty) {
+            const site = sim.buildingById(u.targetId);
+            const near = !!site && (u.x - site.x) ** 2 + (u.z - site.z) ** 2 < 9;
+            hammer.rotation.x = near ? Math.sin(this.t * 10 + u.phase) * 0.7 - 0.3 : 0.35;
+          }
         }
       }
       let pack = g.getObjectByName("woodpack") as THREE.Mesh | undefined;
@@ -893,6 +983,7 @@ export class View {
     for (const [id, g] of this.unitMeshes) {
       if (!live.has(id)) {
         this.unitGroup.remove(g);
+        this.unitTrail.delete(id); // v0.40 行走推导缓存同步清理
         this.unitMeshes.delete(id);
         this.sinkingBoats.delete(id); // v0.32 沉船被 cull 带走后清本地计时
       }
@@ -928,46 +1019,34 @@ export class View {
     const primary = this.teamPrimary(team);
     const teamMat = new THREE.MeshLambertMaterial({ color: primary });
 
-    if (shell && kind !== "rebirth" && level >= 1) {
-      const span = kind === "hut" ? 2.2 : 2.4; // v0.11a：骨架占地不再随等级扩大
-      const h = level >= 3 ? 1.35 : level === 2 ? 1.2 : 1.05; // 只许长高一点点
-      const half = span * 0.42;
-      const wood = new THREE.MeshLambertMaterial({ color: 0x6a4a22 });
-      const char = new THREE.MeshLambertMaterial({ color: 0x3a2a18 });
-      this.box(g, span * 0.72, 0.06, span * 0.72, char, 0, 0.03, 0);
-      for (const [sx, sz] of [
-        [-1, -1],
-        [1, -1],
-        [1, 1],
-        [-1, 1],
-      ] as const) {
-        this.box(g, 0.16, h, 0.16, wood, sx * half, h * 0.5, sz * half);
-      }
-      this.box(g, span * 0.84, 0.12, 0.12, wood, 0, h, half);
-      this.box(g, span * 0.84, 0.12, 0.12, wood, 0, h, -half);
-      this.box(g, 0.12, 0.12, span * 0.84, wood, half, h, 0);
-      this.box(g, 0.12, 0.12, span * 0.84, wood, -half, h, 0);
-      this.box(g, span * 0.84, 0.1, 0.1, wood, 0, h * 0.55, 0);
-      return g;
+    // v0.40 独立废墟：破损瞬间按种类换残骸造型（同地基 footprint，碰撞/寻路零影响；
+    // 修好切回完整模型由 syncHouses 的 shell 变化重建覆盖）。
+    if (shell && level >= 1) {
+      return this.makeRuin(g, team, kind, teamMat);
     }
 
     if (level <= 0) {
+      // v0.40 地基分级：土垫与脚手架按建筑占地缩放（sim 侧 sitePad 早已分级，视觉此前统一 2.5）。
+      // 小（哨塔 0.6）/ 中（茅屋 1.3）/ 大（训练营·船屋 2.6）/ 特大（龙厂 3.2），土垫各外放大一圈。
+      const span = kind === "tower" ? 0.85 : kind === "hut" ? 1.5 : kind === "dragonFactory" ? 3.35 : 2.75;
       const dirt = new THREE.MeshLambertMaterial({ color: 0x6a5530 });
       const log = new THREE.MeshLambertMaterial({ color: 0x8a5a28 });
-      this.box(g, 2.5, 0.07, 2.5, dirt, 0, 0.035, 0);
+      this.box(g, span, 0.07, span, dirt, 0, 0.035, 0);
       // v0.28i 渐进式建造：四角脚手架独立成组，syncHouses 每帧按 built/need 抬升 scale.y。
       const scaffold = new THREE.Group();
       scaffold.name = "scaffold";
+      const c = span / 2 - 0.15;
+      const rail = span - 0.4;
       for (const [x, z] of [
-        [-1.05, -1.05],
-        [1.05, -1.05],
-        [-1.05, 1.05],
-        [1.05, 1.05],
+        [-c, -c],
+        [c, -c],
+        [-c, c],
+        [c, c],
       ] as const) {
         this.box(scaffold, 0.08, 1.0, 0.08, log, x, 0.5, z);
       }
-      this.box(scaffold, 2.1, 0.07, 0.07, log, 0, 0.96, -1.05);
-      this.box(scaffold, 2.1, 0.07, 0.07, log, 0, 0.96, 1.05);
+      this.box(scaffold, rail, 0.07, 0.07, log, 0, 0.96, -c);
+      this.box(scaffold, rail, 0.07, 0.07, log, 0, 0.96, c);
       g.add(scaffold);
       this.addWoodStacks(g, wood);
       return g;
@@ -1130,6 +1209,150 @@ export class View {
     this.box(g, 0.2, 0.55, 0.2, new THREE.MeshLambertMaterial({ color: 0x6a4a28 }), 0.45, 1.95, 0.45);
     this.box(g, 0.4, 0.3, 0.05, teamMat, 0.55, 2.1, 0.45);
     this.box(g, 0.3, 0.7, 0.15, teamMat, 0, 0.35, 0.594);
+    return g;
+  }
+
+  /**
+   * v0.40 独立废墟：八种建筑各一套残骸造型。共同约束：① 不超出原地基 footprint
+   * （寻路/碰撞/占位零影响）；② 保留一处队色残片（远处可辨阵营）；③ 全静态，
+   * 破损瞬间的撒点特效沿用既有 spawnWreck。
+   */
+  makeRuin(g: THREE.Group, team: Team, kind: string, teamMat: THREE.Material): THREE.Group {
+    const char = new THREE.MeshLambertMaterial({ color: 0x2e2118 });
+    const wood = new THREE.MeshLambertMaterial({ color: 0x6a4a22 });
+    const stone = new THREE.MeshLambertMaterial({ color: 0x7a756a });
+    if (kind === "hut") {
+      // 茅屋：塌茅草（两块斜顶板）＋两根断柱＋ Cold 灶石圈。
+      this.box(g, 1.0, 0.06, 1.0, char, 0, 0.03, 0);
+      const r1 = this.box(g, 0.9, 0.08, 0.6, wood, -0.1, 0.28, 0.1);
+      r1.rotation.z = 0.28;
+      const r2 = this.box(g, 0.9, 0.08, 0.6, wood, 0.12, 0.22, -0.12);
+      r2.rotation.z = -0.22;
+      r2.rotation.y = 0.4;
+      this.box(g, 0.12, 0.7, 0.12, wood, -0.4, 0.35, -0.4);
+      const stump = this.box(g, 0.12, 0.35, 0.12, char, 0.42, 0.17, 0.38);
+      stump.rotation.z = -0.15;
+      for (let i = 0; i < 5; i++) {
+        const a = (i / 5) * Math.PI * 2;
+        this.box(g, 0.12, 0.1, 0.12, stone, Math.cos(a) * 0.3, 0.05, Math.sin(a) * 0.3);
+      }
+      this.box(g, 0.2, 0.16, 0.05, teamMat, 0, 0.12, 0.53);
+      return g;
+    }
+    if (kind === "warriorHut") {
+      // 武士营：折断的栅栏环＋倒下的兵器架＋断旗杆。
+      this.box(g, 2.2, 0.06, 2.2, char, 0, 0.03, 0);
+      for (let i = 0; i < 6; i++) {
+        const a = (i / 6) * Math.PI * 2 + 0.2;
+        const px = Math.cos(a) * 1.0;
+        const pz = Math.sin(a) * 1.0;
+        const h = i % 2 === 0 ? 0.7 : 0.35;
+        const p = this.box(g, 0.12, h, 0.12, wood, px, h / 2, pz);
+        if (i % 2 === 1) p.rotation.x = 0.3;
+      }
+      const rack = this.box(g, 0.08, 1.1, 0.08, wood, 0.3, 0.3, 0.2);
+      rack.rotation.z = 1.25;
+      this.box(g, 0.08, 0.5, 0.08, stone, 0.75, 0.25, -0.3);
+      this.box(g, 0.5, 0.2, 0.05, teamMat, -0.5, 0.12, 0.6);
+      return g;
+    }
+    if (kind === "temple") {
+      // 神庙：两根卧倒的断柱＋裂开的祭坛＋滚落的金球。
+      this.box(g, 2.3, 0.06, 2.3, char, 0, 0.03, 0);
+      const c1 = this.box(g, 0.3, 0.3, 1.6, stone, -0.4, 0.18, 0.2);
+      c1.rotation.y = 0.35;
+      const c2 = this.box(g, 0.3, 0.3, 1.1, stone, 0.55, 0.18, -0.4);
+      c2.rotation.y = -0.5;
+      this.box(g, 0.9, 0.25, 0.9, stone, 0, 0.16, 0.1);
+      const crack = this.box(g, 0.94, 0.26, 0.12, char, 0, 0.16, 0.1);
+      crack.rotation.y = 0.5;
+      this.box(g, 0.22, 0.22, 0.22, new THREE.MeshLambertMaterial({ color: 0xc9a227 }), 0.85, 0.11, 0.75);
+      this.box(g, 0.4, 0.3, 0.06, teamMat, -0.7, 0.15, 0.9);
+      return g;
+    }
+    if (kind === "fireHut") {
+      // 火营：劈开的窑膛（半穹＋碎石）＋熄火的烟囱（火光灭）。
+      this.box(g, 2.2, 0.06, 2.2, char, 0, 0.03, 0);
+      const dome = this.box(g, 1.4, 0.5, 1.2, new THREE.MeshLambertMaterial({ color: 0x7a4a32 }), -0.2, 0.25, 0);
+      dome.rotation.z = 0.18;
+      this.box(g, 0.7, 0.35, 0.6, char, 0.55, 0.17, 0.15);
+      this.box(g, 0.3, 0.3, 0.3, stone, -0.85, 0.15, 0.7);
+      this.box(g, 0.25, 0.25, 0.25, stone, 0.9, 0.12, -0.6);
+      const stack = this.box(g, 0.3, 0.7, 0.3, stone, 0.2, 0.3, -0.75);
+      stack.rotation.x = 0.9;
+      this.box(g, 0.3, 0.4, 0.06, teamMat, -0.9, 0.2, -0.5);
+      return g;
+    }
+    if (kind === "spyHut") {
+      // 间谍营：塌落的帐篷（两块相抵的斜板）＋折断的桅杆＋散落的黑布。
+      this.box(g, 2.0, 0.06, 2.0, char, 0, 0.03, 0);
+      const t1 = this.box(g, 1.6, 0.07, 1.2, new THREE.MeshLambertMaterial({ color: 0x2a2a30 }), -0.25, 0.4, 0);
+      t1.rotation.z = 0.5;
+      const t2 = this.box(g, 1.6, 0.07, 1.2, new THREE.MeshLambertMaterial({ color: 0x34343c }), 0.3, 0.38, 0.1);
+      t2.rotation.z = -0.45;
+      const mast = this.box(g, 0.07, 1.0, 0.07, wood, 0.7, 0.25, -0.5);
+      mast.rotation.z = 1.1;
+      this.box(g, 0.5, 0.08, 0.4, new THREE.MeshLambertMaterial({ color: 0x1a1a1e }), -0.6, 0.06, 0.7);
+      this.box(g, 0.35, 0.25, 0.05, teamMat, 0.1, 0.14, 0.95);
+      return g;
+    }
+    if (kind === "tower") {
+      // 哨塔：1 米的断柱茬＋倚柱的瞭望台碎板＋折断的塔尖（碎石不出柱基一圈，倒塌感靠斜板给）。
+      this.box(g, 0.7, 0.06, 0.7, char, 0, 0.03, 0);
+      this.box(g, 0.5, 0.9, 0.5, stone, 0, 0.51, 0);
+      this.box(g, 0.56, 0.18, 0.56, stone, 0.03, 1.0, -0.02);
+      const deck = this.box(g, 0.85, 0.1, 0.85, stone, 0.3, 0.45, 0);
+      deck.rotation.z = 1.0;
+      const tip = new THREE.Mesh(new THREE.ConeGeometry(0.3, 0.45, 4), teamMat);
+      tip.position.set(0.15, 0.12, 0.4);
+      tip.rotation.set(1.35, Math.PI / 4, 0);
+      g.add(tip);
+      this.box(g, 0.24, 0.4, 0.06, wood, 0.1, 0.2, 0.42);
+      this.box(g, 0.16, 0.14, 0.16, stone, -0.35, 0.07, 0.3);
+      return g;
+    }
+    if (kind === "dragonFactory") {
+      // 龙厂：拧转的框架梁＋坍落的烟囱＋散落的甲板。
+      this.box(g, 3.0, 0.06, 2.4, char, 0, 0.03, 0);
+      const b1 = this.box(g, 2.6, 0.18, 0.18, wood, -0.1, 0.5, 0.6);
+      b1.rotation.z = 0.22;
+      b1.rotation.y = 0.15;
+      const b2 = this.box(g, 0.18, 0.18, 2.2, wood, 0.8, 0.4, -0.2);
+      b2.rotation.x = -0.18;
+      this.box(g, 1.2, 0.5, 1.0, new THREE.MeshLambertMaterial({ color: 0x5a5450 }), -0.6, 0.25, -0.4);
+      const stack = this.box(g, 0.34, 0.8, 0.34, new THREE.MeshLambertMaterial({ color: 0x7a4432 }), 0.9, 0.25, -0.7);
+      stack.rotation.z = 1.2;
+      this.box(g, 0.8, 0.12, 0.6, new THREE.MeshLambertMaterial({ color: 0x3a3634 }), -0.2, 0.1, 0.9);
+      this.box(g, 0.4, 0.25, 0.05, teamMat, 1.2, 0.15, 0.9);
+      return g;
+    }
+    if (kind === "boathouse") {
+      // 船屋：断成两截的船体（前后错开）＋歪斜的码头板＋倒下的旗杆。
+      this.box(g, 2.2, 0.06, 2.6, char, 0, 0.03, 0);
+      const hull = new THREE.MeshLambertMaterial({ color: 0x6a4a28 });
+      const h1 = this.box(g, 0.7, 0.22, 0.9, hull, -0.25, 0.16, -0.6);
+      h1.rotation.y = 0.3;
+      const h2 = this.box(g, 0.7, 0.22, 0.8, hull, 0.3, 0.16, 0.65);
+      h2.rotation.y = -0.35;
+      const plank = this.box(g, 0.3, 0.06, 1.4, hull, -0.35, 0.12, 1.55);
+      plank.rotation.y = 0.25;
+      this.box(g, 0.5, 0.4, 0.5, wood, 0.5, 0.2, -0.5);
+      const pole = this.box(g, 0.06, 0.8, 0.06, hull, -0.8, 0.2, 0.9);
+      pole.rotation.z = 1.3;
+      this.box(g, 0.3, 0.18, 0.04, teamMat, -0.35, 0.1, 1.15);
+      return g;
+    }
+    // 重生点：裂开的石环（缺口＋倾倒的石块）＋熄灭的中央法阵。
+    for (let i = 0; i < 8; i++) {
+      if (i === 2) continue; // 缺口：被拆掉的那块
+      const a = (i / 8) * Math.PI * 2;
+      const tilt = i === 3 || i === 6 ? 0.35 : 0;
+      const s = this.box(g, 0.28, i === 3 || i === 6 ? 0.5 : 0.9, 0.18, stone, Math.cos(a) * 1.3, 0.45, Math.sin(a) * 1.3);
+      if (tilt) s.rotation.x = tilt;
+    }
+    this.box(g, 0.28, 0.5, 0.18, stone, 1.05, 0.2, 0.75); // 被拍进环内的断石
+    this.box(g, 1.4, 0.05, 1.4, char, 0, 0.03, 0);
+    this.box(g, 0.4, 0.12, 0.12, teamMat, 0, 0.08, 1.15);
     return g;
   }
 

@@ -400,8 +400,9 @@ export class WarDirector implements IWarDirector {
    */
   private tryGarrisonTowers(sim: Sim): void {
     if (this.army.dragonNeedsConscripts(sim, this.team)) return;
+    // v0.40 破损停机：骨架塔不算可用炮位（修好才回来）。
     const towers = sim.buildings.filter(
-      (b) => b.team === this.team && b.kind === "tower" && b.level >= 1 && b.hp > 0,
+      (b) => b.team === this.team && b.kind === "tower" && b.level >= 1 && b.hp > 0 && !b.shell,
     );
     if (!towers.length) return;
     for (const t of towers) {

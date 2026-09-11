@@ -20,6 +20,7 @@ export class TrainingSystem implements ISystem {
     u.job = "train";
     u.trainKind = kind;
     u.targetId = camp.id;
+    u.repairId = 0; // v0.40 训兵即卸任修理工（训练营门口不留兼职）
     u.atkId = 0;
     u.carry = 0;
     u.channel = 0;
@@ -116,7 +117,8 @@ export class TrainingSystem implements ISystem {
   }
 
   advanceTrain(sim: Sim, u: Unit, dt: number): boolean {
-    const camp = sim.buildings.find((b) => b.id === u.targetId && b.hp > 0 && b.level >= 1);
+    // v0.40 破损停机：营在训途中被打成骨架 → 当场释放排队者（修好后可重训）。
+    const camp = sim.buildings.find((b) => b.id === u.targetId && b.hp > 0 && b.level >= 1 && !b.shell);
     if (!camp || !u.trainKind) {
       u.job = "idle";
       u.trainKind = null;
@@ -216,6 +218,7 @@ export class TrainingSystem implements ISystem {
         u.targetId === 0 &&
         u.job !== "haul" &&
         u.job !== "chop" &&
+        u.job !== "repair" && // v0.40 修理工不征（修一半被拉去训兵，营永远修不好）
         !sim.inSwamp(u),
     );
   }
@@ -239,7 +242,8 @@ export class TrainingSystem implements ISystem {
       if (!walkers.length) return false;
     }
     const campKind = CAMP_FOR[kind];
-    const camps = sim.buildings.filter((b) => b.team === team && b.kind === campKind && b.level >= 1 && b.hp > 0);
+    // v0.40 破损停机：进骨架的营不接新兵（修好才恢复；已有排队者在 advanceTrain 侧释放）。
+    const camps = sim.buildings.filter((b) => b.team === team && b.kind === campKind && b.level >= 1 && b.hp > 0 && !b.shell);
     if (!camps.length) {
       if (team !== 0) {
         const t = sim.teams[team];
@@ -257,6 +261,15 @@ export class TrainingSystem implements ISystem {
             ?? walkers.find((u) => u.carry === 0 && u.targetId === 0 && !u.foundKind && u.job !== "train");
           if (idle) sim.assignCampFounder(idle, campKind);
         }
+      }
+      // v0.40 修理优先于重建：同类营只是被打成骨架就不另起新营（covered 已含骨架），
+      // 修理工/玩家修理把它救回来——否则每被拆一次就多一座营。
+      const damaged = sim.buildings.some(
+        (b) => b.team === team && b.kind === campKind && b.level >= 1 && b.hp > 0 && b.shell,
+      );
+      if (damaged) {
+        if (team === 0) sim.toast("先修理训练营");
+        return false;
       }
       sim.toast("先盖训练营");
       return false;

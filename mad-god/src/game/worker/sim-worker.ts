@@ -187,6 +187,12 @@ function handle(cmd: MainCmd): void {
       if (b) sim.assignBuilders(BLUE, b);
       return;
     }
+    // v0.40 右键自家破损建筑：worker 侧同 id 建筑指派修理（选中集走镜像同步，见 WorkerSimClient.orderRepair）。
+    case "orderRepair": {
+      if (!sim) return;
+      sim.orderRepair(BLUE, cmd.targetId);
+      return;
+    }
   }
 }
 

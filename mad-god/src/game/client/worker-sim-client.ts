@@ -412,6 +412,13 @@ export class WorkerSimClient implements SimClient {
     return n;
   }
 
+  /** v0.40 右键破损建筑指派修理（与 assignBuilders 同构：本地数人数，权威执行在 worker 侧）。 */
+  orderRepair(team: Team, buildingId: number): number {
+    const n = this.selectedOf(team).filter((u: Unit) => u.kind === "walker" && u.hp > 0).length;
+    this.post({ t: "orderRepair", targetId: buildingId });
+    return n;
+  }
+
   // 以下导演专用写接口在 worker 模式全部禁用（game.ts 入口已拦 ?shot=，这里是兜底）。
   private disabled(name: string): void {
     console.warn(`[worker-sim-client] ${name} 仅本地模式可用：导演回放/作弊流在 ?worker=1 下已禁用（v0.29c 已知限制）`);

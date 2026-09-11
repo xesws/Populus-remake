@@ -55,6 +55,9 @@ export abstract class Unit extends BaseEntity {
   flyKill = false;
   // v0.10 建工指派：assignBuilders 写入的在建工地 id；工地完工/损毁自动失效。蓝方待机豁免依赖它。
   buildId = 0;
+  // v0.40 修理目标：assignRepairers/orderRepair 写入的破损建筑 id（砍柴往返期间保持不变，
+  // targetId 在"建筑↔树"之间切换时靠它认回要修的房子）；修好/损毁/改派后清零。
+  repairId = 0;
   // v0.28e 爬塔动画：tryGarrison 记录的塔脚起点（tickEnter 按 enterT 线性爬到瞭望台）。
   climbX = 0;
   climbY = 0;

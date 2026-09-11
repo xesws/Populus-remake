@@ -67,6 +67,7 @@ export type SimClient = Pick<
   | "canFound"
   | "foundSite"
   | "assignBuilders"
+  | "orderRepair"
   | "tryPrepFound"
   | "placeComplete"
   | "markHouseBlocks"

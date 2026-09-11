@@ -46,7 +46,7 @@ export const TRAIN_COST: Record<TrainKind, number> = {
   spy: 30,
 };
 
-export type Job = "idle" | "chop" | "haul" | "train" | "move";
+export type Job = "idle" | "chop" | "haul" | "train" | "move" | "repair";
 
 export const CAMP_FOR: Record<TrainKind, BuildingKind> = {
   warrior: "warriorHut",
@@ -84,6 +84,11 @@ export const CHOP_TIME = 1.2;
 export const BUILD_RATE_BASE = 0.3;
 export const TRAIN_TIME = 4;
 export const TREE_REGEN = 25;
+// v0.40 修理：每名修理工每秒回血（多人叠加）；1 捆木支撑的修理工时（耗尽须再砍）；
+// 每座建筑同时开修的人数上限（再多的人去了也是站着看）。
+export const REPAIR_HP_PER_SEC = 6;
+export const REPAIR_WOOD_SECONDS = 8;
+export const REPAIR_CREW_MAX = 3;
 
 export function isSoldier(kind: UnitKind): boolean {
   return kind === "warrior" || kind === "preacher" || kind === "firewarrior";
