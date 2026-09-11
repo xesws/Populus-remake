@@ -160,6 +160,7 @@ export class TrainingSystem implements ISystem {
     u.channelId = 0;
     u.carry = 0;
     u.targetId = 0;
+    u.buildId = 0; // v0.38：buildId 已从 clearOrders 移出（建工身份粘性），训成士兵时显式卸任
     u.disguise = kind === "spy" ? null : u.disguise;
     // v0.28c 训成出营散开：旧实现只偏到门口旁 0.8 格，新兵堆在门口堵住训练排队。
     // 现在与茅屋出生同款：弹到营地外 2~3 格的开阔点（随机偏移避免连训的新兵叠同一点），

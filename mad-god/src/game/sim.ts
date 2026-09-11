@@ -715,7 +715,10 @@ export class Sim {
   private clearOrders(u: Unit): void {
     u.foundKind = null;
     u.targetId = 0;
-    u.buildId = 0;
+    // v0.38 buildId **不再**在这里清：建工是"身份"而不是"一次性指令"。
+    // 旧实现把 buildId 一并清掉 → 玩家任何一次右键走位 / setOrder / 聚集都会让建工集体辞职，
+    // 工地瞬间没人、永远停在半成品，而玩家只看到"房子死活建不起来"。
+    // 工地完工/被拆/易主时由 repathSettle 的 needsWood 检查自动卸任（见该处注释）。
     u.atkId = 0;
     u.channel = 0;
     u.channelId = 0;
@@ -960,9 +963,18 @@ export class Sim {
     if (sent && team === BLUE) this.toast(isB ? "拆屋" : "进攻");
   }
 
-  assignBuilders(team: Team, site: Building): void {
+  /**
+   * 指派建筑工（玩家点地建房 / 右键工地共用）。
+   * v0.38 两处修复：
+   * ① 选中的住户/塔上单位先叫出建筑（leaveBuilding）——否则 homeId>0 的单位被 thinkUnits 整体跳过
+   *    （"单位坐屋里当建工"永远走不到工地，房子建不起来）；与 v0.27h 右键点地的语义一致。
+   * ② 返回**实际指派人数**：选中里没有村民时旧实现静默无动作（玩家以为已派人，其实工地永远没人）。
+   */
+  assignBuilders(team: Team, site: Building): number {
     const walkers = this.selectedOf(team).filter((u) => u.kind === "walker" && u.hp > 0);
+    let assigned = 0;
     for (const u of walkers) {
+      if (u.homeId > 0) this.leaveBuilding(u, "（前去建房）");
       let edge = this.padEdge(site.x, site.z, site.padW, site.padD, site.yaw, u.x, u.z);
       if (Math.hypot(u.x - edge.x, u.z - edge.z) < 0.45) {
         edge = this.padEdge(site.x, site.z, site.padW, site.padD, site.yaw, site.x - (u.x - site.x), site.z - (u.z - site.z));
@@ -971,7 +983,9 @@ export class Sim {
       u.targetId = site.id;
       u.buildId = site.id;
       u.atkId = 0;
+      assigned++;
     }
+    return assigned;
   }
 
   setOrder(team: Team, order: Order): void {
@@ -1312,6 +1326,20 @@ export class Sim {
     }
   }
 
+  /** v0.38 木料交付目的地：先自己挂的工地（targetId / buildId），再退到最近的缺木工地。
+   *  旧实现一律"改投最近的缺木工地"→ 远处的工地被近处工地反复抢料、永远停在半成品
+   * （玩家口径"房子死活建不起来"；AI 实测首个兵营 0/4 木头、整局训不出兵）。 */
+  woodDropSite(u: Unit): Building | null {
+    if (!isTribe(u.team)) return null;
+    const own = this.buildingById(u.targetId);
+    if (own && this.needsWood(own)) return own;
+    if (u.buildId > 0) {
+      const assigned = this.buildingById(u.buildId);
+      if (assigned && this.needsWood(assigned)) return assigned;
+    }
+    return this.nearestNeedSite(u.team, u.x, u.z);
+  }
+
   advanceWalker(u: Unit, dt: number): boolean {
     if (u.homeId > 0) return true;
     if (this.tryOccupy(u)) return true;
@@ -1320,7 +1348,7 @@ export class Sim {
     if (!isTribe(u.team)) return false;
 
     if (u.carry === 1) {
-      const site = this.buildingById(u.targetId) ?? this.nearestNeedSite(u.team, u.x, u.z);
+      const site = this.woodDropSite(u);
       if (!site || !this.needsWood(site)) return false;
       const edge = this.padEdge(site.x, site.z, site.padW, site.padD, site.yaw, u.x, u.z);
       if (dist2(u.x, u.z, edge.x, edge.z) > 1.6 && dist2(u.x, u.z, site.x, site.z) > 2.6) return false;
@@ -1880,7 +1908,7 @@ export class Sim {
       return;
     }
     if (u.carry === 1) {
-      const site = this.nearestNeedSite(u.team, u.x, u.z);
+      const site = this.woodDropSite(u);
       if (site) {
         u.job = "haul";
         u.targetId = site.id;

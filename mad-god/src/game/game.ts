@@ -289,8 +289,9 @@ export class Game {
       if (!this.sim.canFound(x, z, 1, this.placeYaw, 0, this.placeKind ?? "hut")) return;
       const made = this.sim.foundSite(BLUE, x, z, this.placeYaw, this.placeKind);
       if (made) {
-        this.sim.assignBuilders(BLUE, made);
-        this.sim.toast("工地已定，勇士前来搭建");
+        // v0.38 反馈：选中的不是村民（或没选人）时不能静默——工地会没人搭建。
+        const crew = this.sim.assignBuilders(BLUE, made);
+        this.sim.toast(crew > 0 ? "工地已定，勇士前来搭建" : "工地已定：未选中村民，工地将自动召集人手");
         this.shotDirector.onBuildingFound(made);
       }
       return;
@@ -390,7 +391,8 @@ export class Game {
     }
     if (b && b.team === BLUE && b.hp > 0) {
       if (b.level === 0) {
-        this.sim.assignBuilders(BLUE, b);
+        const crew = this.sim.assignBuilders(BLUE, b);
+        if (crew === 0) this.sim.toast("未选中村民：工地将自动召集人手");
         this.view.showMoveMark(b.x, b.z);
         return;
       }

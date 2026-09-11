@@ -36,7 +36,15 @@ import type { Boathouse } from "../entities/buildings/boathouse";
 import { waterAt } from "../path";
 import { LogLevel, logger } from "../logger";
 
+/** v0.38 工地看门狗节拍（秒）与名额：节拍越短越灵敏，但每拍要扫一遍工地与村民。 */
+const SITE_WATCHDOG_SEC = 2;
+const SITE_WATCHDOG_CREW = 2;
+const SITE_WATCHDOG_MIN_IDLE = 2;
+
 export class ProductionSystem implements ISystem {
+  /** v0.38 工地看门狗上次执行时刻（游戏内秒） */
+  private lastSiteWatchdog = -1e9;
+
   update(sim: Sim, dt: number): void {
     this.tickTrees(sim, dt);
     this.refreshHouses(sim);
@@ -166,11 +174,69 @@ export class ProductionSystem implements ISystem {
     }
   }
 
+  /**
+   * v0.38 工地看门狗（仅玩家方）：工地还在等木料、却一个建工都没有时，从空闲村民里自动召 2 人。
+   *
+   * 为何需要它（"房子死活建造不起来"的系统性原因）：工地的建造动力完全挂在村民的 `buildId` 上——
+   * 一旦全部建工战死 / 被玩家右键调走 / 建房时选中里根本不是村民，就**没有任何机制**再把工地接上，
+   * 工地变成永久僵尸（玩家只看到一个停在半路的房子）。红方 AI 没这问题（村民本来就会自己认领工地），
+   * 所以本看门狗只服务玩家：这不是替玩家做主，而是继续执行玩家自己下的建造令。
+   *
+   * 三条自限：① 只在建工数为 0 时行动（不抢玩家正在用的建工）；
+   * ② 至少留 SITE_WATCHDOG_MIN_IDLE 名空闲村民才召（只剩一名劳力时不抽干）；
+   * ③ 只召同岛、无任务、且没有战斗诏令的村民。
+   */
+  private watchdogSites(sim: Sim): void {
+    if (sim.time - this.lastSiteWatchdog < SITE_WATCHDOG_SEC) return;
+    this.lastSiteWatchdog = sim.time;
+    for (const b of sim.buildings) {
+      if (b.team !== BLUE || b.level !== 0 || !this.needsWood(b)) continue;
+      const crew = sim.units.filter((u) => u.buildId === b.id && u.hp > 0 && u.homeId === 0);
+      if (crew.length) continue; // 已有建工（含在途）→ 不动
+      const isle = sim.world.islandAt(b.x, b.z);
+      const idle = sim.units.filter(
+        (u) =>
+          u.team === BLUE &&
+          u.kind === "walker" &&
+          u.hp > 0 &&
+          u.homeId === 0 &&
+          u.carry === 0 &&
+          u.targetId === 0 &&
+          u.foundKind === null &&
+          u.order === "settle" &&
+          u.job !== "train" &&
+          u.job !== "haul" &&
+          u.job !== "chop" &&
+          !sim.inSwamp(u) &&
+          (isle < 0 || sim.world.islandAt(u.x, u.z) === isle),
+      );
+      if (idle.length < SITE_WATCHDOG_MIN_IDLE) continue;
+      idle.sort((a, c) => (a.x - b.x) ** 2 + (a.z - b.z) ** 2 - ((c.x - b.x) ** 2 + (c.z - b.z) ** 2));
+      const picked = idle.slice(0, SITE_WATCHDOG_CREW);
+      for (const u of picked) {
+        const edge = sim.padEdge(b.x, b.z, b.padW, b.padD, b.yaw, u.x, u.z);
+        sim.sendMove(u, edge.x, edge.z);
+        u.targetId = b.id;
+        u.buildId = b.id;
+        u.atkId = 0;
+      }
+      logger.info("produce", `工地#${b.id} 无建工，自动召集 ${picked.length} 名村民前来搭建`, {
+        team: BLUE,
+        x: +b.x.toFixed(1),
+        z: +b.z.toFixed(1),
+        idle: idle.length,
+        crew: picked.map((u) => u.id),
+      });
+      sim.toast(`工地自动召集 ${picked.length} 名村民前来搭建`);
+    }
+  }
+
   produce(sim: Sim, dt: number): void {
     if (sim.freezeProd) {
       logger.throttled("produce:frozen", 2000, LogLevel.Warn, "produce", "freezeProd=true，生产被冻结（shot 导演占用）");
       return;
     }
+    this.watchdogSites(sim);
     for (const b of sim.buildings) {
       if (b.hp <= 0 || b.kind !== "hut" || b.level < 1) continue;
       if (b.wantLevel > b.level) {

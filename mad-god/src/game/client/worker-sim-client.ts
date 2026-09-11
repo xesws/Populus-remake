@@ -403,9 +403,13 @@ export class WorkerSimClient implements SimClient {
     return null;
   }
 
-  /** 右键未完工工地指派建工（game.ts secondary）；found 命令的指派在 worker 侧内联完成。 */
-  assignBuilders(team: Team, site: Building): void {
+  /** 右键未完工工地指派建工（game.ts secondary）；found 命令的指派在 worker 侧内联完成。
+   *  v0.38 返回值改为人数（本地镜子算，仅用于“没派上人”的提示）：
+   *  权威复核仍在 worker 侧，这里只回答“选中里到底有几个能干活的人”。 */
+  assignBuilders(team: Team, site: Building): number {
+    const n = this.selectedOf(team).filter((u: Unit) => u.kind === "walker" && u.hp > 0).length;
     this.post({ t: "assignBuilders", targetId: site.id });
+    return n;
   }
 
   // 以下导演专用写接口在 worker 模式全部禁用（game.ts 入口已拦 ?shot=，这里是兜底）。
